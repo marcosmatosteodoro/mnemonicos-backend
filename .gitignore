@@ -1,0 +1,33 @@
+# dependencies
+node_modules/
+
+# builds
+dist/
+
+# cliente Prisma gerado (recriado por `prisma generate`)
+src/generated/
+
+# testes
+coverage/
+
+# env — NUNCA versionar segredos reais
+.env
+.env.*
+!.env.example
+
+# deploy
+.vercel
+
+# logs
+*.log
+npm-debug.log*
+
+# editores / SO
+.DS_Store
+Thumbs.db
+.idea/
+*.swp
+
+# cache
+.eslintcache
+*.tsbuildinfo

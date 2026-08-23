@@ -1,0 +1,189 @@
+// Projeto Material Mnemônico de Alta Retenção para Concursos — esquema inicial.
+// Identificadores em inglês; rótulos de interface ficam no front-end.
+
+generator client {
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
+  runtime      = "nodejs"
+  // O resto do backend compila para CommonJS; o client precisa acompanhar.
+  moduleFormat = "cjs"
+}
+
+// A partir do Prisma 7 a URL não vive mais aqui:
+//  - runtime  -> driver adapter (@prisma/adapter-pg) em src/lib/prisma.ts
+//  - migrate  -> prisma.config.ts
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserRole {
+  STUDENT
+  EDITOR
+  ADMIN
+}
+
+/// Técnica usada para construir o gancho mnemônico.
+enum MnemonicTechnique {
+  ACRONYM
+  ACROSTIC
+  STORY
+  MEMORY_PALACE
+  KEYWORD
+  RHYME
+  NUMBER_PEG
+}
+
+/// Autoavaliação do estudante na revisão (escala SM-2 simplificada).
+enum ReviewRating {
+  AGAIN
+  HARD
+  GOOD
+  EASY
+}
+
+model User {
+  id String @id @default(uuid(7))
+
+  email String @unique
+  name  String
+
+  /// Hash Argon2id. A senha em claro nunca é persistida nem registrada em log.
+  passwordHash String
+  role         UserRole @default(STUDENT)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  cardStates CardState[]
+  reviews    Review[]
+
+  @@map("users")
+}
+
+model Discipline {
+  id String @id @default(uuid(7))
+
+  name String
+  slug String @unique
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  topics Topic[]
+
+  @@map("disciplines")
+}
+
+model Topic {
+  id String @id @default(uuid(7))
+
+  disciplineId String
+  discipline   Discipline @relation(fields: [disciplineId], references: [id], onDelete: Cascade)
+
+  name String
+  slug String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  mnemonics  Mnemonic[]
+  flashcards Flashcard[]
+
+  @@unique([disciplineId, slug])
+  @@map("topics")
+}
+
+model Mnemonic {
+  id String @id @default(uuid(7))
+
+  topicId String
+  topic   Topic  @relation(fields: [topicId], references: [id], onDelete: Cascade)
+
+  technique MnemonicTechnique
+
+  /// O gancho em si — a sigla, o acróstico, a rima.
+  hook String
+
+  /// O que cada parte do gancho decodifica.
+  decoding String
+
+  /// Base legal ou fonte, quando houver.
+  source String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  flashcards Flashcard[]
+
+  @@index([topicId, technique])
+  @@map("mnemonics")
+}
+
+model Flashcard {
+  id String @id @default(uuid(7))
+
+  topicId String
+  topic   Topic  @relation(fields: [topicId], references: [id], onDelete: Cascade)
+
+  /// Cartão pode nascer de um mnemônico ou ser solto.
+  mnemonicId String?
+  mnemonic   Mnemonic? @relation(fields: [mnemonicId], references: [id], onDelete: SetNull)
+
+  front String
+  back  String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  cardStates CardState[]
+  reviews    Review[]
+
+  @@index([topicId])
+  @@map("flashcards")
+}
+
+/// Estado da repetição espaçada de um cartão para um estudante.
+model CardState {
+  id String @id @default(uuid(7))
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  flashcardId String
+  flashcard   Flashcard @relation(fields: [flashcardId], references: [id], onDelete: Cascade)
+
+  /// Quando o cartão volta à fila.
+  dueAt        DateTime @default(now())
+  intervalDays Int      @default(0)
+  easeFactor   Float    @default(2.5)
+  repetitions  Int      @default(0)
+  lapses       Int      @default(0)
+
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, flashcardId])
+  @@index([userId, dueAt])
+  @@map("card_states")
+}
+
+/// Registro imutável de cada revisão — a série histórica que alimenta o algoritmo.
+model Review {
+  id String @id @default(uuid(7))
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  flashcardId String
+  flashcard   Flashcard @relation(fields: [flashcardId], references: [id], onDelete: Cascade)
+
+  rating ReviewRating
+
+  /// Tempo até responder, em milissegundos — hesitação é sinal de retenção fraca.
+  elapsedMs Int?
+
+  reviewedAt DateTime @default(now())
+
+  @@index([userId, reviewedAt])
+  @@index([flashcardId])
+  @@map("reviews")
+}
