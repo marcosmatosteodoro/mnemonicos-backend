@@ -22,19 +22,13 @@ estado de repetição espaçada de cada estudante.
 
 ## Rodando
 
-```bash
-cp .env.example .env         # preencha DATABASE_URL e gere um JWT_SECRET
-npm install                  # dispara prisma generate + husky
-npm run db:migrate           # cria o schema (precisa de um Postgres de pé)
-npm run db:seed              # popula o acervo de exemplo
-npm run dev                  # http://localhost:3333
-```
-
-Postgres local rápido, se precisar:
+Requisitos: Node 22 e Docker.
 
 ```bash
-docker run --name mnemonicos-db -e POSTGRES_PASSWORD=postgres \
-  -e POSTGRES_DB=mnemonicos -p 5432:5432 -d postgres:17
+cp .env.example .env    # gere um JWT_SECRET; o resto já aponta para o container
+npm install             # dispara prisma generate + husky
+npm run db:setup        # sobe o Postgres, aplica as migrações e popula o acervo
+npm run dev             # http://localhost:3333
 ```
 
 Gere o `JWT_SECRET` localmente e **não** o versione:
@@ -43,11 +37,43 @@ Gere o `JWT_SECRET` localmente e **não** o versione:
 openssl rand -base64 48
 ```
 
+### O banco de desenvolvimento
+
+O `docker-compose.yml` sobe um Postgres local. `npm run dev` **liga o banco
+antes da aplicação** e só segue quando o healthcheck passa — o `--wait` do
+`docker compose` garante isso, então a aplicação nunca tenta conectar num
+Postgres que ainda está inicializando.
+
+Se você já tem um Postgres próprio (ou quer apontar para um banco remoto), use
+`npm run dev:no-db`: sobe só a aplicação, sem tocar em Docker.
+
+```bash
+npm run dev             # Postgres + aplicação
+npm run dev:no-db       # só a aplicação
+npm run db:up           # só o Postgres (espera ficar healthy)
+npm run db:down         # para o container, preservando os dados
+npm run db:destroy      # para e APAGA o volume — recomeça do zero
+npm run db:psql         # abre um psql dentro do container
+npm run db:logs         # segue o log do Postgres
+```
+
+Detalhes que valem saber:
+
+- A porta é publicada em **`127.0.0.1:5432`**, não em `0.0.0.0` — o banco não
+  fica exposto à rede local.
+- O volume é montado em **`/var/lib/postgresql`**, não em `.../data`: a partir do
+  Postgres 18 a imagem guarda os dados num subdiretório por versão maior, e o
+  mount no caminho antigo faz o container subir _unhealthy_.
+- As credenciais do container vêm de `POSTGRES_USER`/`POSTGRES_PASSWORD`/
+  `POSTGRES_DB` no `.env`, com defaults para desenvolvimento. São de container
+  descartável — não são segredo de produção, mas também não valem nada fora daqui.
+
 ## Scripts
 
 | Script                 | O que faz                              |
 | ---------------------- | -------------------------------------- |
-| `npm run dev`          | `tsx watch` em `src/server.ts`         |
+| `npm run dev`          | Sobe o Postgres e depois a aplicação   |
+| `npm run dev:no-db`    | Só a aplicação (`tsx watch`)           |
 | `npm run build`        | `prisma generate` + `tsc` para `dist/` |
 | `npm start`            | Roda o build                           |
 | `npm run lint`         | ESLint (com type-checking)             |
@@ -56,17 +82,26 @@ openssl rand -base64 48
 | `npm test`             | Jest                                   |
 | `npm run test:ci`      | Jest com cobertura                     |
 | `npm run validate`     | format:check + lint + typecheck + test |
+| `npm run db:setup`     | `db:up` + `db:deploy` + `db:seed`      |
+| `npm run db:up`        | Sobe o Postgres e espera ficar healthy |
+| `npm run db:down`      | Para o container (mantém os dados)     |
+| `npm run db:destroy`   | Para o container e apaga o volume      |
+| `npm run db:psql`      | `psql` dentro do container             |
+| `npm run db:logs`      | Log do Postgres                        |
 | `npm run db:migrate`   | `prisma migrate dev`                   |
 | `npm run db:deploy`    | `prisma migrate deploy` (produção)     |
 | `npm run db:seed`      | Popula o acervo de exemplo             |
 | `npm run db:studio`    | Prisma Studio                          |
+| `npm run db:format`    | `prisma format` no schema              |
 
 ## Estrutura
 
 ```
 api/
 └── index.ts                     # entrypoint da Vercel (exporta a app Express)
+docker-compose.yml               # Postgres de desenvolvimento
 prisma/
+├── migrations/                  # histórico versionado do schema
 ├── schema.prisma                # modelo de dados
 └── seed.ts                      # acervo de exemplo, idempotente
 prisma.config.ts                 # config do CLI (URL do migrate)

@@ -1,0 +1,33 @@
+# Postgres de desenvolvimento. Sobe com `npm run db:up` (ou junto do
+# `npm run dev`) e não tem nada a ver com produção — lá o banco é gerenciado.
+services:
+  postgres:
+    image: postgres:18-alpine
+    container_name: mnemonicos-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-mnemonicos}
+      # Acelera o boot: o container é descartável, não precisa de fsync a cada write.
+      POSTGRES_INITDB_ARGS: '--data-checksums'
+    ports:
+      # Preso ao loopback de propósito: sem isso o banco fica exposto à rede local.
+      - '127.0.0.1:${POSTGRES_PORT:-5432}:5432'
+    volumes:
+      # Postgres 18+ exige o mount em /var/lib/postgresql (e não em .../data):
+      # a imagem passou a guardar os dados num subdiretório por versão maior,
+      # para permitir `pg_upgrade --link` sem cruzar fronteira de mount.
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      # `npm run db:up` usa --wait e só retorna quando este teste passa, então
+      # a aplicação nunca sobe antes de o banco aceitar conexão.
+      test: ['CMD-SHELL', 'pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" -h 127.0.0.1']
+      interval: 3s
+      timeout: 5s
+      retries: 15
+      start_period: 10s
+
+volumes:
+  postgres-data:
+    name: mnemonicos-db-data

@@ -8,7 +8,8 @@
   },
   "main": "dist/server.js",
   "scripts": {
-    "dev": "tsx watch src/server.ts",
+    "dev": "npm run db:up && npm run dev:no-db",
+    "dev:no-db": "tsx watch src/server.ts",
     "build": "prisma generate && tsc -p tsconfig.build.json",
     "vercel-build": "prisma generate",
     "start": "node dist/server.js",
@@ -27,6 +28,12 @@
     "db:deploy": "prisma migrate deploy",
     "db:studio": "prisma studio",
     "db:seed": "tsx prisma/seed.ts",
+    "db:up": "docker compose up -d --wait",
+    "db:down": "docker compose down",
+    "db:destroy": "docker compose down -v",
+    "db:logs": "docker compose logs -f postgres",
+    "db:psql": "docker compose exec postgres sh -c 'psql -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\"'",
+    "db:setup": "npm run db:up && npm run db:deploy && npm run db:seed",
     "prepare": "husky",
     "postinstall": "prisma generate"
   },
@@ -74,7 +81,7 @@
       "prettier --write",
       "eslint --fix --max-warnings=0"
     ],
-    "*.{json,md}": [
+    "*.{json,md,yml,yaml}": [
       "prettier --write"
     ],
     "prisma/schema.prisma": [
