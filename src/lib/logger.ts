@@ -6,24 +6,27 @@ import { env } from '../config/env';
 // mantém o Jest pendurado, e em produção queremos JSON puro para o coletor.
 const isDevelopment = env.NODE_ENV === 'development';
 
+// Nada de credencial, token ou cookie no log — nem em desenvolvimento.
+export const redactOptions = {
+  paths: [
+    'req.headers.authorization',
+    'req.headers.cookie',
+    'res.headers["set-cookie"]',
+    '*.password',
+    '*.passwordHash',
+    '*.token',
+    '*.accessToken',
+    '*.refreshToken',
+    'DATABASE_URL',
+    'JWT_SECRET',
+    'SEED_ADMIN_PASSWORD',
+  ],
+  censor: '[redigido]',
+};
+
 export const logger = pino({
   level: env.NODE_ENV === 'test' ? 'silent' : env.LOG_LEVEL,
-  // Nada de credencial, token ou cookie no log — nem em desenvolvimento.
-  redact: {
-    paths: [
-      'req.headers.authorization',
-      'req.headers.cookie',
-      'res.headers["set-cookie"]',
-      '*.password',
-      '*.passwordHash',
-      '*.token',
-      '*.accessToken',
-      '*.refreshToken',
-      'DATABASE_URL',
-      'JWT_SECRET',
-    ],
-    censor: '[redigido]',
-  },
+  redact: redactOptions,
   ...(isDevelopment
     ? {
         transport: {
