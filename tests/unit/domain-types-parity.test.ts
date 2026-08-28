@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 import { USER_ROLES, type SessionUser } from '../../src/domain/types';
@@ -15,6 +15,17 @@ import { USER_ROLES, type SessionUser } from '../../src/domain/types';
  */
 const BACKEND_TYPES = resolve(__dirname, '../../src/domain/types.ts');
 const FRONTEND_TYPES = resolve(__dirname, '../../../mnemonicos-frontend/src/types/domain.ts');
+
+function readTypesFile(path: string): string {
+  if (!existsSync(path)) {
+    throw new Error(
+      `arquivo de tipos não encontrado: ${path}\n` +
+        'checkout irmão mnemonicos-frontend ausente — este teste de paridade ' +
+        'exige os dois repos no workspace.',
+    );
+  }
+  return readFileSync(path, 'utf8');
+}
 
 function extractUserRoles(source: string): string[] {
   const match = /export const USER_ROLES = \[([\s\S]*?)\] as const;/.exec(source);
@@ -35,8 +46,8 @@ function extractSessionUserFields(source: string): string[] {
 }
 
 describe('paridade de tipos de domínio backend ⇆ frontend (NFR-002-007 / AC-002-025)', () => {
-  const backendSource = readFileSync(BACKEND_TYPES, 'utf8');
-  const frontendSource = readFileSync(FRONTEND_TYPES, 'utf8');
+  const backendSource = readTypesFile(BACKEND_TYPES);
+  const frontendSource = readTypesFile(FRONTEND_TYPES);
 
   it('expõe o mesmo conjunto de valores de USER_ROLES nos dois repositórios', () => {
     const backendRoles = extractUserRoles(backendSource).sort();
