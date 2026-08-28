@@ -58,6 +58,55 @@ describe('config/env — variáveis da fatia de acesso interno', () => {
     expect(env.COOKIE_SECURE).toBe(isProduction);
   });
 
+  it('lê COOKIE_SECURE=false do ambiente como o booleano false', () => {
+    for (const key of NEW_ENV_KEYS) delete process.env[key];
+    process.env.COOKIE_SECURE = 'false';
+
+    const { env } = loadEnvModule();
+
+    expect(env.COOKIE_SECURE).toBe(false);
+  });
+
+  it('lê COOKIE_SECURE=true do ambiente como o booleano true', () => {
+    for (const key of NEW_ENV_KEYS) delete process.env[key];
+    process.env.COOKIE_SECURE = 'true';
+
+    const { env } = loadEnvModule();
+
+    expect(env.COOKIE_SECURE).toBe(true);
+  });
+
+  it('derruba o boot quando COOKIE_SECURE vem vazio, citando só o nome da variável', () => {
+    process.env.COOKIE_SECURE = '';
+
+    let caught: Error | undefined;
+    try {
+      loadEnvModule();
+    } catch (err) {
+      caught = err as Error;
+    }
+
+    expect(caught).toBeDefined();
+    expect(caught?.message).toContain('COOKIE_SECURE');
+  });
+
+  it('derruba o boot quando COOKIE_SECURE tem valor inválido, sem ecoar o valor', () => {
+    const invalidValue = 'yes';
+
+    process.env.COOKIE_SECURE = invalidValue;
+
+    let caught: Error | undefined;
+    try {
+      loadEnvModule();
+    } catch (err) {
+      caught = err as Error;
+    }
+
+    expect(caught).toBeDefined();
+    expect(caught?.message).toContain('COOKIE_SECURE');
+    expect(caught?.message).not.toContain(invalidValue);
+  });
+
   it('coage o TTL de acesso vindo do ambiente para número', () => {
     delete process.env.SEED_ADMIN_EMAIL;
     delete process.env.SEED_ADMIN_PASSWORD;

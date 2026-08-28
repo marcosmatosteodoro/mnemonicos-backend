@@ -33,9 +33,47 @@ describe('logger — redação de segredos', () => {
     expect(line).not.toContain(secret);
   });
 
-  it('mantém as chaves de segredo conhecidas na lista de paths redigidos', () => {
-    expect(redactOptions.paths).toEqual(
-      expect.arrayContaining(['JWT_SECRET', 'DATABASE_URL', 'SEED_ADMIN_PASSWORD', '*.password']),
+  it('redige segredos de configuração aninhados um nível sob uma chave de contexto', () => {
+    const { log, lines } = captureLogger();
+    const jwtSecret = 'jwt-secret-ficticio-com-mais-de-32-caracteres';
+    const databaseUrl = 'postgresql://user:senha@host:5432/db';
+    const seedPassword = 'senha-de-seed-ficticia';
+
+    log.info(
+      {
+        env: {
+          JWT_SECRET: jwtSecret,
+          DATABASE_URL: databaseUrl,
+          SEED_ADMIN_PASSWORD: seedPassword,
+        },
+      },
+      'dump de env',
     );
+
+    const line = lines[0];
+    if (line === undefined) throw new Error('esperava um registro de log');
+    const record = JSON.parse(line) as { env: Record<string, unknown> };
+    expect(record.env.JWT_SECRET).toBe('[redigido]');
+    expect(record.env.DATABASE_URL).toBe('[redigido]');
+    expect(record.env.SEED_ADMIN_PASSWORD).toBe('[redigido]');
+    expect(line).not.toContain(jwtSecret);
+    expect(line).not.toContain(databaseUrl);
+    expect(line).not.toContain(seedPassword);
+  });
+
+  it('redige os hashes de sessão aninhados um nível sob uma chave de contexto', () => {
+    const { log, lines } = captureLogger();
+    const accessTokenHash = 'hash-ficticio-do-access-token';
+    const refreshTokenHash = 'hash-ficticio-do-refresh-token';
+
+    log.info({ session: { accessTokenHash, refreshTokenHash } }, 'rotação de sessão');
+
+    const line = lines[0];
+    if (line === undefined) throw new Error('esperava um registro de log');
+    const record = JSON.parse(line) as { session: Record<string, unknown> };
+    expect(record.session.accessTokenHash).toBe('[redigido]');
+    expect(record.session.refreshTokenHash).toBe('[redigido]');
+    expect(line).not.toContain(accessTokenHash);
+    expect(line).not.toContain(refreshTokenHash);
   });
 });

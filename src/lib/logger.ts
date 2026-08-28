@@ -20,6 +20,13 @@ export const redactOptions = {
     'DATABASE_URL',
     'JWT_SECRET',
     'SEED_ADMIN_PASSWORD',
+    // O wildcard do pino cobre só um nível de aninhamento — segredos sob uma chave de
+    // contexto (`{ env: { JWT_SECRET } }`, `{ session: { accessTokenHash } }`) exigem entrada própria.
+    '*.JWT_SECRET',
+    '*.DATABASE_URL',
+    '*.SEED_ADMIN_PASSWORD',
+    '*.accessTokenHash',
+    '*.refreshTokenHash',
   ],
   censor: '[redigido]',
 };
