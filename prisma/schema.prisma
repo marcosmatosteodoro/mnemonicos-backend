@@ -75,7 +75,9 @@ model Session {
   /// Agrupa a cadeia de rotação derivada de um mesmo login (Família de sessão).
   familyId String
 
-  /// sha256(token + pepper) — o valor em claro do token nunca é persistido.
+  /// HMAC-SHA256(token, pepper) via `crypto.createHmac('sha256', env.JWT_SECRET)` — o
+  /// valor em claro do token nunca é persistido. Token gerado com `crypto.randomBytes`;
+  /// verificação por `crypto.timingSafeEqual`.
   accessTokenHash  String @unique
   refreshTokenHash String @unique
 
