@@ -17,6 +17,16 @@ import type { Config } from 'jest';
  * Não faz `import` de `jest.config.ts`: sob `module: nodenext` o resolver do Jest
  * não acha o arquivo irmão sem extensão, e duplicar estas quatro chaves estáveis
  * custa menos que o hack de extensão.
+ *
+ * **Por que o script `test:integration` invoca `node --experimental-vm-modules
+ * node_modules/jest/bin/jest.js` em vez de `jest` direto** (`package.json` não
+ * aceita comentário): o client do Prisma 7 (query compiler em WASM) carrega
+ * módulos internos com `import()` dinâmico, que o sandbox de VM do Jest recusa
+ * sem a flag `--experimental-vm-modules`. Na forma literal `jest --config ...
+ * --runInBand` os 5 testes caem na primeira query com
+ * `PrismaClientKnownRequestError: Invalid prisma.$queryRaw() invocation`. A flag
+ * é do runtime Node, não do Jest, então precisa vir antes do `bin/jest.js`
+ * chamado explicitamente — o wrapper `jest` não a repassa ao processo.
  */
 const config: Config = {
   preset: 'ts-jest',
