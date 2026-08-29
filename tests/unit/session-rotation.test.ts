@@ -55,6 +55,17 @@ describe('decideRefresh', () => {
     expect(decision).toEqual({ kind: 'reuse' });
   });
 
+  it('faz a revogação vencer a janela de graça: revogada dentro da graça → reuse (AC-002-005, precedência)', () => {
+    const row = activeRow({
+      revokedAt: secondsBeforeNow(5),
+      rotatedAt: secondsBeforeNow(GRACE_SECONDS - 1),
+    });
+
+    const decision = decideRefresh(row, NOW, GRACE_SECONDS);
+
+    expect(decision).toEqual({ kind: 'reuse' });
+  });
+
   it('recusa por expiração quando refreshExpiresAt está no passado (AC-002-006)', () => {
     const row = activeRow({ refreshExpiresAt: secondsBeforeNow(1) });
 
