@@ -198,6 +198,25 @@ describe('verifyOrigin — Origin/Host nas rotas POST (critério de pronto)', ()
     expect(res.status).toBe(403);
     expect(mockLogin).not.toHaveBeenCalled();
   });
+
+  // [retry F4] Decisão deliberada: "Referer malformado ≡ origem ausente → segue".
+  // Um `Referer` que não parseia como URL não é origem verificável; o guard trata
+  // como se não houvesse header algum (mesma postura de "curl sem Origin"), NÃO
+  // como uma origem proibida. O `catch` de `new URL(...)` que devolve `undefined`
+  // é a escolha — não um erro engolido. A mutação que troca esse fallback por
+  // `next(new ForbiddenError())` (ou que remove o ramo `stated === undefined` de
+  // `verifyOrigin`) faz este caso virar 403 e o teste fica vermelho.
+  it('Referer malformado (não-URL) e sem Origin → segue (tratado como origem ausente, não proibida)', async () => {
+    mockLogin.mockResolvedValue(issued('acc-1', 'ref-1'));
+
+    const res = await request(buildApp())
+      .post('/auth/login')
+      .set('Referer', ':::nao-url:::')
+      .send({ email: 'edna@example.com', password: 'senha-correta-123' });
+
+    expect(res.status).toBe(200);
+    expect(mockLogin).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('POST /auth/login — cookies de sessão e corpo (AC-002-001)', () => {

@@ -9,6 +9,7 @@ import { prisma } from '../../lib/prisma';
 import { generateToken, hashToken } from '../../lib/tokens';
 import type { ChangePasswordInput, LoginInput } from './auth.schema';
 import { decideRefresh } from './session-rotation';
+import { revokeAllSessionsOp } from './session-revocation';
 
 /**
  * Origem da requisição — resolvida pela rota a partir da conexão (`req.ip`,
@@ -432,22 +433,19 @@ export async function changeOwnPassword(
 
   await prisma.$transaction([
     prisma.user.update({ where: { id: userId }, data: { passwordHash: newPasswordHash } }),
-    prisma.session.updateMany({
-      where: { userId, id: { not: currentSessionId }, revokedAt: null },
-      data: { revokedAt: now },
-    }),
+    revokeAllSessionsOp(userId, now, { exceptSessionId: currentSessionId }),
   ]);
 }
 
 /**
- * Revoga todas as sessões de um usuário. Consumido pela desativação de conta e
- * pelo reset de senha por ADMIN (TASK-003-010 / 003-012).
+ * Revoga todas as sessões de um usuário — invólucro de `revokeAllSessionsOp`
+ * (COMP-003-008 / EMENDA Wave 5) num `$transaction` de uma operação. O
+ * `session.updateMany` de revogação por usuário vive só em `revokeAllSessionsOp`;
+ * `disableUser`/`resetUserPassword` compõem a operação dentro das suas próprias
+ * transações em vez de chamar este invólucro.
  */
 export async function revokeAllSessions(userId: string): Promise<void> {
-  await prisma.session.updateMany({
-    where: { userId, revokedAt: null },
-    data: { revokedAt: new Date() },
-  });
+  await prisma.$transaction([revokeAllSessionsOp(userId, new Date())]);
 }
 
 /**

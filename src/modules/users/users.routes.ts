@@ -1,6 +1,7 @@
 import { Router } from 'express';
 
 import { requireRole } from '../../http/middlewares/authorize';
+import { verifyOrigin } from '../auth/auth.routes';
 import {
   createInternalUser,
   disableUser,
@@ -28,6 +29,12 @@ import {
  * O `path` de cada `requireRole` é o caminho completo visto por `requireAuth` a
  * partir da raiz de `apiRoutes` (a árvore é montada plana em TASK-003-011).
  *
+ * As **3 mutações de estado** (`POST /users`, `PATCH /users/:id/disable`,
+ * `POST /users/:id/reset-password`) passam por `verifyOrigin` (COMP-003-010)
+ * antes do handler: Route Handlers não herdam proteção CSRF e o cookie de sessão
+ * é `sameSite: 'lax'`, então um POST/PATCH cross-site forjado ainda leva o
+ * cookie — `Origin`/`Referer` fora de `CORS_ORIGINS` → 403 sem efeito (S2).
+ *
  * Sem rota de auto-registro na superfície montada (FR-002-016 / AC-002-018). Sem
  * `try/catch`: o Express 5 encaminha a rejeição ao `errorHandler`.
  */
@@ -40,14 +47,20 @@ usersRoutes.get('/users', requireRole('GET', '/users', 'ADMIN'), async (req, res
 });
 
 /** POST /users — cria conta interna com papel fixado (`EDITOR`/`ADMIN`). */
-usersRoutes.post('/users', requireRole('POST', '/users', 'ADMIN'), async (req, res) => {
-  const input = createUserSchema.parse(req.body);
-  res.status(201).json(await createInternalUser(input));
-});
+usersRoutes.post(
+  '/users',
+  verifyOrigin,
+  requireRole('POST', '/users', 'ADMIN'),
+  async (req, res) => {
+    const input = createUserSchema.parse(req.body);
+    res.status(201).json(await createInternalUser(input));
+  },
+);
 
 /** PATCH /users/:id/disable — desativa (reversível) + revoga sessões; guarda do último ADMIN. */
 usersRoutes.patch(
   '/users/:id/disable',
+  verifyOrigin,
   requireRole('PATCH', '/users/:id/disable', 'ADMIN'),
   async (req, res) => {
     const { id } = userIdParamSchema.parse(req.params);
@@ -59,6 +72,7 @@ usersRoutes.patch(
 /** POST /users/:id/reset-password — redefine a senha e revoga as sessões da conta. */
 usersRoutes.post(
   '/users/:id/reset-password',
+  verifyOrigin,
   requireRole('POST', '/users/:id/reset-password', 'ADMIN'),
   async (req, res) => {
     const { id } = userIdParamSchema.parse(req.params);

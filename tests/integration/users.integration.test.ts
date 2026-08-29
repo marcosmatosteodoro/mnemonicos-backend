@@ -7,7 +7,7 @@ import request from 'supertest';
 import { env } from '../../src/config/env';
 import type { UserRole } from '../../src/domain/types';
 import { ACCESS_COOKIE } from '../../src/http/cookies';
-import { UnauthorizedError } from '../../src/http/errors';
+import { ConflictError, NotFoundError, UnauthorizedError } from '../../src/http/errors';
 import { requireAuth } from '../../src/http/middlewares/authenticate';
 import { errorHandler, notFoundHandler } from '../../src/http/middlewares/error-handler';
 import { rolesForPath } from '../../src/http/route-roles';
@@ -16,14 +16,17 @@ import { hashPassword, verifyPassword } from '../../src/lib/password';
 import { prisma } from '../../src/lib/prisma';
 import { generateToken, hashToken } from '../../src/lib/tokens';
 import {
+  changeOwnPassword,
   login,
   resolveAccessSession,
   type RequestOrigin,
 } from '../../src/modules/auth/auth.service';
+import * as sessionRevocation from '../../src/modules/auth/session-revocation';
 import { createUserSchema } from '../../src/modules/users/users.schema';
 import {
   createInternalUser,
   disableUser,
+  listInternalUsers,
   resetUserPassword,
 } from '../../src/modules/users/users.service';
 import { usersRoutes } from '../../src/modules/users/users.routes';
@@ -119,10 +122,15 @@ function captureAllLog() {
   };
 }
 
+type RouteHandler = (req: Request, res: unknown, next: NextFunction) => unknown;
+
 interface RouteInfo {
   key: string;
   handlerCount: number;
-  firstHandler: (req: Request, res: unknown, next: NextFunction) => unknown;
+  firstHandler: RouteHandler;
+  /** O guard imediatamente antes do handler final — `requireRole` nas 4 rotas
+   *  (as 3 mutações têm `verifyOrigin` à frente dele, S2). */
+  guardBeforeHandler: RouteHandler;
 }
 
 /** Extrai `<MÉTODO> <caminho>` + a pilha de handlers de cada rota do router. */
@@ -141,7 +149,8 @@ function routesOf(router: unknown): RouteInfo[] {
       out.push({
         key: `${method.toUpperCase()} ${route.path}`,
         handlerCount: route.stack.length,
-        firstHandler: route.stack[0]?.handle as RouteInfo['firstHandler'],
+        firstHandler: route.stack[0]?.handle as RouteHandler,
+        guardBeforeHandler: route.stack[route.stack.length - 2]?.handle as RouteHandler,
       });
     }
   }
@@ -362,12 +371,14 @@ describe('AC-002-018: nenhuma capacidade de auto-registro', () => {
     }
   });
 
-  it('todo handler de rota é precedido por um guard requireRole (pilha de 2, e o 1º nega sem req.auth)', () => {
+  it('todo handler de rota é precedido por um guard requireRole que nega sem req.auth', () => {
     for (const route of routesOf(usersRoutes)) {
-      expect(route.handlerCount).toBe(2);
+      // GET /users: [requireRole, handler]; as 3 mutações: [verifyOrigin, requireRole, handler] (S2).
+      const expectedDepth = route.key === 'GET /users' ? 2 : 3;
+      expect(route.handlerCount).toBe(expectedDepth);
 
       const next = jest.fn() as unknown as NextFunction;
-      route.firstHandler({} as Request, {}, next);
+      route.guardBeforeHandler({} as Request, {}, next);
       expect((next as jest.Mock).mock.calls[0][0]).toBeInstanceOf(UnauthorizedError);
     }
   });
@@ -705,5 +716,267 @@ describe('itens do Inclui sem AC: userIdParamSchema e listUsersQuerySchema exerc
       .set('Cookie', `${ACCESS_COOKIE}=${access}`);
 
     expect(res.status).toBe(422);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Retry Wave 5 — correções reprovadas no 1º passe (efaef57). Cada describe
+// abaixo casa um item `[retry ...]` dos Critérios de pronto e roda o mutante
+// nomeado antes de valer como prova.
+// ---------------------------------------------------------------------------
+
+describe('[retry F1] não-vazamento provado NO PONTO DA CONSULTA (não só na resposta)', () => {
+  it('listInternalUsers: a linha devolvida por prisma.user.findMany tem exatamente as 5 chaves do select (conta COM sessão)', async () => {
+    const editor = await createUser({ email: 'ponto-consulta@example.com', role: 'EDITOR' });
+    // Conta com sessão: o mutante `select` → `include: { sessions: true }` traria o
+    // array `sessions` na linha; o mutante `select` → entidade crua traria `passwordHash`.
+    await seedSession(editor.id);
+
+    const findManySpy = jest.spyOn(prisma.user, 'findMany');
+
+    await listInternalUsers({ page: 1, perPage: 20 });
+
+    const rows = (await findManySpy.mock.results[0]!.value) as Array<Record<string, unknown>>;
+    const seededRow = rows.find((row) => row.id === editor.id);
+    expect(seededRow).toBeDefined();
+    expect(Object.keys(seededRow ?? {}).sort()).toEqual([
+      'disabledAt',
+      'email',
+      'id',
+      'name',
+      'role',
+    ]);
+  });
+
+  it('createInternalUser: a linha devolvida por prisma.user.create tem exatamente {id,name,email,role} — nunca passwordHash', async () => {
+    const createSpy = jest.spyOn(prisma.user, 'create');
+
+    await createInternalUser({
+      email: 'criada-no-ponto@example.com',
+      name: 'Criada No Ponto',
+      role: 'EDITOR',
+      password: 'p'.repeat(16),
+    });
+
+    const created = (await createSpy.mock.results[0]!.value) as Record<string, unknown>;
+    expect(Object.keys(created).sort()).toEqual(['email', 'id', 'name', 'role']);
+    expect(created).not.toHaveProperty('passwordHash');
+  });
+});
+
+describe('[retry F2] filtro `search` de listInternalUsers (nome OU e-mail — capacidade declarada, EMENDA Wave 5)', () => {
+  /** Nomes e e-mails que não se cruzam: um termo só casa por um campo. */
+  async function seedDivergentPair() {
+    const byName = await createUser({
+      name: 'Alice Alpha',
+      email: 'aaa@example.com',
+      role: 'EDITOR',
+    });
+    const byEmail = await createUser({
+      name: 'Bob Beta',
+      email: 'zzz@example.com',
+      role: 'EDITOR',
+    });
+    return { byName, byEmail };
+  }
+
+  it('search casa só por NOME → traz só essa conta (insensível a caixa)', async () => {
+    const { byName } = await seedDivergentPair();
+
+    const page = await listInternalUsers({ page: 1, perPage: 20, search: 'alpha' });
+
+    expect(page.data.map((u) => u.id)).toEqual([byName.id]);
+  });
+
+  it('search casa só por E-MAIL → traz só essa conta (insensível a caixa)', async () => {
+    const { byEmail } = await seedDivergentPair();
+
+    const page = await listInternalUsers({ page: 1, perPage: 20, search: 'ZZZ' });
+
+    expect(page.data.map((u) => u.id)).toEqual([byEmail.id]);
+  });
+
+  it('search sem correspondência → lista vazia', async () => {
+    await seedDivergentPair();
+
+    const page = await listInternalUsers({ page: 1, perPage: 20, search: 'termo-que-nao-existe' });
+
+    expect(page.data).toEqual([]);
+    expect(page.total).toBe(0);
+  });
+});
+
+describe('[retry F3] ramos de disableUser / resetUserPassword sem caso no 1º passe', () => {
+  it('disableUser(id inexistente) → NotFoundError (P2025 não vaza como 500)', async () => {
+    await expect(disableUser(randomUUID())).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it('disableUser sobre conta já desativada → no-op que NÃO re-carimba o disabledAt original', async () => {
+    const originalDisabledAt = new Date('2020-01-01T00:00:00.000Z');
+    const already = await createUser({
+      email: 'f3-ja-desativada@example.com',
+      role: 'EDITOR',
+      disabledAt: originalDisabledAt,
+    });
+
+    await expect(disableUser(already.id)).resolves.toBeUndefined();
+
+    const after = await testPrisma.user.findUniqueOrThrow({ where: { id: already.id } });
+    expect(after.disabledAt?.getTime()).toBe(originalDisabledAt.getTime());
+  });
+
+  it('resetUserPassword(id inexistente) → NotFoundError', async () => {
+    await expect(resetUserPassword(randomUUID(), NEW_PASSWORD)).rejects.toBeInstanceOf(
+      NotFoundError,
+    );
+  });
+});
+
+describe('[retry S1] guarda do último ADMIN fecha NA ESCRITA (não check-then-act)', () => {
+  it('N disableUser concorrentes contra ADMINs ativos → resta SEMPRE ≥ 1 ADMIN ativo e ≥ 1 rejeição ConflictError', async () => {
+    const admins = await Promise.all([
+      createUser({ email: 's1-a@example.com', role: 'ADMIN' }),
+      createUser({ email: 's1-b@example.com', role: 'ADMIN' }),
+      createUser({ email: 's1-c@example.com', role: 'ADMIN' }),
+    ]);
+
+    const settled = await Promise.allSettled(admins.map((admin) => disableUser(admin.id)));
+
+    const activeAdmins = await testPrisma.user.count({
+      where: { role: 'ADMIN', disabledAt: null },
+    });
+    // A invariante que o 1º passe (count fora da transação) violava: 3 chamadas
+    // liam "3 ativos", todas passavam da guarda, todas gravavam → 0 ADMIN ativo.
+    expect(activeAdmins).toBeGreaterThanOrEqual(1);
+
+    const rejections = settled.filter(
+      (result): result is PromiseRejectedResult => result.status === 'rejected',
+    );
+    expect(rejections.some((r) => r.reason instanceof ConflictError)).toBe(true);
+
+    const fulfilled = settled.filter((result) => result.status === 'fulfilled').length;
+    expect(activeAdmins).toBe(admins.length - fulfilled);
+  });
+});
+
+describe('[retry S2] verifyOrigin nas 3 mutações de users/', () => {
+  const EVIL_ORIGIN = 'https://evil.example';
+  const ALLOWED_ORIGIN = 'http://localhost:3000'; // única entrada de CORS_ORIGINS (tests/setup-env.ts)
+
+  it('POST /users: Origin fora de CORS_ORIGINS → 403 sem criar conta; Origin da allowlist → 201', async () => {
+    const { access } = await seedAdmin();
+    const body = {
+      email: 's2-create@example.com',
+      name: 'S2 Create',
+      role: 'EDITOR' as const,
+      password: 'a'.repeat(12),
+    };
+    const before = await testPrisma.user.count();
+
+    const blocked = await request(buildApp())
+      .post('/users')
+      .set('Cookie', `${ACCESS_COOKIE}=${access}`)
+      .set('Origin', EVIL_ORIGIN)
+      .send(body);
+
+    expect(blocked.status).toBe(403);
+    expect(await testPrisma.user.count()).toBe(before);
+
+    const ok = await request(buildApp())
+      .post('/users')
+      .set('Cookie', `${ACCESS_COOKIE}=${access}`)
+      .set('Origin', ALLOWED_ORIGIN)
+      .send(body);
+
+    expect(ok.status).toBe(201);
+  });
+
+  it('PATCH /users/:id/disable: Origin proibido → 403 e alvo segue ativo; Origin permitido → 200', async () => {
+    const { access } = await seedAdmin();
+    const target = await createUser({ email: 's2-disable@example.com', role: 'EDITOR' });
+
+    const blocked = await request(buildApp())
+      .patch(`/users/${target.id}/disable`)
+      .set('Cookie', `${ACCESS_COOKIE}=${access}`)
+      .set('Origin', EVIL_ORIGIN);
+
+    expect(blocked.status).toBe(403);
+    expect(
+      (await testPrisma.user.findUniqueOrThrow({ where: { id: target.id } })).disabledAt,
+    ).toBeNull();
+
+    const ok = await request(buildApp())
+      .patch(`/users/${target.id}/disable`)
+      .set('Cookie', `${ACCESS_COOKIE}=${access}`)
+      .set('Origin', ALLOWED_ORIGIN);
+
+    expect(ok.status).toBe(200);
+  });
+
+  it('POST /users/:id/reset-password: Origin proibido → 403 e passwordHash intacto; Origin permitido → 204', async () => {
+    const { access } = await seedAdmin();
+    const target = await createUser({ email: 's2-reset@example.com', role: 'EDITOR' });
+    const before = await testPrisma.user.findUniqueOrThrow({ where: { id: target.id } });
+
+    const blocked = await request(buildApp())
+      .post(`/users/${target.id}/reset-password`)
+      .set('Cookie', `${ACCESS_COOKIE}=${access}`)
+      .set('Origin', EVIL_ORIGIN)
+      .send({ password: NEW_PASSWORD });
+
+    expect(blocked.status).toBe(403);
+    expect(
+      (await testPrisma.user.findUniqueOrThrow({ where: { id: target.id } })).passwordHash,
+    ).toBe(before.passwordHash);
+
+    const ok = await request(buildApp())
+      .post(`/users/${target.id}/reset-password`)
+      .set('Cookie', `${ACCESS_COOKIE}=${access}`)
+      .set('Origin', ALLOWED_ORIGIN)
+      .send({ password: NEW_PASSWORD });
+
+    expect(ok.status).toBe(204);
+  });
+});
+
+describe('[retry F5] disableUser / resetUserPassword / changeOwnPassword delegam a revokeAllSessionsOp', () => {
+  it('disableUser chama revokeAllSessionsOp 1× com o userId do alvo', async () => {
+    const admin1 = await createUser({ email: 'f5-adm1@example.com', role: 'ADMIN' });
+    await createUser({ email: 'f5-adm2@example.com', role: 'ADMIN' }); // guarda do último ADMIN passa
+
+    const spy = jest.spyOn(sessionRevocation, 'revokeAllSessionsOp');
+
+    await disableUser(admin1.id);
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy.mock.calls[0]![0]).toBe(admin1.id);
+  });
+
+  it('resetUserPassword chama revokeAllSessionsOp 1× com o userId da conta', async () => {
+    const target = await createUser({ email: 'f5-reset@example.com', role: 'EDITOR' });
+
+    const spy = jest.spyOn(sessionRevocation, 'revokeAllSessionsOp');
+
+    await resetUserPassword(target.id, NEW_PASSWORD);
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy.mock.calls[0]![0]).toBe(target.id);
+  });
+
+  it('changeOwnPassword (Wave 3) delega a revokeAllSessionsOp 1× com o próprio userId, preservando a sessão corrente', async () => {
+    const user = await createUser({ email: 'f5-change@example.com', role: 'EDITOR' });
+    const { row } = await seedSession(user.id);
+
+    const spy = jest.spyOn(sessionRevocation, 'revokeAllSessionsOp');
+
+    await changeOwnPassword(
+      user.id,
+      { currentPassword: PASSWORD, newPassword: NEW_PASSWORD },
+      row.id,
+    );
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy.mock.calls[0]![0]).toBe(user.id);
+    expect(spy.mock.calls[0]![2]).toEqual({ exceptSessionId: row.id });
   });
 });

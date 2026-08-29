@@ -56,9 +56,11 @@ export const userIdParamSchema = z.object({
 export type UserIdParam = z.infer<typeof userIdParamSchema>;
 
 /**
- * Paginação da listagem de contas — reusa o schema de `disciplines` (§9 do
- * perfil: regra repetida de paginação é `.extend()` do base, não cópia). O
- * `search` herdado filtra por nome/e-mail no serviço.
+ * Paginação + busca da listagem de contas — reusa o schema de `disciplines` (§9
+ * do perfil: regra repetida de paginação é `.extend()` do base, não cópia). O
+ * `search` (string curta, `trim`, opcional) herdado é a capacidade declarada da
+ * EMENDA Wave 5 (PLAN COMP-003-013/014): `listInternalUsers` o aplica como filtro
+ * por **nome ou e-mail** (`contains`, `insensitive`).
  */
 export const listUsersQuerySchema = listDisciplinesQuerySchema.extend({});
 

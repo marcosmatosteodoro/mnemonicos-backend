@@ -3,6 +3,7 @@ import { Prisma } from '../../generated/prisma/client';
 import { ConflictError, NotFoundError } from '../../http/errors';
 import { hashPassword } from '../../lib/password';
 import { prisma } from '../../lib/prisma';
+import { revokeAllSessionsOp } from '../auth/session-revocation';
 import type { Paginated } from '../disciplines/disciplines.service';
 import type { CreateUserInput, ListUsersQuery } from './users.schema';
 
@@ -103,50 +104,78 @@ export async function listInternalUsers(query: ListUsersQuery): Promise<Paginate
  * último ADMIN ativo (FR-002-019 / DEC-003-007 / AC-002-021) — contenção de
  * lockout administrativo, já que a reativação está fora de F1 (§4.2).
  *
- * A revogação é `session.updateMany` inline dentro de `prisma.$transaction([...])`,
- * não a chamada a `revokeAllSessions`: aquele helper roda sobre o client
- * singleton e não compõe numa transação — é o mesmo motivo (e o mesmo padrão) de
- * `changeOwnPassword` (`auth.service.ts`). A conta desativada já teria as sessões
- * recusadas em `resolveAccessSession`/`refresh` (guarda `disabledAt`); a
- * revogação atômica é a contenção imediata que AC-002-020 exige.
+ * A guarda do último ADMIN fecha **na escrita**: a contagem de ADMINs ativos, a
+ * leitura do alvo e a gravação acontecem numa transação `Serializable`, então
+ * duas desativações concorrentes do penúltimo ADMIN não podem ambas ler "2
+ * ativos" e gravar — o Postgres aborta uma com erro de serialização, que aqui
+ * vira `ConflictError` (fail-closed: quem perdeu a corrida trata como conflito,
+ * nunca 500). A revogação em massa compõe `revokeAllSessionsOp` com o `tx` da
+ * transação.
  */
+function isTransactionWriteConflict(error: unknown): boolean {
+  // Prisma 7 sob o driver adapter `@prisma/adapter-pg`: a falha de serialização
+  // (SQLSTATE 40001 / 40P01) chega como `DriverAdapterError` de mensagem
+  // `TransactionWriteConflict` — não como `PrismaClientKnownRequestError` P2034,
+  // que é a forma do engine Rust. Cobrimos as duas para não depender do caminho.
+  if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2034') {
+    return true;
+  }
+  return (
+    error instanceof Error &&
+    /transaction\s*write\s*conflict|could not serialize|deadlock/i.test(
+      `${error.name} ${error.message}`,
+    )
+  );
+}
+
 export async function disableUser(id: string): Promise<void> {
   const now = new Date();
 
-  const target = await prisma.user.findUnique({
-    where: { id },
-    select: { id: true, role: true, disabledAt: true },
-  });
+  try {
+    await prisma.$transaction(
+      async (tx) => {
+        const target = await tx.user.findUnique({
+          where: { id },
+          select: { role: true, disabledAt: true },
+        });
 
-  if (target === null) throw new NotFoundError('Conta não encontrada.');
+        if (target === null) throw new NotFoundError('Conta não encontrada.');
 
-  // Já desativada → nada a fazer; re-carimbar perderia a marca temporal original.
-  if (target.disabledAt !== null) return;
+        // Já desativada → nada a fazer; re-carimbar perderia a marca temporal original.
+        if (target.disabledAt !== null) return;
 
-  if (target.role === 'ADMIN') {
-    const activeAdmins = await prisma.user.count({
-      where: { role: 'ADMIN', disabledAt: null },
-    });
-    if (activeAdmins <= 1) {
-      throw new ConflictError('Não é possível desativar o último ADMIN ativo.');
+        if (target.role === 'ADMIN') {
+          const activeAdmins = await tx.user.count({
+            where: { role: 'ADMIN', disabledAt: null },
+          });
+          if (activeAdmins <= 1) {
+            throw new ConflictError('Não é possível desativar o último ADMIN ativo.');
+          }
+        }
+
+        await tx.user.update({ where: { id }, data: { disabledAt: now } });
+        await revokeAllSessionsOp(id, now, { client: tx });
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+    );
+  } catch (error) {
+    // Corrida perdida sob `Serializable` → recusa fail-closed em vez de deixar
+    // vazar como 500: o estado ficou consistente (a outra transação já aplicou a
+    // sua desativação), esta apenas não vai.
+    if (isTransactionWriteConflict(error)) {
+      throw new ConflictError('Não foi possível desativar a conta agora. Tente novamente.');
     }
+    throw error;
   }
-
-  await prisma.$transaction([
-    prisma.user.update({ where: { id }, data: { disabledAt: now } }),
-    prisma.session.updateMany({
-      where: { userId: id, revokedAt: null },
-      data: { revokedAt: now },
-    }),
-  ]);
 }
 
 /**
  * Redefine a senha de uma conta por ADMIN (FR-002-020 / AC-002-022). Deriva o
  * novo hash (Argon2id) e, na mesma transação, grava e revoga as sessões vivas da
  * conta — a sessão continuada com a senha antiga para de funcionar de imediato.
- * Mesma composição de `changeOwnPassword` (o helper `revokeAllSessions` não
- * compõe em transação). Não devolve nada — nunca hash nem token.
+ * A revogação em massa compõe `revokeAllSessionsOp` (COMP-003-008). Id
+ * inexistente → `NotFoundError` (não deixa P2025 vazar como 500). Não devolve
+ * nada — nunca hash nem token.
  */
 export async function resetUserPassword(id: string, password: string): Promise<void> {
   const now = new Date();
@@ -158,9 +187,6 @@ export async function resetUserPassword(id: string, password: string): Promise<v
 
   await prisma.$transaction([
     prisma.user.update({ where: { id }, data: { passwordHash } }),
-    prisma.session.updateMany({
-      where: { userId: id, revokedAt: null },
-      data: { revokedAt: now },
-    }),
+    revokeAllSessionsOp(id, now),
   ]);
 }
