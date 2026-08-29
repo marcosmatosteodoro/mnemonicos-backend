@@ -1,9 +1,14 @@
 /**
- * Seed de conteúdo — idempotente, pode rodar quantas vezes quiser.
- * Só material de estudo: nenhum usuário, nenhuma credencial.
+ * Seed — idempotente, pode rodar quantas vezes quiser.
+ *
+ * Duas partes independentes: o bootstrap do primeiro ADMIN (a partir de
+ * `SEED_ADMIN_EMAIL`/`SEED_ADMIN_PASSWORD`, sem senha embutida — FR-002-021) e o
+ * material de estudo. O bootstrap roda primeiro: se `SEED_ADMIN_PASSWORD` estiver
+ * com o placeholder do `.env.example`, `seedAdmin` lança e a carga inteira aborta.
  */
 import { prisma } from '../src/lib/prisma';
 import type { MnemonicTechnique } from '../src/domain/types';
+import { type AdminSeedOutcome, seedAdmin } from './seed-admin';
 
 interface MnemonicSeed {
   technique: MnemonicTechnique;
@@ -100,7 +105,30 @@ const DISCIPLINES: DisciplineSeed[] = [
   },
 ];
 
+function reportAdminSeed(outcome: AdminSeedOutcome): void {
+  switch (outcome.status) {
+    case 'created':
+      console.log(`seed do ADMIN — primeiro ADMIN criado a partir do env (${outcome.email})`);
+      break;
+    case 'exists':
+      console.log('seed do ADMIN — já existe um ADMIN, nada a criar');
+      break;
+    case 'partial':
+      console.log(
+        'seed do ADMIN — só uma de SEED_ADMIN_EMAIL/SEED_ADMIN_PASSWORD definida; tratado como ausente, nenhum ADMIN criado',
+      );
+      break;
+    case 'not-configured':
+      console.log(
+        'seed do ADMIN — SEED_ADMIN_EMAIL/SEED_ADMIN_PASSWORD ausentes, nenhum ADMIN criado',
+      );
+      break;
+  }
+}
+
 async function main() {
+  reportAdminSeed(await seedAdmin(prisma));
+
   for (const discipline of DISCIPLINES) {
     const savedDiscipline = await prisma.discipline.upsert({
       where: { slug: discipline.slug },
