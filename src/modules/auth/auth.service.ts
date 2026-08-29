@@ -449,3 +449,23 @@ export async function revokeAllSessions(userId: string): Promise<void> {
     data: { revokedAt: new Date() },
   });
 }
+
+/**
+ * Leitor fino do usuário da sessão corrente — o corpo de `GET /auth/me`
+ * (COMP-003-010). `AuthContext`/`resolveAccessSession` carregam só
+ * `{ userId, role, sessionId }` e o caminho por requisição não deve carregar mais
+ * (o resolvedor roda a cada request — perf do gate 10 da Wave 3), então
+ * `name`/`email` vêm desta consulta separada, que só roda na rota `/auth/me`.
+ *
+ * `where: { id, disabledAt: null }` **é** a guarda de conta desativada — o mesmo
+ * predicado de negação que `login`/`resolveAccessSession`/`refresh` aplicam
+ * (checklist "Consumidores de sessão do auth.service", README §72–76): conta
+ * desativada → `null`, e a rota responde 401. `select` explícito — nunca
+ * `passwordHash` nem valor de token no retorno (NFR-002-004).
+ */
+export async function getSessionUser(userId: string): Promise<SessionUser | null> {
+  return prisma.user.findFirst({
+    where: { id: userId, disabledAt: null },
+    select: { id: true, name: true, email: true, role: true },
+  });
+}

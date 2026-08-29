@@ -1,3 +1,4 @@
+import cookieParser from 'cookie-parser';
 import cors, { type CorsOptions } from 'cors';
 import express, { type Express } from 'express';
 import rateLimit from 'express-rate-limit';
@@ -58,6 +59,12 @@ export function createApp(): Express {
   app.use(limiter);
   // Corpo pequeno de propósito: a API recebe texto de mnemônico, não upload.
   app.use(express.json({ limit: '100kb' }));
+  // Parsing de `Cookie` — Express 5 não traz no core. **Sem segredo**: o token de
+  // sessão já é opaco de 256 bits e validado por hash no servidor (DEC-003-002/004),
+  // então cookie assinado só somaria um 2º mecanismo de integridade e o
+  // `cookie-signature` transitivo. Antes de `apiRoutes` para o `requireAuth` da
+  // fatia de acesso enxergar `req.cookies`.
+  app.use(cookieParser());
   app.use(pinoHttp({ logger }));
 
   app.use(API_PREFIX, apiRoutes);
