@@ -12,6 +12,9 @@ import { logger } from './lib/logger';
 
 export const API_PREFIX = '/api/v1';
 
+/** Teto do freio global da API em uma janela de 15 min — os freios dedicados (ex.: login) ficam abaixo dele. */
+export const GLOBAL_RATE_LIMIT_MAX = 300;
+
 /**
  * Allowlist explícita: uma origem só passa se estiver em CORS_ORIGINS.
  * Requisições sem header `Origin` (curl, health check da plataforma, chamadas
@@ -37,7 +40,7 @@ const corsOptions: CorsOptions = {
  */
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  limit: 300,
+  limit: GLOBAL_RATE_LIMIT_MAX,
   standardHeaders: 'draft-8',
   legacyHeaders: false,
   skip: () => isTest,

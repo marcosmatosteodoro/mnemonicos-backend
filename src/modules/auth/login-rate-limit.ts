@@ -1,7 +1,8 @@
-import { type Request, type RequestHandler, type Response } from 'express';
+import { type NextFunction, type Request, type RequestHandler, type Response } from 'express';
 import { ipKeyGenerator, rateLimit } from 'express-rate-limit';
 
 import { isTest } from '../../config/env';
+import { TooManyRequestsError } from '../../http/errors';
 import { recordAuthEvent } from '../../lib/audit';
 
 /**
@@ -68,12 +69,17 @@ function attemptedAccount(req: Request): string {
 
 /**
  * Resposta comum ao disparo de qualquer um dos dois freios: audita o bloqueio
- * temporário (NFR-002-005 — evento plano, sem senha nem token) e responde 429 no
- * formato de erro do projeto. `outcome` é `'failure'`: o contrato `AuthOutcome`
- * (`src/lib/audit.ts`, Wave 2) só admite `'success' | 'failure'`, e a tentativa
- * foi recusada — o `type` `login.throttled` é o que marca "bloqueio temporário".
+ * temporário (NFR-002-005 — evento plano, sem senha nem token) e delega ao
+ * `errorHandler` (`src/http/middlewares/error-handler.ts`) via
+ * `next(new TooManyRequestsError(...))` — a fronteira única de conversão de erro
+ * monta o envelope 429 (perfil §5/§9). `outcome` é `'failure'`: o contrato
+ * `AuthOutcome` (`src/lib/audit.ts`, Wave 2) só admite `'success' | 'failure'`,
+ * e a tentativa foi recusada — o `type` `login.throttled` é o que marca
+ * "bloqueio temporário". O `Retry-After` já foi posto pelo `express-rate-limit`
+ * (`standardHeaders`) antes deste handler rodar; é header, não corpo, e sobrevive
+ * ao `res.status().json()` do `errorHandler`.
  */
-function throttleHandler(req: Request, res: Response): void {
+function throttleHandler(req: Request, _res: Response, next: NextFunction): void {
   recordAuthEvent({
     type: 'login.throttled',
     at: new Date(),
@@ -83,12 +89,9 @@ function throttleHandler(req: Request, res: Response): void {
     userAgent: req.get('user-agent') ?? undefined,
   });
 
-  res.status(429).json({
-    error: {
-      code: 'TOO_MANY_REQUESTS',
-      message: 'Muitas tentativas de login. Aguarde um instante e tente novamente.',
-    },
-  });
+  next(
+    new TooManyRequestsError('Muitas tentativas de login. Aguarde um instante e tente novamente.'),
+  );
 }
 
 const defaultSkip = (): boolean => isTest;

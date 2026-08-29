@@ -1,6 +1,8 @@
 import express, { type Express, type RequestHandler } from 'express';
 import request from 'supertest';
 
+import { GLOBAL_RATE_LIMIT_MAX } from '../../src/app';
+import { errorHandler } from '../../src/http/middlewares/error-handler';
 import { logger } from '../../src/lib/logger';
 import {
   createLoginRateLimiters,
@@ -23,13 +25,6 @@ import {
  * limite global de `src/app.ts`).
  */
 
-/**
- * Teto do limite global da API, declarado em `src/app.ts` (`limiter`, limit 300
- * / 15 min). Não é exportado de lá; a referência é literal e comentada — se o
- * global mudar, este número precisa acompanhar.
- */
-const GLOBAL_API_RATE_LIMIT_MAX = 300;
-
 interface AuditPayload {
   audit?: {
     type?: string;
@@ -46,7 +41,12 @@ function uniqueEmail(): string {
   return `legit-${emailSeq}@example.com`;
 }
 
-/** `app` mínimo: `trust proxy` numérico como em `src/app.ts`, JSON parseado antes do freio. */
+/**
+ * `app` mínimo: `trust proxy` numérico como em `src/app.ts`, JSON parseado antes
+ * do freio e o `errorHandler` real montado ao fim — o freio delega a resposta 429
+ * a ele (`next(new TooManyRequestsError())`), então a suíte precisa da mesma
+ * fronteira de conversão de erro que a `app` de produção usa.
+ */
 function buildLoginApp(limiters: RequestHandler[]): Express {
   const app = express();
   app.set('trust proxy', 1);
@@ -54,6 +54,7 @@ function buildLoginApp(limiters: RequestHandler[]): Express {
   app.post('/auth/login', ...limiters, (_req, res) => {
     res.status(200).json({ ok: true });
   });
+  app.use(errorHandler);
   return app;
 }
 
@@ -205,8 +206,8 @@ describe('freio de login — corpo sem e-mail', () => {
 
 describe('freio de login — NFR-002-006: mais estrito que o limite global', () => {
   it('os tetos por conta e por origem são menores que o teto global da API', () => {
-    expect(LOGIN_RATE_LIMIT_PER_ACCOUNT_MAX).toBeLessThan(GLOBAL_API_RATE_LIMIT_MAX);
-    expect(LOGIN_RATE_LIMIT_PER_ORIGIN_MAX).toBeLessThan(GLOBAL_API_RATE_LIMIT_MAX);
+    expect(LOGIN_RATE_LIMIT_PER_ACCOUNT_MAX).toBeLessThan(GLOBAL_RATE_LIMIT_MAX);
+    expect(LOGIN_RATE_LIMIT_PER_ORIGIN_MAX).toBeLessThan(GLOBAL_RATE_LIMIT_MAX);
   });
 
   it('numa sequência de tentativas, o freio de conta corta na (max + 1)ª — muito antes do global', async () => {
@@ -225,7 +226,7 @@ describe('freio de login — NFR-002-006: mais estrito que o limite global', () 
     }
 
     expect(firstBlockedAt).toBe(LOGIN_RATE_LIMIT_PER_ACCOUNT_MAX + 1);
-    expect(firstBlockedAt).toBeLessThan(GLOBAL_API_RATE_LIMIT_MAX);
+    expect(firstBlockedAt).toBeLessThan(GLOBAL_RATE_LIMIT_MAX);
   });
 });
 
