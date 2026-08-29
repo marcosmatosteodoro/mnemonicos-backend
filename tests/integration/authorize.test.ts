@@ -43,13 +43,17 @@ interface FakeReqOpts {
   userId?: string;
   ip?: string | null;
   noAuth?: boolean;
+  /** `null` → `req.get('user-agent')` devolve `undefined` (header ausente). */
+  userAgent?: string | null;
 }
 
 function fakeReq(opts: FakeReqOpts = {}): Request {
+  const userAgent = opts.userAgent === undefined ? 'jest-suite/1.0' : opts.userAgent;
   const req: Record<string, unknown> = {
     path: '/widgets',
     method: 'GET',
-    get: (name: string) => (name.toLowerCase() === 'user-agent' ? 'jest-suite/1.0' : undefined),
+    get: (name: string) =>
+      name.toLowerCase() === 'user-agent' ? (userAgent ?? undefined) : undefined,
   };
   if (opts.ip !== null) req.ip = opts.ip ?? '198.51.100.5';
   if (!opts.noAuth && opts.role) {
@@ -139,6 +143,22 @@ describe('requireRole — AC-002-011: papel insuficiente vs. papel suficiente', 
     for (const forbidden of ['token', 'accessToken', 'refreshToken', 'cookie', 'password']) {
       expect(event).not.toHaveProperty(forbidden);
     }
+  });
+
+  it('user-agent ausente no request → o evento authz.denied NÃO tem a chave userAgent (conjunto exato)', () => {
+    const info = spyAuthLog();
+
+    requireRole('GET', '/x', 'ADMIN')(
+      fakeReq({ role: 'EDITOR', userId: 'u-editor', userAgent: null }),
+      {} as Response,
+      jest.fn(),
+    );
+
+    const denied = authzDeniedEvents(info);
+    expect(denied).toHaveLength(1);
+    expect(Object.keys(denied[0] ?? {}).sort()).toEqual(
+      ['at', 'ip', 'outcome', 'subject', 'type'].sort(),
+    );
   });
 
   it('o evento leva ip como string vazia — nunca undefined — quando req.ip não resolveu', () => {

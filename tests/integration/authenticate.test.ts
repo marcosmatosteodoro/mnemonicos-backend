@@ -260,10 +260,29 @@ describe('[retry] deny-by-default audita — MUT-A + authz.denied no ramo de req
     for (const forbidden of ['token', 'accessToken', 'refreshToken', 'cookie', 'password']) {
       expect(denied[0]).not.toHaveProperty(forbidden);
     }
-    const keys = Object.keys(denied[0] ?? {});
-    expect(keys).toEqual(expect.arrayContaining(['at', 'ip', 'outcome', 'subject', 'type']));
-    const allowed = ['at', 'ip', 'outcome', 'subject', 'type', 'userAgent'];
-    expect(keys.every((k) => allowed.includes(k))).toBe(true);
+    // supertest não emite header User-Agent → o evento sai sem a chave userAgent.
+    expect(Object.keys(denied[0] ?? {}).sort()).toEqual(
+      ['at', 'ip', 'outcome', 'subject', 'type'].sort(),
+    );
+  });
+});
+
+describe('[retry] authz.denied de requireAuth sem user-agent — evento sem a chave userAgent', () => {
+  it('papel errado em rota declarada, request sem user-agent → 1 evento authz.denied com o conjunto EXATO de chaves', async () => {
+    const info = jest.spyOn(logger, 'info').mockImplementation(() => undefined);
+    declareRouteRoles('GET', '/x', ['ADMIN']);
+    mockResolve.mockResolvedValue(EDITOR_CTX);
+    const req = fakeReq({ path: '/x', method: 'GET', get: () => undefined });
+    const next = jest.fn() as unknown as NextFunction;
+
+    await requireAuth(req, {} as Response, next);
+
+    expect((next as jest.Mock).mock.calls[0][0]).toBeInstanceOf(ForbiddenError);
+    const denied = auditEvents(info, 'authz.denied');
+    expect(denied).toHaveLength(1);
+    expect(Object.keys(denied[0] ?? {}).sort()).toEqual(
+      ['at', 'ip', 'outcome', 'subject', 'type'].sort(),
+    );
   });
 });
 
