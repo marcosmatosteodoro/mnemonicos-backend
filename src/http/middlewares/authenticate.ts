@@ -1,7 +1,8 @@
 import type { RequestHandler } from 'express';
 
-import { resolveAccessSession } from '../../modules/auth/auth.service';
+import { recordAuthEvent } from '../../lib/audit';
 import { logger } from '../../lib/logger';
+import { resolveAccessSession } from '../../modules/auth/auth.service';
 import { ACCESS_COOKIE } from '../cookies';
 import { ForbiddenError, UnauthorizedError } from '../errors';
 import { isPublicPath } from '../public-paths';
@@ -14,12 +15,18 @@ import { rolesForPath } from '../route-roles';
  * 1. Caminho em `PUBLIC_PATH_ALLOWLIST` → segue sem tocar sessão.
  * 2. Senão resolve a sessão pelo cookie `ACCESS_COOKIE`, no servidor, a cada
  *    requisição — `now` é `new Date()` do servidor, nunca de header/query. Não
- *    resolveu (ou o cookie falta / não é string) → 401, e nada da rota a seguir
- *    roda.
- * 3. Sessão válida mas o caminho não declara papel em `ROUTE_ROLES` (nem é
- *    público) → 403, falha fechada (AC-002-014), mesmo com sessão boa.
- * 4. Caso contrário anexa `req.auth` e segue; `requireRole` do router decide o
- *    papel.
+ *    resolveu (ou o cookie falta / não é string) → 401, e nada da rota roda.
+ * 3. Sessão válida, mas o par `req.method`+`req.path` **não declara papel** em
+ *    `ROUTE_ROLES` (nem é público) **ou** o papel da sessão **não está no
+ *    conjunto declarado** → auditoria `authz.denied` + 403, falha fechada
+ *    (AC-002-014 · DEC-003-005), mesmo com sessão boa. Este é o **piso de
+ *    autorização**: nega o não-declarado **e** o papel errado sem depender de
+ *    `requireRole` estar montado na rota.
+ * 4. Caso contrário anexa `req.auth` e segue; o guard de `requireRole` do router
+ *    é defesa em profundidade sobre a mesma decisão.
+ *
+ * Precedência: sem sessão (401) é avaliado **antes** da consulta a `ROUTE_ROLES`
+ * (403) — uma requisição anônima a um caminho não declarado recebe 401, não 403.
  *
  * Toda recusa é `next(err)` seguido de `return`: sem o `return` o corpo abaixo
  * continua executando com a requisição já negada (§6.3).
@@ -53,7 +60,17 @@ export const requireAuth: RequestHandler = async (req, _res, next) => {
     return;
   }
 
-  if (rolesForPath(req.path) === undefined) {
+  const roles = rolesForPath(req.method, req.path);
+  if (roles === undefined || !roles.has(auth.role)) {
+    const userAgent = req.get('user-agent');
+    recordAuthEvent({
+      type: 'authz.denied',
+      at: new Date(),
+      outcome: 'failure',
+      subject: auth.userId,
+      ip: req.ip ?? '',
+      ...(userAgent === undefined ? {} : { userAgent }),
+    });
     next(new ForbiddenError());
     return;
   }
