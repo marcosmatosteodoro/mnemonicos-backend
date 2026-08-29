@@ -2,11 +2,15 @@
 // Identificadores em inglês; rótulos de interface ficam no front-end.
 
 generator client {
-  provider     = "prisma-client"
-  output       = "../src/generated/prisma"
-  runtime      = "nodejs"
+  provider        = "prisma-client"
+  output          = "../src/generated/prisma"
+  runtime         = "nodejs"
   // O resto do backend compila para CommonJS; o client precisa acompanhar.
-  moduleFormat = "cjs"
+  moduleFormat    = "cjs"
+  // Habilita `relationLoadStrategy: 'join'`: uma consulta com relação vira um
+  // único LATERAL JOIN em vez de uma ida ao banco por nível. O resolvedor de
+  // sessão roda a cada requisição autenticada — o round-trip extra pesa.
+  previewFeatures = ["relationJoins"]
 }
 
 // A partir do Prisma 7 a URL não vive mais aqui:

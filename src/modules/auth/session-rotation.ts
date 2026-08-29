@@ -4,9 +4,11 @@
  * família — é do `auth.service`, não daqui.
  *
  * - `rotate`: refresh válido e ainda não trocado → emitir sucessor.
- * - `replay-grace`: reapresentação do refresh dentro da janela de graça →
- *   reemitir os cookies do sucessor já criado (idempotente; renovações
- *   concorrentes do SPA não deslogam).
+ * - `replay-grace`: refresh reapresentado dentro da janela de graça → mesma
+ *   rotação do ramo `rotate` (nova ponta da família), sem revogação e sem
+ *   `token.reuse`, para renovações concorrentes do SPA não deslogarem.
+ *   Reemitir o sucessor já emitido seria o ideal, mas é inviável: só o hash
+ *   do token é persistido, nunca o valor em claro.
  * - `reuse`: refresh já rotacionado além da graça, ou linha já revogada →
  *   revogar toda a família.
  * - `expired`: `refreshExpiresAt` no passado → exigir nova autenticação.

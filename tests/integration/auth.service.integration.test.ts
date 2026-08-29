@@ -1,9 +1,14 @@
 import { randomUUID } from 'node:crypto';
 
+import { PrismaPg } from '@prisma/adapter-pg';
+
 import { env } from '../../src/config/env';
+import { PrismaClient } from '../../src/generated/prisma/client';
 import { UnauthorizedError } from '../../src/http/errors';
 import { logger } from '../../src/lib/logger';
 import { hashPassword, verifyPassword } from '../../src/lib/password';
+import type * as PasswordModule from '../../src/lib/password';
+import { prisma } from '../../src/lib/prisma';
 import { generateToken, hashToken } from '../../src/lib/tokens';
 import {
   changeOwnPassword,
@@ -15,6 +20,7 @@ import {
   revokeAllSessions,
 } from '../../src/modules/auth/auth.service';
 import { closeTestDb, resetDb, testPrisma } from './db';
+import { TEST_DATABASE_URL } from './db-url';
 
 /**
  * Camada de serviço de autenticação sobre o Postgres real (harness de
@@ -103,6 +109,10 @@ afterEach(() => {
 
 afterAll(async () => {
   await closeTestDb();
+  // O serviço usa o client de produção (`src/lib/prisma.ts`), que durante a
+  // integração aponta para o banco descartável. Sem fechar o pool dele, o
+  // processo do Jest fica com handle aberto ("Jest did not exit").
+  await prisma.$disconnect();
 });
 
 describe('login — AC-002-002: recusa genérica e auditoria sem segredo', () => {
@@ -149,6 +159,46 @@ describe('login — AC-002-002: recusa genérica e auditoria sem segredo', () =>
   });
 });
 
+describe('login — AC-002-002: falha do KDF de padding não vira 500 nem fica cacheada', () => {
+  it('e-mail inexistente responde a recusa genérica quando o hash de padding rejeita, e a chamada seguinte reinvoca o KDF', async () => {
+    const passwordActual = jest.requireActual<typeof PasswordModule>('../../src/lib/password');
+    const hashSpy = jest
+      .fn((plain: string): Promise<string> => passwordActual.hashPassword(plain))
+      .mockRejectedValueOnce(new Error('argon2: pressão de memória (forçado no teste)'));
+
+    await jest.isolateModulesAsync(async () => {
+      jest.doMock('../../src/lib/password', () => ({
+        ...passwordActual,
+        hashPassword: hashSpy,
+      }));
+
+      // Extensão `.js` explícita: `import()` num módulo CJS segue a resolução
+      // ESM do nodenext (o `moduleNameMapper` do Jest reescreve para o `.ts`).
+      const freshAuth = await import('../../src/modules/auth/auth.service.js');
+
+      // 1ª chamada: o hash de padding rejeita. Sem o fail-secure em `login`, o
+      // `await paddingHash()` propagaria a rejeição como 500 — a mensagem seria
+      // a do erro do KDF, não a recusa genérica.
+      const first = await freshAuth
+        .login({ email: `kdf-down-1-${randomUUID()}@example.com`, password: PASSWORD, ...ORIGIN })
+        .catch((e: unknown) => e);
+      expect((first as Error).message).toBe('Credenciais inválidas.');
+      expect((first as Error).name).toBe('UnauthorizedError');
+
+      // 2ª chamada: a promise rejeitada não pode ter ficado memoizada — o KDF de
+      // padding precisa ser reinvocado. Cacheada, `hashSpy` pararia em 1 chamada.
+      const second = await freshAuth
+        .login({ email: `kdf-down-2-${randomUUID()}@example.com`, password: PASSWORD, ...ORIGIN })
+        .catch((e: unknown) => e);
+      expect((second as Error).message).toBe('Credenciais inválidas.');
+
+      expect(hashSpy.mock.calls.length).toBeGreaterThanOrEqual(2);
+    });
+
+    jest.dontMock('../../src/lib/password');
+  });
+});
+
 describe('resolveAccessSession — AC-002-008: revogada / conta desativada rejeitada mesmo no prazo', () => {
   it('numa base com sessão ativa+revogada e conta ativa+desativada, só ativa+ativa resolve', async () => {
     const activeUser = await createUser();
@@ -178,6 +228,33 @@ describe('resolveAccessSession — AC-002-008: revogada / conta desativada rejei
 
   it('devolve null — nunca lança — para token de acesso desconhecido', async () => {
     expect(await resolveAccessSession(generateToken(), new Date())).toBeNull();
+  });
+});
+
+describe('resolveAccessSession — perfil §10: contagem de idas ao banco fixada em 1', () => {
+  it('resolve uma sessão válida com exatamente uma consulta SELECT (JOIN, não N+1)', async () => {
+    const user = await createUser();
+    const { access } = await seedSession(user.id);
+
+    const queries: string[] = [];
+    const probe = new PrismaClient({
+      adapter: new PrismaPg({ connectionString: TEST_DATABASE_URL, max: 1 }),
+      log: [{ emit: 'event', level: 'query' }],
+    });
+    probe.$on('query', (event) => queries.push(event.query));
+
+    try {
+      const ctx = await resolveAccessSession(access, new Date(), probe);
+      expect(ctx).toMatchObject({ userId: user.id, role: user.role });
+    } finally {
+      await probe.$disconnect();
+    }
+
+    const selects = queries.filter((q) => /^\s*SELECT\b/i.test(q));
+    // Sob `include`/estratégia `query` seriam 2 SELECTs (sessions + users). O
+    // LATERAL JOIN de `relationLoadStrategy: 'join'` colapsa em 1.
+    expect(selects).toHaveLength(1);
+    expect(queries.filter((q) => /passwordHash/i.test(q))).toHaveLength(0);
   });
 });
 
@@ -232,6 +309,26 @@ describe('refresh — AC-002-006: expiração absoluta do refresh', () => {
   });
 });
 
+describe('refresh — AC-002-008: conta desativada não renova (recusa genérica)', () => {
+  it('com conta ativa e conta desativada, ambas com refresh válido não-rotacionado, só a ativa renova', async () => {
+    const activeUser = await createUser();
+    const disabledUser = await createUser({ disabledAt: new Date() });
+    const activeSession = await seedSession(activeUser.id);
+    const disabledSession = await seedSession(disabledUser.id);
+    const now = new Date();
+
+    await expect(refresh(activeSession.refresh, ORIGIN, now)).resolves.toMatchObject({
+      user: { id: activeUser.id },
+    });
+
+    // Mutação que remove o filtro `user.disabledAt` em `refresh`: esta linha
+    // passaria a resolver `IssuedSession` em vez de rejeitar.
+    const err = await refresh(disabledSession.refresh, ORIGIN, now).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(UnauthorizedError);
+    expect((err as Error).message).toBe('Credenciais inválidas.');
+  });
+});
+
 describe('refresh — AC-002-005: reuso revoga a família, e só ela', () => {
   it('token já rotacionado revoga toda a família A e deixa a família B intacta', async () => {
     const userA = await createUser();
@@ -253,6 +350,73 @@ describe('refresh — AC-002-005: reuso revoga a família, e só ela', () => {
     const rowsB = await testPrisma.session.findMany({ where: { familyId: familyB } });
     expect(rowsA.every((r) => r.revokedAt !== null)).toBe(true);
     expect(rowsB.every((r) => r.revokedAt === null)).toBe(true);
+  });
+});
+
+describe('refresh — par expired ∧ (rotatedAt | revokedAt): reuso detectado após a expiração absoluta', () => {
+  const past = () => new Date(Date.now() - 60_000);
+
+  function reuseEvents(info: ReturnType<typeof captureAuthLog>) {
+    return info.mock.calls.filter(
+      (c) => (c[0] as { audit?: { type?: string } }).audit?.type === 'token.reuse',
+    );
+  }
+
+  it('(a) refresh expirado E já rotacionado → lança, revoga a família inteira e audita token.reuse', async () => {
+    const info = captureAuthLog();
+    const user = await createUser();
+    const familyId = randomUUID();
+    const stale = await seedSession(user.id, {
+      familyId,
+      refreshExpiresAt: past(),
+      rotatedAt: past(),
+    });
+    await seedSession(user.id, { familyId });
+
+    await expect(refresh(stale.refresh, ORIGIN, new Date())).rejects.toBeInstanceOf(
+      UnauthorizedError,
+    );
+
+    const rows = await testPrisma.session.findMany({ where: { familyId } });
+    expect(rows).toHaveLength(2);
+    expect(rows.every((r) => r.revokedAt !== null)).toBe(true);
+    expect(reuseEvents(info).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('(b) refresh expirado E já revogado → lança, revoga a família e audita token.reuse', async () => {
+    const info = captureAuthLog();
+    const user = await createUser();
+    const familyId = randomUUID();
+    const stale = await seedSession(user.id, {
+      familyId,
+      refreshExpiresAt: past(),
+      revokedAt: past(),
+    });
+    await seedSession(user.id, { familyId });
+
+    await expect(refresh(stale.refresh, ORIGIN, new Date())).rejects.toBeInstanceOf(
+      UnauthorizedError,
+    );
+
+    const rows = await testPrisma.session.findMany({ where: { familyId } });
+    expect(rows.every((r) => r.revokedAt !== null)).toBe(true);
+    expect(reuseEvents(info).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('(neutro) refresh expirado sem rotação nem revogação → lança, mas não revoga a família nem audita token.reuse', async () => {
+    const info = captureAuthLog();
+    const user = await createUser();
+    const familyId = randomUUID();
+    const clean = await seedSession(user.id, { familyId, refreshExpiresAt: past() });
+    await seedSession(user.id, { familyId });
+
+    await expect(refresh(clean.refresh, ORIGIN, new Date())).rejects.toBeInstanceOf(
+      UnauthorizedError,
+    );
+
+    const rows = await testPrisma.session.findMany({ where: { familyId } });
+    expect(rows.some((r) => r.revokedAt !== null)).toBe(false);
+    expect(reuseEvents(info)).toHaveLength(0);
   });
 });
 

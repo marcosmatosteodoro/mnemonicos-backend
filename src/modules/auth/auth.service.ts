@@ -62,9 +62,18 @@ let paddingHashPromise: Promise<string> | undefined;
  * Hash Argon2id de descarte, derivado uma vez por processo. Dá a `verifyPassword`
  * o mesmo trabalho quando o e-mail não existe, igualando o tempo de resposta
  * (FR-002-002 — o tempo não pode revelar se a conta existe). Nunca é credencial válida.
+ *
+ * A promise só é memoizada quando **resolve**: se o KDF falhar (ex.: pressão de
+ * memória do Argon2id), o cache é limpo para a próxima chamada tentar de novo —
+ * uma rejeição memoizada tornaria o oráculo de enumeração permanente.
  */
 function paddingHash(): Promise<string> {
-  paddingHashPromise ??= hashPassword('not-a-credential: constant-time login padding');
+  paddingHashPromise ??= hashPassword('not-a-credential: constant-time login padding').catch(
+    (cause: unknown) => {
+      paddingHashPromise = undefined;
+      throw cause instanceof Error ? cause : new Error(String(cause));
+    },
+  );
   return paddingHashPromise;
 }
 
@@ -130,6 +139,7 @@ async function rotateFamilyTip(
     const tip = await prisma.session.findFirst({
       where: { familyId, rotatedAt: null, revokedAt: null },
       orderBy: { createdAt: 'desc' },
+      select: { id: true, userId: true, refreshExpiresAt: true },
     });
 
     // Nenhuma ponta viva (família revogada, ou toda rotacionada por uma corrida
@@ -193,10 +203,15 @@ export async function login(input: LoginParams): Promise<IssuedSession> {
 
   // Confere a senha em todos os caminhos — inclusive contra um hash de descarte
   // quando o e-mail não existe — para o tempo de resposta não denunciar a conta.
-  const passwordMatches = await verifyPassword(
-    password,
-    user?.passwordHash ?? (await paddingHash()),
-  );
+  // Qualquer falha do KDF (do hash de padding ou da verificação) resolve como
+  // "não confere": fail secure (§6.3) — nega com a recusa genérica, nunca deixa
+  // virar 500, que distinguiria e-mail inexistente de senha errada.
+  let passwordMatches: boolean;
+  try {
+    passwordMatches = await verifyPassword(password, user?.passwordHash ?? (await paddingHash()));
+  } catch {
+    passwordMatches = false;
+  }
 
   if (user === null || !passwordMatches || user.disabledAt !== null) {
     recordAuthEvent({
@@ -240,20 +255,37 @@ export async function login(input: LoginParams): Promise<IssuedSession> {
 }
 
 /**
+ * Cliente Prisma que `resolveAccessSession` usa. O default é o singleton de
+ * produção; um teste pode injetar um client com `log: [{ level: 'query' }]` para
+ * fixar a contagem de idas ao banco (§10 do perfil — caminho por requisição).
+ */
+type SessionReader = Pick<typeof prisma, 'session'>;
+
+/**
  * Resolve a identidade de uma requisição a partir da credencial de acesso. É o
- * que o middleware chama a cada requisição: consulta por hash, e devolve `null`
- * — nunca lança — se o token não existe, a sessão expirou ou foi revogada, ou a
- * conta dona está desativada (FR-002-007).
+ * que o middleware chama a cada requisição: **uma** consulta por hash (LATERAL
+ * JOIN com `User` via `relationLoadStrategy: 'join'`, `select` explícito — nunca
+ * `passwordHash` nem coluna não usada), e devolve `null` — nunca lança — se o
+ * token não existe, a sessão expirou ou foi revogada, ou a conta dona está
+ * desativada (FR-002-007).
  */
 export async function resolveAccessSession(
   accessToken: string,
   now: Date,
+  db: SessionReader = prisma,
 ): Promise<AuthContext | null> {
   if (!accessToken) return null;
 
-  const session = await prisma.session.findUnique({
+  const session = await db.session.findUnique({
     where: { accessTokenHash: hashToken(accessToken) },
-    include: { user: true },
+    relationLoadStrategy: 'join',
+    select: {
+      id: true,
+      userId: true,
+      revokedAt: true,
+      accessExpiresAt: true,
+      user: { select: { role: true, disabledAt: true } },
+    },
   });
 
   if (session === null) return null;
@@ -279,10 +311,22 @@ export async function refresh(
 
   const session = await prisma.session.findUnique({
     where: { refreshTokenHash: hashToken(refreshToken) },
-    include: { user: true },
+    relationLoadStrategy: 'join',
+    select: {
+      familyId: true,
+      userId: true,
+      rotatedAt: true,
+      revokedAt: true,
+      refreshExpiresAt: true,
+      user: { select: { id: true, name: true, email: true, role: true, disabledAt: true } },
+    },
   });
 
   if (session === null) throw new UnauthorizedError();
+
+  // Conta desativada não renova — mesma recusa genérica de `login` e
+  // `resolveAccessSession`, sem distinguir o motivo (enumeração).
+  if (session.user.disabledAt !== null) throw new UnauthorizedError();
 
   const decision = decideRefresh(
     {
@@ -348,6 +392,7 @@ export async function logout(
   const now = new Date();
   const session = await prisma.session.findUnique({
     where: { refreshTokenHash: hashToken(refreshToken) },
+    select: { familyId: true, userId: true },
   });
 
   if (session === null) return;
