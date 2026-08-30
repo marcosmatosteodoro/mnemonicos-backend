@@ -29,8 +29,14 @@ import { loginRateLimiters } from './login-rate-limit';
  * protegidas e verifica `Origin`/`Host` nas rotas POST que mudam estado. Sem
  * `try/catch`: o Express 5 encaminha a rejeição ao `errorHandler`.
  *
- * A montagem em `apiRoutes` (ordem × `requireAuth`, allowlist pública,
- * `sealRouteRoles()`) é de TASK-003-011.
+ * As rotas são expostas em dois sub-routers para a montagem plana de TASK-003-011:
+ * `publicAuthRoutes` (`POST /auth/login`, `POST /auth/refresh`) entra **antes** de
+ * `requireAuth`; `protectedAuthRoutes` (`POST /auth/logout`,
+ * `POST /auth/change-password`, `GET /auth/me`) entra **depois**. `authRoutes`
+ * combina os dois — a superfície que os harnesses de teste montam atrás de um
+ * único `requireAuth` (as públicas seguem pela allowlist de `requireAuth`). A
+ * ordem × `requireAuth`, a allowlist pública e o `sealRouteRoles()` são de
+ * TASK-003-011.
  */
 
 const MS_PER_MINUTE = 60_000;
@@ -120,7 +126,18 @@ function clearSessionCookies(res: Response): void {
   res.clearCookie(REFRESH_COOKIE, refreshCookieOptions());
 }
 
-export const authRoutes = Router();
+/**
+ * Rotas públicas de sessão — entram **antes** de `requireAuth` na árvore de
+ * TASK-003-011 (e estão em `PUBLIC_PATH_ALLOWLIST`).
+ */
+export const publicAuthRoutes = Router();
+
+/**
+ * Rotas de auth que exigem sessão — entram **depois** de `requireAuth`. Cada uma
+ * declara seu par método+caminho em `ROUTE_ROLES` via `requireRole(...)` na
+ * montagem.
+ */
+export const protectedAuthRoutes = Router();
 
 /**
  * POST /auth/login — pública (em `PUBLIC_PATH_ALLOWLIST`; precedida pelos freios
@@ -128,7 +145,7 @@ export const authRoutes = Router();
  * (sem valor de token — NFR-002-004). Credencial inválida → `login` lança
  * `UnauthorizedError` genérico, que o `errorHandler` traduz em 401.
  */
-authRoutes.post('/auth/login', verifyOrigin, ...loginRateLimiters, async (req, res) => {
+publicAuthRoutes.post('/auth/login', verifyOrigin, ...loginRateLimiters, async (req, res) => {
   const credentials = loginSchema.parse(req.body);
   const issued = await login({ ...credentials, ...requestOrigin(req) });
   setSessionCookies(res, issued);
@@ -140,7 +157,7 @@ authRoutes.post('/auth/login', verifyOrigin, ...loginRateLimiters, async (req, r
  * dois cookies. Token ausente/inválido/reusado → `refresh` lança
  * `UnauthorizedError` (mesma recusa genérica do login).
  */
-authRoutes.post('/auth/refresh', verifyOrigin, async (req, res) => {
+publicAuthRoutes.post('/auth/refresh', verifyOrigin, async (req, res) => {
   const issued = await refresh(readCookie(req, REFRESH_COOKIE), requestOrigin(req), new Date());
   setSessionCookies(res, issued);
   res.json(issued.user);
@@ -152,7 +169,7 @@ authRoutes.post('/auth/refresh', verifyOrigin, async (req, res) => {
  * limpa os dois cookies; token ausente → `logout` é no-op e os cookies são
  * limpos de todo modo.
  */
-authRoutes.post(
+protectedAuthRoutes.post(
   '/auth/logout',
   verifyOrigin,
   requireRole('POST', '/auth/logout', 'EDITOR', 'ADMIN'),
@@ -168,7 +185,7 @@ authRoutes.post(
  * resolvida (`req.auth`), nunca do corpo (NFR-002-002). Senha atual errada →
  * `changeOwnPassword` lança `UnauthorizedError` sem alterar nada.
  */
-authRoutes.post(
+protectedAuthRoutes.post(
   '/auth/change-password',
   verifyOrigin,
   requireRole('POST', '/auth/change-password', 'EDITOR', 'ADMIN'),
@@ -185,9 +202,23 @@ authRoutes.post(
  * `{id,name,email,role}` da conta da sessão; conta desativada no meio da sessão
  * → `null` → 401.
  */
-authRoutes.get('/auth/me', requireRole('GET', '/auth/me', 'EDITOR', 'ADMIN'), async (req, res) => {
-  if (req.auth === undefined) throw new UnauthorizedError();
-  const sessionUser = await getSessionUser(req.auth.userId);
-  if (sessionUser === null) throw new UnauthorizedError();
-  res.json(sessionUser);
-});
+protectedAuthRoutes.get(
+  '/auth/me',
+  requireRole('GET', '/auth/me', 'EDITOR', 'ADMIN'),
+  async (req, res) => {
+    if (req.auth === undefined) throw new UnauthorizedError();
+    const sessionUser = await getSessionUser(req.auth.userId);
+    if (sessionUser === null) throw new UnauthorizedError();
+    res.json(sessionUser);
+  },
+);
+
+/**
+ * Router combinado — `publicAuthRoutes` + `protectedAuthRoutes` na mesma
+ * superfície. A montagem de produção (TASK-003-011) usa os dois sub-routers
+ * separados pela barreira; este combinado serve os harnesses de teste que montam
+ * auth atrás de um único `requireAuth`.
+ */
+export const authRoutes = Router();
+authRoutes.use(publicAuthRoutes);
+authRoutes.use(protectedAuthRoutes);
