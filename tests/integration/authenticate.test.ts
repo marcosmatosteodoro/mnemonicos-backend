@@ -351,12 +351,15 @@ describe('[retry] MUT-B — precedência 401 antes de 403 no par que coincide', 
   });
 });
 
-describe('[retry] MUT-F — isPublicPath por igualdade exata, nunca prefixo', () => {
+describe('[retry] MUT-F — isPublicPath por igualdade exata do par método+caminho, nunca prefixo', () => {
   it('caminhos que só compartilham prefixo com a allowlist não são públicos', () => {
-    expect(isPublicPath('/auth/login-como-admin')).toBe(false);
-    expect(isPublicPath('/health/db-dump')).toBe(false);
-    expect(isPublicPath('/health')).toBe(true);
-    expect(isPublicPath('/auth/login')).toBe(true);
+    expect(isPublicPath('GET', '/auth/login-como-admin')).toBe(false);
+    expect(isPublicPath('GET', '/health/db-dump')).toBe(false);
+    expect(isPublicPath('GET', '/health')).toBe(true);
+    expect(isPublicPath('POST', '/auth/login')).toBe(true);
+    // método fora do par declarado não é público (EMENDA DEC-003-005 Wave 6)
+    expect(isPublicPath('POST', '/health')).toBe(false);
+    expect(isPublicPath('GET', '/auth/login')).toBe(false);
   });
 
   it('requisição sem cookie a /auth/login-como-admin e /health/db-dump → 401 (não escapam pela allowlist)', async () => {
@@ -385,11 +388,15 @@ describe('AC-002-010: rota não-pública sem sessão + allowlist pública', () =
     expect(reached).not.toHaveBeenCalled();
   });
 
-  it('cada caminho de PUBLIC_PATH_ALLOWLIST responde 200 sem cookie e sem resolver sessão', async () => {
-    const { app, reached } = buildApp(PUBLIC_PATH_ALLOWLIST.map((path) => ({ path })));
+  it('cada par de PUBLIC_PATH_ALLOWLIST responde 200 sem cookie e sem resolver sessão', async () => {
+    const specs = PUBLIC_PATH_ALLOWLIST.map((entry) => {
+      const [method, path] = entry.split(' ') as [HttpMethod, string];
+      return { method, path };
+    });
+    const { app, reached } = buildApp(specs);
 
-    for (const path of PUBLIC_PATH_ALLOWLIST) {
-      const res = await request(app).get(path);
+    for (const { method, path } of specs) {
+      const res = await (method === 'GET' ? request(app).get(path) : request(app).post(path));
       expect(res.status).toBe(200);
     }
 
@@ -397,12 +404,12 @@ describe('AC-002-010: rota não-pública sem sessão + allowlist pública', () =
     expect(mockResolve).not.toHaveBeenCalled();
   });
 
-  it('PUBLIC_PATH_ALLOWLIST é exatamente os quatro caminhos previstos', () => {
+  it('PUBLIC_PATH_ALLOWLIST é exatamente os quatro pares previstos', () => {
     expect([...PUBLIC_PATH_ALLOWLIST].sort()).toEqual([
-      '/auth/login',
-      '/auth/refresh',
-      '/health',
-      '/health/db',
+      'GET /health',
+      'GET /health/db',
+      'POST /auth/login',
+      'POST /auth/refresh',
     ]);
   });
 });

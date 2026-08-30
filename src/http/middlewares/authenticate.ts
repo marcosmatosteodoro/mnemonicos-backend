@@ -12,7 +12,7 @@ import { rolesForPath } from '../route-roles';
  * Barreira de autenticação, deny-by-default (DEC-003-005 · §6.3 do perfil).
  * Montada em `apiRoutes` **antes** de qualquer router protegido (TASK-003-011).
  *
- * 1. Caminho em `PUBLIC_PATH_ALLOWLIST` → segue sem tocar sessão.
+ * 1. Par `req.method`+`req.path` em `PUBLIC_PATH_ALLOWLIST` → segue sem tocar sessão.
  * 2. Senão resolve a sessão pelo cookie `ACCESS_COOKIE`, no servidor, a cada
  *    requisição — `now` é `new Date()` do servidor, nunca de header/query. Não
  *    resolveu (ou o cookie falta / não é string) → 401, e nada da rota roda.
@@ -32,7 +32,7 @@ import { rolesForPath } from '../route-roles';
  * continua executando com a requisição já negada (§6.3).
  */
 export const requireAuth: RequestHandler = async (req, _res, next) => {
-  if (isPublicPath(req.path)) {
+  if (isPublicPath(req.method, req.path)) {
     next();
     return;
   }

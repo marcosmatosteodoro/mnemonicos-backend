@@ -63,7 +63,7 @@ const app = createApp();
 
 /** Rotas concretas da árvore montada — derivadas de `apiRoutes.stack`, nunca hard-coded. */
 const ROUTES: MountedRoute[] = collectRoutes(apiRoutes);
-const NON_PUBLIC = ROUTES.filter((route) => !isPublicPath(route.path));
+const NON_PUBLIC = ROUTES.filter((route) => !isPublicPath(route.method, route.path));
 const MUTATION_METHODS: ReadonlySet<HttpMethod> = new Set(['POST', 'PATCH', 'PUT', 'DELETE']);
 
 /**
@@ -261,14 +261,32 @@ describe('EMENDA DEC-003-005 — chave EXATA "<MÉTODO> <caminho>" para toda rot
   });
 });
 
-describe('[herdado] PUBLIC_PATH_ALLOWLIST — exatamente os quatro caminhos previstos', () => {
-  it('[...PUBLIC_PATH_ALLOWLIST].sort() é os 4 caminhos, e crescer exige mudança deliberada', () => {
+describe('[retry S4] PUBLIC_PATH_ALLOWLIST — pares "<MÉTODO> <caminho>" método-aware (EMENDA DEC-003-005 Wave 6)', () => {
+  it('[...PUBLIC_PATH_ALLOWLIST].sort() é exatamente os 4 pares previstos, e crescer exige mudança deliberada', () => {
     expect([...PUBLIC_PATH_ALLOWLIST].sort()).toEqual([
-      '/auth/login',
-      '/auth/refresh',
-      '/health',
-      '/health/db',
+      'GET /health',
+      'GET /health/db',
+      'POST /auth/login',
+      'POST /auth/refresh',
     ]);
+  });
+
+  it('isPublicPath casa o par exato: o método errado no caminho certo NÃO é público', () => {
+    expect(isPublicPath('GET', '/health')).toBe(true);
+    expect(isPublicPath('GET', '/health/db')).toBe(true);
+    expect(isPublicPath('POST', '/auth/login')).toBe(true);
+    expect(isPublicPath('POST', '/auth/refresh')).toBe(true);
+
+    // método fora do par declarado → cai na barreira
+    expect(isPublicPath('DELETE', '/health')).toBe(false);
+    expect(isPublicPath('POST', '/health')).toBe(false);
+    expect(isPublicPath('GET', '/auth/login')).toBe(false);
+    expect(isPublicPath('GET', '/auth/refresh')).toBe(false);
+  });
+
+  it('DELETE /api/v1/health (método fora do par público) não escapa pela allowlist → 401, não 404', async () => {
+    const res = await request(app).delete('/api/v1/health');
+    expect(res.status).toBe(401);
   });
 
   it('as rotas públicas de auth ficam só na allowlist — nunca em ROUTE_ROLES', () => {
@@ -407,5 +425,82 @@ describe('AC-002-014 — rota sem declaração de papel nasce negada (falha fech
     // undefined` reabriria exatamente este caminho.
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ leaked: true });
+  });
+});
+
+describe('[retry S4] assertDenyByDefault — ordem de montagem × PUBLIC_PATH_ALLOWLIST método-aware (EMENDA DEC-003-005 Wave 6)', () => {
+  it('rota GET /auth/login (par ∉ allowlist) montada ANTES de requireAuth → o boot LANÇA', () => {
+    resetRouteRoles();
+    const api = Router();
+    api.get('/auth/login', (_req, res) => res.json({ leaked: true }));
+    api.use(requireAuth);
+    api.get('/auth/me', requireRole('GET', '/auth/me', 'EDITOR', 'ADMIN'), (_req, res) =>
+      res.json({ ok: true }),
+    );
+
+    expect(() => assertDenyByDefault(api)).toThrow(/GET \/auth\/login/);
+  });
+
+  it('rota declarada em ROUTE_ROLES porém não-pública, montada ANTES de requireAuth → o boot LANÇA (checagem de ordem, não de declaração)', () => {
+    resetRouteRoles();
+    declareRouteRoles('GET', '/relatorios', ['EDITOR', 'ADMIN']);
+    const api = Router();
+    // Tem chave exata em ROUTE_ROLES — passa a checagem de declaração —, mas
+    // escapa da barreira por estar montada antes dela sem ser par público.
+    api.get('/relatorios', (_req, res) => res.json({ leaked: true }));
+    api.use(requireAuth);
+
+    expect(() => assertDenyByDefault(api)).toThrow(
+      /antes de requireAuth fora de PUBLIC_PATH_ALLOWLIST/,
+    );
+    expect(() => assertDenyByDefault(api)).toThrow(/GET \/relatorios/);
+  });
+
+  it('par público correto (POST /auth/refresh) montado DEPOIS de requireAuth → o boot LANÇA', () => {
+    resetRouteRoles();
+    const api = Router();
+    api.use(requireAuth);
+    api.post('/auth/refresh', (_req, res) => res.json({ ok: true }));
+
+    expect(() => assertDenyByDefault(api)).toThrow(/depois de requireAuth/);
+    expect(() => assertDenyByDefault(api)).toThrow(/POST \/auth\/refresh/);
+  });
+
+  it('par público correto (POST /auth/login) montado ANTES de requireAuth, resto declarado → o boot ACEITA', () => {
+    resetRouteRoles();
+    const api = Router();
+    api.post('/auth/login', (_req, res) => res.json({ ok: true }));
+    api.use(requireAuth);
+    api.get('/auth/me', requireRole('GET', '/auth/me', 'EDITOR', 'ADMIN'), (_req, res) =>
+      res.json({ ok: true }),
+    );
+
+    expect(() => assertDenyByDefault(api)).not.toThrow();
+  });
+});
+
+describe('[retry CR1] assertDenyByDefault tem teste de WIRING — armamento no boot, não só de função', () => {
+  afterEach(() => {
+    jest.dontMock('../../src/modules/disciplines/disciplines.routes');
+  });
+
+  it('reimportar a árvore de montagem (routes.ts) com uma rota não-pública sem declaração exata → a carga do módulo LANÇA', async () => {
+    // Fecho falsificável (espelha o wiring de sealRouteRoles): comentar a linha
+    // `assertDenyByDefault(apiRoutes);` de routes.ts deixa ESTE teste vermelho —
+    // hoje a linha some sem quebrar nada, a suíte fica verde.
+    await expect(
+      jest.isolateModulesAsync(async () => {
+        jest.doMock('../../src/modules/disciplines/disciplines.routes', () => {
+          const rogue = Router();
+          // não-pública, montada sem requireRole → sem chave "GET /rogue" em ROUTE_ROLES
+          rogue.get('/rogue', (_req, res) => res.json({ leaked: true }));
+          return { disciplinesRoutes: rogue };
+        });
+
+        // `.js` explícito: `import()` num módulo CJS segue a resolução ESM do
+        // nodenext (o `moduleNameMapper` do Jest reescreve para o `.ts`).
+        await import('../../src/http/routes.js');
+      }),
+    ).rejects.toThrow(/GET \/rogue/);
   });
 });

@@ -5,7 +5,7 @@ import { disciplinesRoutes } from '../modules/disciplines/disciplines.routes';
 import { healthRoutes } from '../modules/health/health.routes';
 import { usersRoutes } from '../modules/users/users.routes';
 import { requireAuth } from './middlewares/authenticate';
-import { isPublicPath } from './public-paths';
+import { isPublicPath, PUBLIC_PATH_ALLOWLIST } from './public-paths';
 import { ROUTE_ROLES, sealRouteRoles, type HttpMethod } from './route-roles';
 
 /**
@@ -69,46 +69,109 @@ function visit(node: unknown, out: MountedRoute[]): void {
   if (!Array.isArray(stack)) return;
 
   for (const layer of stack as Array<Record<string, unknown>>) {
-    const route = layer.route as
-      | { path: string; methods: Record<string, boolean>; stack: Array<{ handle: unknown }> }
-      | undefined;
+    visitLayer(layer, out);
+  }
+}
 
-    if (route !== undefined) {
-      for (const [method, enabled] of Object.entries(route.methods)) {
-        if (!enabled) continue;
-        out.push({
-          method: method.toUpperCase() as HttpMethod,
-          path: route.path,
-          handlers: route.stack.map((entry) => entry.handle),
-        });
-      }
-      continue;
-    }
+/** Rotas concretas de uma única camada do `stack` — rota direta ou sub-router sem prefixo. */
+function visitLayer(layer: Record<string, unknown>, out: MountedRoute[]): void {
+  const route = layer.route as
+    | { path: string; methods: Record<string, boolean>; stack: Array<{ handle: unknown }> }
+    | undefined;
 
-    // Sub-router montado sem prefixo → a pilha dele já carrega os caminhos completos.
-    const handle = layer.handle;
-    if (handle !== undefined && Array.isArray((handle as { stack?: unknown[] }).stack)) {
-      visit(handle, out);
+  if (route !== undefined) {
+    for (const [method, enabled] of Object.entries(route.methods)) {
+      if (!enabled) continue;
+      out.push({
+        method: method.toUpperCase() as HttpMethod,
+        path: route.path,
+        handlers: route.stack.map((entry) => entry.handle),
+      });
     }
+    return;
+  }
+
+  // Sub-router montado sem prefixo → a pilha dele já carrega os caminhos completos.
+  const handle = layer.handle;
+  if (handle !== undefined && Array.isArray((handle as { stack?: unknown[] }).stack)) {
+    visit(handle, out);
   }
 }
 
 /**
- * Recusa o boot se alguma rota não-pública montada não tiver declaração
- * **exata** `"<MÉTODO> <caminho-completo>"` em `ROUTE_ROLES` (DEC-003-005 EMENDA
- * — fecha o resíduo em que `rolesForPath` casaria uma irmã estática contra o
- * `:param` do vizinho do mesmo método). "Rota nova nasce protegida" passa a ser
- * verificável no boot, não só na suíte de conformidade.
+ * Pares `"<MÉTODO> <caminho>"` das rotas montadas **antes** da camada `requireAuth`
+ * no `stack` de `router` — as que, de fato, dispensam a barreira. `barrierFound`
+ * distingue "nada antes da barreira" de "barreira ausente".
+ */
+function routesBeforeBarrier(router: unknown): { pairs: Set<string>; barrierFound: boolean } {
+  const stack = (router as { stack?: unknown[] }).stack;
+  const pairs = new Set<string>();
+  let barrierFound = false;
+
+  if (Array.isArray(stack)) {
+    for (const layer of stack as Array<Record<string, unknown>>) {
+      if ((layer as { handle?: unknown }).handle === requireAuth) {
+        barrierFound = true;
+        break;
+      }
+      const bucket: MountedRoute[] = [];
+      visitLayer(layer, bucket);
+      for (const route of bucket) pairs.add(`${route.method} ${route.path}`);
+    }
+  }
+
+  return { pairs, barrierFound };
+}
+
+/**
+ * Recusa o boot se a árvore montada viola o deny-by-default (DEC-003-005 +
+ * EMENDA da Wave 6). Três condições, cada uma fail-closed:
+ *
+ *   1. rota não-pública sem declaração **exata** `"<MÉTODO> <caminho>"` em
+ *      `ROUTE_ROLES` — fecha o resíduo em que `rolesForPath` casaria uma irmã
+ *      estática contra o `:param` do vizinho do mesmo método;
+ *   2. rota montada **antes** de `requireAuth` cujo par **não** está em
+ *      `PUBLIC_PATH_ALLOWLIST` — ela escaparia da barreira sem ser uma exceção
+ *      declarada (a allowlist é método-aware desde a EMENDA da Wave 6:
+ *      `GET /auth/login` montada antes da barreira não é `POST /auth/login`);
+ *   3. par de `PUBLIC_PATH_ALLOWLIST` que corresponde a uma rota montada mas está
+ *      **depois** de `requireAuth` — a exceção declarada tem de estar onde a
+ *      ordem de montagem a torna efetiva.
+ *
+ * "Rota nova nasce protegida" passa a ser verificável no boot, não só na suíte
+ * de conformidade.
  */
 export function assertDenyByDefault(router: unknown): void {
-  const undeclared = collectRoutes(router)
-    .filter((route) => !isPublicPath(route.path))
+  const mounted = collectRoutes(router);
+
+  const undeclared = mounted
+    .filter((route) => !isPublicPath(route.method, route.path))
     .filter((route) => !ROUTE_ROLES.has(`${route.method} ${route.path}`))
     .map((route) => `${route.method} ${route.path}`);
 
   if (undeclared.length > 0) {
     throw new Error(
       `Montagem deny-by-default: rota(s) não-pública(s) sem declaração exata em ROUTE_ROLES: ${undeclared.join(', ')}`,
+    );
+  }
+
+  const allowlist = PUBLIC_PATH_ALLOWLIST as readonly string[];
+  const { pairs: beforeBarrier } = routesBeforeBarrier(router);
+
+  const escapesBarrier = [...beforeBarrier].filter((pair) => !allowlist.includes(pair));
+  if (escapesBarrier.length > 0) {
+    throw new Error(
+      `Montagem deny-by-default: rota(s) montada(s) antes de requireAuth fora de PUBLIC_PATH_ALLOWLIST: ${escapesBarrier.join(', ')}`,
+    );
+  }
+
+  const mountedPairs = new Set(mounted.map((route) => `${route.method} ${route.path}`));
+  const publicBehindBarrier = allowlist.filter(
+    (pair) => mountedPairs.has(pair) && !beforeBarrier.has(pair),
+  );
+  if (publicBehindBarrier.length > 0) {
+    throw new Error(
+      `Montagem deny-by-default: par(es) de PUBLIC_PATH_ALLOWLIST montado(s) depois de requireAuth: ${publicBehindBarrier.join(', ')}`,
     );
   }
 }
