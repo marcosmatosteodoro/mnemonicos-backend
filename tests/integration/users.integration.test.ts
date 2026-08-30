@@ -720,8 +720,9 @@ describe('itens do Inclui sem AC: userIdParamSchema e listUsersQuerySchema exerc
 });
 
 // ---------------------------------------------------------------------------
-// Provas de mutação dos ramos de `users/`: cada `describe [retry ...]` casa um
-// item dos Critérios de pronto e mata um mutante nomeado.
+// Ramos de `src/modules/users/` cuja prova depende da base montada na fronteira
+// da invariante (guarda do último ADMIN, par de guards que coincide) ou de
+// concorrência real sobre o Postgres.
 // ---------------------------------------------------------------------------
 
 describe('[retry F1] não-vazamento provado NO PONTO DA CONSULTA (não só na resposta)', () => {
@@ -832,61 +833,69 @@ describe('[retry F3] ramos de disableUser / resetUserPassword sem caso no 1º pa
 });
 
 describe('[retry S1] guarda do último ADMIN fecha NA ESCRITA (não check-then-act)', () => {
-  it('N disableUser concorrentes do MESMO penúltimo ADMIN → uma só escrita real (revokeAllSessionsOp 1×), rejeições só ConflictError, e sobra ≥ 1 ADMIN ativo', async () => {
-    // Fronteira da invariante: exatamente 2 ADMINs ativos e as N chamadas miram o
-    // MESMO alvo. Sob a guarda-na-escrita (`$transaction` Serializable) uma única
-    // transação grava a desativação; as concorrentes ou colidem na serialização
-    // (→ ConflictError, fail-closed) ou chegam depois e são no-op. `disabledAt`
-    // e a revogação são gravados uma vez só — a da escrita que venceu.
+  it('N desativações concorrentes do penúltimo ADMIN → exatamente 1 aplica, as N-1 restantes são recusadas com ConflictError e sobra ≥ 1 ADMIN ativo', async () => {
+    // Fronteira da invariante FR-002-019: exatamente 2 ADMINs ativos e as N
+    // chamadas miram o MESMO alvo (o penúltimo ativo). Com a guarda fechando na
+    // escrita — contagem, leitura do alvo e `update` na mesma transação
+    // `Serializable` — só uma transação serializa até o commit; as demais leem o
+    // mesmo estado "2 ativos", tentam gravar o alvo e o Postgres aborta com falha
+    // de serialização, que `disableUser` converte em `ConflictError` (fail-closed).
+    // Partição determinística: 1 resolve, N-1 rejeitam, nunca 0 ADMIN ativo.
     //
-    // check-then-act (`count` fora da transação, `$transaction([update, revoke])`)
-    // deixa as N chamadas gravarem no mesmo alvo → revokeAllSessionsOp N×;
-    // `isolationLevel: 'ReadCommitted'` idem (o update bloqueado prossegue sem
-    // abortar após o commit concorrente). Como o alvo tem um par ADMIN, `>= 1`
-    // não separa esses casos — só a contagem de escritas reais separa.
+    // Sob check-then-act (`count` fora da transação, `$transaction([update,
+    // revoke])`) ou sob `ReadCommitted` nenhuma transação aborta: as N gravam no
+    // mesmo alvo e todas resolvem — 0 rejeição. A contagem de ativos sozinha não
+    // separa os casos (o par ADMIN nunca é tocado, então fica sempre em 1); a
+    // partição resolve/rejeita é o que separa.
     const target = await createUser({ email: 's1-target@example.com', role: 'ADMIN' });
     await createUser({ email: 's1-spare@example.com', role: 'ADMIN' });
 
-    const revokeSpy = jest.spyOn(sessionRevocation, 'revokeAllSessionsOp');
+    const N = 5;
+    // Pré-aquece N conexões do pool para que os N `BEGIN` cheguem ao Postgres
+    // sobrepostos: sem isso o pool poderia atender as chamadas em fila e uma
+    // leitura tardia veria o alvo já desativado (no-op resolvendo, não conflito).
+    await Promise.all(Array.from({ length: N }, () => prisma.$queryRaw`SELECT 1`));
 
-    const N = 4;
     const settled = await Promise.allSettled(
       Array.from({ length: N }, () => disableUser(target.id)),
     );
 
-    // Uma única escrita real da desativação — não N. Só a transação vencedora
-    // chega a `revokeAllSessionsOp`; quem colide aborta antes, quem chega tarde
-    // faz no-op antes.
-    expect(revokeSpy).toHaveBeenCalledTimes(1);
-
-    // Nenhuma corrida perdida vaza como erro cru: quem não gravou ou fez no-op
-    // (resolve) ou recusou fail-closed com ConflictError.
+    const fulfilled = settled.filter((result) => result.status === 'fulfilled');
     const rejected = settled.filter(
       (result): result is PromiseRejectedResult => result.status === 'rejected',
     );
+
+    // Exatamente uma corrida grava a desativação; as outras N-1 são recusadas,
+    // e só como ConflictError — nenhuma vaza como erro cru (500).
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(N - 1);
     expect(rejected.every((r) => r.reason instanceof ConflictError)).toBe(true);
 
-    // A guarda do último ADMIN nunca é ultrapassada.
-    const adminsAtivosRestantes = await testPrisma.user.count({
+    // A invariante nunca é ultrapassada: o par ADMIN continua ativo.
+    const adminsAtivos = await testPrisma.user.count({
       where: { role: 'ADMIN', disabledAt: null },
     });
-    expect(adminsAtivosRestantes).toBeGreaterThanOrEqual(1);
+    expect(adminsAtivos).toBeGreaterThanOrEqual(1);
 
-    // O alvo terminou desativado — a escrita vencedora aplicou.
+    // O alvo terminou desativado — a corrida vencedora aplicou.
     const targetAfter = await testPrisma.user.findUniqueOrThrow({ where: { id: target.id } });
     expect(targetAfter.disabledAt).not.toBeNull();
   });
 });
 
-describe('disableUser — precedência dos guards: conta já desativada vs. último ADMIN ativo', () => {
+describe('disableUser — precedência dos guards: conta já desativada vence a guarda do último ADMIN', () => {
   it('conta ADMIN já desativada vence a guarda do último ADMIN — no-op, marca preservada, sem ConflictError', async () => {
-    // Par alcançável: o alvo é um ADMIN JÁ desativado e resta 1 único ADMIN ativo
-    // (≠ o alvo, que não entra na contagem de ativos). As duas guardas de
-    // `disableUser` valem ao mesmo tempo — `disabledAt !== null` e
-    // `role === 'ADMIN' && activeAdmins <= 1` —, e a de no-op precede: trocar a
-    // ordem devolveria 409 sobre uma conta que já está inativa.
+    // Par de guards que coincide e é alcançável: o alvo é um ADMIN que JÁ está
+    // desativado (`disabledAt !== null`) e resta só 1 ADMIN ativo — que não é o
+    // alvo, logo `count(role=ADMIN, disabledAt=null) === 1` e a guarda do último
+    // ADMIN também dispararia. Na ordem correta o ramo no-op precede: desativar
+    // quem já está desativado não é conflito. Trocar a ordem devolve 409 sobre
+    // uma conta que já está inativa.
     const originalDisabledAt = new Date('2019-06-01T12:00:00.000Z');
-    await createUser({ email: 'unico-admin-ativo@example.com', role: 'ADMIN' });
+    const activeAdmin = await createUser({
+      email: 'unico-admin-ativo@example.com',
+      role: 'ADMIN',
+    });
     const alreadyDisabledAdmin = await createUser({
       email: 'admin-ja-desativado@example.com',
       role: 'ADMIN',
@@ -895,10 +904,17 @@ describe('disableUser — precedência dos guards: conta já desativada vs. últ
 
     await expect(disableUser(alreadyDisabledAdmin.id)).resolves.toBeUndefined();
 
-    const after = await testPrisma.user.findUniqueOrThrow({
+    // O no-op não re-carimba: a marca temporal original é preservada.
+    const targetAfter = await testPrisma.user.findUniqueOrThrow({
       where: { id: alreadyDisabledAdmin.id },
     });
-    expect(after.disabledAt?.getTime()).toBe(originalDisabledAt.getTime());
+    expect(targetAfter.disabledAt?.getTime()).toBe(originalDisabledAt.getTime());
+
+    // O único ADMIN ativo segue ativo — nada foi tocado.
+    const activeAfter = await testPrisma.user.findUniqueOrThrow({
+      where: { id: activeAdmin.id },
+    });
+    expect(activeAfter.disabledAt).toBeNull();
   });
 });
 
