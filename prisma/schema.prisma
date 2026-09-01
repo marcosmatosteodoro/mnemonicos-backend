@@ -45,6 +45,27 @@ enum ReviewRating {
   EASY
 }
 
+/// Classe do radar de prova: as cinco classes da TAP (§3.2 camada 1), dado
+/// persistido no Conteúdo bruto. As três prioridades de apresentação
+/// (Alta/Média/Baixa) são derivação de tela, não coluna (DEC-006-009).
+enum ProofRadarClass {
+  ALTA
+  MEDIA
+  DETALHE
+  EXCECAO
+  PEGADINHA
+}
+
+/// Gênero da fonte normativa embutida no Conteúdo bruto (DEC-006-002).
+enum NormativeSourceType {
+  CF
+  CTN
+  LEI
+  LEI_COMPLEMENTAR
+  SUMULA
+  ATO_NORMATIVO
+}
+
 model User {
   id String @id @default(uuid(7))
 
@@ -64,6 +85,9 @@ model User {
   cardStates CardState[]
   reviews    Review[]
   sessions   Session[]
+
+  rawContents       RawContent[] @relation("RawContentAuthor")
+  editedRawContents RawContent[] @relation("RawContentLastEditor")
 
   @@map("users")
 }
@@ -129,8 +153,9 @@ model Topic {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  mnemonics  Mnemonic[]
-  flashcards Flashcard[]
+  mnemonics   Mnemonic[]
+  flashcards  Flashcard[]
+  rawContents RawContent[]
 
   @@unique([disciplineId, slug])
   @@map("topics")
@@ -229,4 +254,69 @@ model Review {
   @@index([userId, reviewedAt])
   @@index([flashcardId])
   @@map("reviews")
+}
+
+/// Texto normativo colado + disciplina/tema + classe do radar de prova — a
+/// primeira estação da linha de produção. A fonte normativa fica embutida em
+/// colunas opcionais (DEC-006-002); `deletedAt` marca remoção reversível, dados
+/// preservados para expurgo futuro (DEC-006-001).
+model RawContent {
+  id String @id @default(uuid(7))
+
+  topicId String
+  topic   Topic  @relation(fields: [topicId], references: [id], onDelete: Restrict)
+
+  /// Autoria original, imutável na edição (FR-005-013). Restrict: apagar um autor
+  /// com conteúdo produzido fica bloqueado até F8 definir expurgo (DEC-006-008).
+  authorId String
+  author   User   @relation("RawContentAuthor", fields: [authorId], references: [id], onDelete: Restrict)
+
+  rawText    String
+  radarClass ProofRadarClass
+
+  sourceType     NormativeSourceType?
+  sourceCitation String?
+  sourceUrl      String?
+
+  /// Carimbo de última alteração (quem/quando), sem trilha histórica. SetNull:
+  /// é referência fraca, não vínculo forte (DEC-006-008).
+  lastEditedById String?
+  lastEditedBy   User?     @relation("RawContentLastEditor", fields: [lastEditedById], references: [id], onDelete: SetNull)
+  lastEditedAt   DateTime?
+
+  /// null = ativo. Todo caminho de leitura do service filtra `deletedAt: null`.
+  deletedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  breakdown RuleBreakdown?
+
+  @@index([authorId])
+  @@index([topicId])
+  @@index([deletedAt])
+  @@map("raw_contents")
+}
+
+/// Decomposição do texto normativo nos cinco blocos + síntese; 1:1 com o
+/// Conteúdo bruto (FK `@unique`). Não tem `deletedAt` própria — herda a
+/// inalcançabilidade do pai (DEC-006-001). Cascade só age sob eventual
+/// hard-delete futuro; a remoção de F2 é soft (DEC-006-008).
+model RuleBreakdown {
+  id String @id @default(uuid(7))
+
+  rawContentId String     @unique
+  rawContent   RawContent @relation(fields: [rawContentId], references: [id], onDelete: Cascade)
+
+  concept   String
+  action    String
+  object    String
+  condition String?
+  exception String?
+  essence   String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("rule_breakdowns")
 }

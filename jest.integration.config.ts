@@ -34,7 +34,9 @@ const config: Config = {
   roots: ['<rootDir>/tests'],
   setupFiles: ['<rootDir>/tests/setup-env.integration.ts'],
   testMatch: ['**/*.integration.test.ts'],
-  testPathIgnorePatterns: ['/node_modules/'],
+  // `zz-.*`: sonda de investigação de um gate concorrente que escape para
+  // `tests/**` (lição [Testes]) nasce com esse prefixo e nunca conta como suíte.
+  testPathIgnorePatterns: ['/node_modules/', 'zz-.*'],
   globalSetup: '<rootDir>/tests/integration/global-setup.ts',
   globalTeardown: '<rootDir>/tests/integration/global-teardown.ts',
   maxWorkers: 1,
