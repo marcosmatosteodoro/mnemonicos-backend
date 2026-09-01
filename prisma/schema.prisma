@@ -2,11 +2,15 @@
 // Identificadores em inglês; rótulos de interface ficam no front-end.
 
 generator client {
-  provider     = "prisma-client"
-  output       = "../src/generated/prisma"
-  runtime      = "nodejs"
+  provider        = "prisma-client"
+  output          = "../src/generated/prisma"
+  runtime         = "nodejs"
   // O resto do backend compila para CommonJS; o client precisa acompanhar.
-  moduleFormat = "cjs"
+  moduleFormat    = "cjs"
+  // Habilita `relationLoadStrategy: 'join'`: uma consulta com relação vira um
+  // único LATERAL JOIN em vez de uma ida ao banco por nível. O resolvedor de
+  // sessão roda a cada requisição autenticada — o round-trip extra pesa.
+  previewFeatures = ["relationJoins"]
 }
 
 // A partir do Prisma 7 a URL não vive mais aqui:
@@ -51,13 +55,52 @@ model User {
   passwordHash String
   role         UserRole @default(STUDENT)
 
+  /// Conta desativada de forma reversível (FR-002-018). null = conta ativa.
+  disabledAt DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   cardStates CardState[]
   reviews    Review[]
+  sessions   Session[]
 
   @@map("users")
+}
+
+/// Repositório de sessão: credencial de acesso + token de renovação guardados só como
+/// hash, com rotação por família (DEC-003-003). Apenas a equipe interna autentica.
+model Session {
+  id String @id @default(uuid(7))
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// Agrupa a cadeia de rotação derivada de um mesmo login (Família de sessão).
+  familyId String
+
+  /// HMAC-SHA256(token, pepper) via `crypto.createHmac('sha256', env.JWT_SECRET)` — o
+  /// valor em claro do token nunca é persistido. Token gerado com `crypto.randomBytes`;
+  /// verificação por `crypto.timingSafeEqual`.
+  accessTokenHash  String @unique
+  refreshTokenHash String @unique
+
+  accessExpiresAt  DateTime
+  /// Expiração absoluta de 7 dias (FR-002-005).
+  refreshExpiresAt DateTime
+  /// Setado quando este refresh foi trocado por um sucessor.
+  rotatedAt        DateTime?
+  /// Setado por logout, reuso, troca de senha ou desativação.
+  revokedAt        DateTime?
+
+  createdIp String?
+  userAgent String?
+
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([familyId])
+  @@map("sessions")
 }
 
 model Discipline {

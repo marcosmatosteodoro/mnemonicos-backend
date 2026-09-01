@@ -20,8 +20,9 @@
     "format:check": "prettier --check .",
     "test": "jest",
     "test:watch": "jest --watch",
-    "test:ci": "jest --ci --coverage",
-    "validate": "npm run format:check && npm run lint && npm run typecheck && npm run test",
+    "test:integration": "node --experimental-vm-modules node_modules/jest/bin/jest.js --config jest.integration.config.ts --runInBand",
+    "test:ci": "jest --ci --coverage && npm run test:integration -- --ci",
+    "validate": "npm run format:check && npm run lint && npm run typecheck && npm run test && npm run test:integration",
     "db:generate": "prisma generate",
     "db:format": "prisma format",
     "db:migrate": "prisma migrate dev",
@@ -38,8 +39,10 @@
     "postinstall": "prisma generate"
   },
   "dependencies": {
+    "@node-rs/argon2": "2.1.0",
     "@prisma/adapter-pg": "^7.9.1",
     "@prisma/client": "^7.9.1",
+    "cookie-parser": "^1.4.7",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
@@ -52,6 +55,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.39.5",
+    "@types/cookie-parser": "^1.4.10",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/jest": "^30.0.0",

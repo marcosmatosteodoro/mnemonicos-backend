@@ -24,3 +24,16 @@ export type ReviewRating = (typeof REVIEW_RATINGS)[number];
 export const USER_ROLES = ['STUDENT', 'EDITOR', 'ADMIN'] as const;
 
 export type UserRole = (typeof USER_ROLES)[number];
+
+/**
+ * Usuário exposto numa sessão autenticada — corpo de resposta de
+ * `POST /auth/login`, `GET /auth/me` e `POST /users`. Espelhado em
+ * `mnemonicos-frontend/src/types/domain.ts`: mudança de um lado entra no mesmo
+ * diff que o outro, ou o contrato quebra em runtime sem o typecheck acusar.
+ */
+export interface SessionUser {
+  id: string;
+  name: string;
+  email: string;
+  role: UserRole;
+}

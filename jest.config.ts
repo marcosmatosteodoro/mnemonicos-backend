@@ -6,6 +6,9 @@ const config: Config = {
   roots: ['<rootDir>/src', '<rootDir>/tests'],
   setupFiles: ['<rootDir>/tests/setup-env.ts'],
   testMatch: ['**/*.test.ts'],
+  // Os `*.integration.test.ts` têm runner próprio (`jest.integration.config.ts`):
+  // abrem conexão real com o Postgres, o que esta suíte não faz.
+  testPathIgnorePatterns: ['/node_modules/', '\\.integration\\.test\\.ts$'],
   clearMocks: true,
   // O client gerado pelo Prisma importa irmãos com extensão .js (convenção ESM),
   // mas os arquivos em disco são .ts — o resolver do Jest precisa da tradução.
