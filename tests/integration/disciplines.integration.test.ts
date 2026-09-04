@@ -6,6 +6,7 @@ import express, { type Express, Router } from 'express';
 import request from 'supertest';
 
 import { env } from '../../src/config/env';
+import type { UserRole } from '../../src/domain/types';
 import { ACCESS_COOKIE } from '../../src/http/cookies';
 import { requireAuth } from '../../src/http/middlewares/authenticate';
 import { errorHandler, notFoundHandler } from '../../src/http/middlewares/error-handler';
@@ -29,7 +30,7 @@ import { TEST_DATABASE_URL } from './db-url';
 const ACCESS_TTL_MS = env.AUTH_ACCESS_TTL_MINUTES * 60_000;
 const REFRESH_TTL_MS = env.AUTH_REFRESH_TTL_DAYS * 24 * 60 * 60_000;
 
-async function createUser(role: 'EDITOR' | 'ADMIN' = 'EDITOR') {
+async function createUser(role: UserRole = 'EDITOR') {
   return testPrisma.user.create({
     data: {
       email: `user-${randomUUID()}@example.com`,
@@ -127,6 +128,17 @@ describe('GET /disciplines — identidade parcial + AC-005-004 (fonte do campo t
     expect(res.status).toBe(401);
   });
 
+  it('papel autenticado fora de EDITOR/ADMIN → 403 (STUDENT tem sessão válida, mas não o papel exigido)', async () => {
+    const student = await createUser('STUDENT');
+    const access = await seedSession(student.id);
+
+    const res = await request(buildApp())
+      .get('/disciplines')
+      .set('Cookie', `${ACCESS_COOKIE}=${access}`);
+
+    expect(res.status).toBe(403);
+  });
+
   it('página com múltiplas disciplinas: cada uma carrega seus próprios topics', async () => {
     const editor = await createUser('EDITOR');
     const access = await seedSession(editor.id);
@@ -151,9 +163,11 @@ describe('listDisciplines — round-trips fixados (lição [Performance], relaç
    * 'query' }]` — o singleton de produção (`src/lib/prisma.ts`) só declara
    * `error`/`warn`. Mesmo padrão de
    * `auth.service.integration.test.ts` ("perfil §10: contagem de idas ao banco
-   * fixada em 1").
+   * fixada em 1"). Devolve a lista bruta de queries: os dois usos abaixo
+   * derivam dela — `.length` para round-trips, `.find(LATERAL)` para a forma
+   * do join.
    */
-  async function countQueries(run: (probe: PrismaClient) => Promise<unknown>): Promise<number> {
+  async function withQueryProbe(run: (probe: PrismaClient) => Promise<unknown>): Promise<string[]> {
     const probe = new PrismaClient({
       adapter: new PrismaPg({ connectionString: TEST_DATABASE_URL, max: 1 }),
       log: [{ emit: 'event', level: 'query' }],
@@ -167,40 +181,36 @@ describe('listDisciplines — round-trips fixados (lição [Performance], relaç
       await probe.$disconnect();
     }
 
-    return queries.length;
+    return queries;
   }
 
   it('1 disciplina com 2 temas semeados — exatamente 2 round-trips (findMany via join + count)', async () => {
     await seedDisciplineWithTopics(['Alfa', 'Beta']);
 
-    const count = await countQueries((probe) => listDisciplines({ page: 1, perPage: 20 }, probe));
+    const queries = await withQueryProbe((probe) =>
+      listDisciplines({ page: 1, perPage: 20 }, probe),
+    );
 
-    expect(count).toBe(2);
+    expect(queries).toHaveLength(2);
   });
 
   it('2 disciplinas com 2 temas cada — a contagem não cresce com N (continua 2, não N+1)', async () => {
     await seedDisciplineWithTopics(['Alfa', 'Beta']);
     await seedDisciplineWithTopics(['Gama', 'Delta']);
 
-    const count = await countQueries((probe) => listDisciplines({ page: 1, perPage: 20 }, probe));
+    const queries = await withQueryProbe((probe) =>
+      listDisciplines({ page: 1, perPage: 20 }, probe),
+    );
 
-    expect(count).toBe(2);
+    expect(queries).toHaveLength(2);
   });
 
   it('a query de topics não usa `include` implícito — o join aparece como SELECT único com LATERAL', async () => {
     await seedDisciplineWithTopics(['Alfa', 'Beta']);
-    const probe = new PrismaClient({
-      adapter: new PrismaPg({ connectionString: TEST_DATABASE_URL, max: 1 }),
-      log: [{ emit: 'event', level: 'query' }],
-    });
-    const queries: string[] = [];
-    probe.$on('query', (event) => queries.push(event.query));
 
-    try {
-      await listDisciplines({ page: 1, perPage: 20 }, probe);
-    } finally {
-      await probe.$disconnect();
-    }
+    const queries = await withQueryProbe((probe) =>
+      listDisciplines({ page: 1, perPage: 20 }, probe),
+    );
 
     const findManyQuery = queries.find((q) => /LATERAL/i.test(q));
     expect(findManyQuery).toBeDefined();

@@ -39,10 +39,8 @@ export interface SessionUser {
 }
 
 /**
- * Envelope de paginação compartilhado por toda listagem do backend — nasceu em
- * `disciplines.service.ts` e migrou para cá (TASK-006-002) para não virar cópia
- * por módulo (o módulo `contents` seria a 3ª). Puro, sem I/O: fica ao lado dos
- * demais tipos de domínio.
+ * Envelope de paginação compartilhado por toda listagem do backend; puro, sem
+ * I/O.
  */
 export interface Paginated<T> {
   data: T[];

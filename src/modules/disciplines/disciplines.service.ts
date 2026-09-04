@@ -35,9 +35,11 @@ export async function listDisciplines(
       take: perPage,
       // `topics` é relação de lista (1-N de volume variável): medido contra o
       // Postgres real (TASK-006-002, ressalva da lição [Performance]), a
-      // estratégia `join` fixa em 1 round-trip por chamada (LATERAL JOIN +
-      // JSONB_AGG), contra 2 fixos de `query` (disciplines + topics via IN) —
-      // nenhuma das duas escala com N. `join` venceu por ter menos round-trips.
+      // estratégia `join` fixa em 1 round-trip no `findMany` (LATERAL JOIN +
+      // JSONB_AGG; 2 na chamada completa, contando o `count` em paralelo),
+      // contra 2 fixos de `query` só para o `findMany` (disciplines + topics
+      // via IN) — nenhuma das duas escala com N. `join` venceu por ter menos
+      // round-trips.
       relationLoadStrategy: 'join',
       select: {
         id: true,

@@ -8,7 +8,9 @@ const config: Config = {
   testMatch: ['**/*.test.ts'],
   // Os `*.integration.test.ts` têm runner próprio (`jest.integration.config.ts`):
   // abrem conexão real com o Postgres, o que esta suíte não faz.
-  testPathIgnorePatterns: ['/node_modules/', '\\.integration\\.test\\.ts$'],
+  // `zz-.*`: sonda de investigação de um gate concorrente que escape para
+  // `tests/**` (lição [Testes]) nasce com esse prefixo e nunca conta como suíte.
+  testPathIgnorePatterns: ['/node_modules/', '\\.integration\\.test\\.ts$', 'zz-.*'],
   clearMocks: true,
   // O client gerado pelo Prisma importa irmãos com extensão .js (convenção ESM),
   // mas os arquivos em disco são .ts — o resolver do Jest precisa da tradução.
