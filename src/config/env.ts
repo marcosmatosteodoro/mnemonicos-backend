@@ -44,6 +44,10 @@ const envSchema = z.object({
   SEED_ADMIN_EMAIL: z.email().optional(),
   SEED_ADMIN_PASSWORD: z.string().min(12).optional(),
 
+  /// Credenciais do EDITOR de dev (gate 9 das telas), lidas pelo seed. Ausentes (ou só uma delas) → o seed não cria ninguém.
+  SEED_EDITOR_EMAIL: z.email().optional(),
+  SEED_EDITOR_PASSWORD: z.string().min(12).optional(),
+
   /// TTLs de sessão (DEC-003-003), afináveis sem redeploy.
   AUTH_ACCESS_TTL_MINUTES: z.coerce.number().int().positive().default(15),
   AUTH_REFRESH_TTL_DAYS: z.coerce.number().int().positive().default(7),

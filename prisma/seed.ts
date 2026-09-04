@@ -1,109 +1,27 @@
 /**
  * Seed — idempotente, pode rodar quantas vezes quiser.
  *
- * Duas partes independentes: o bootstrap do primeiro ADMIN (a partir de
- * `SEED_ADMIN_EMAIL`/`SEED_ADMIN_PASSWORD`, sem senha embutida — FR-002-021) e o
- * material de estudo. O bootstrap roda primeiro: se `SEED_ADMIN_PASSWORD` estiver
- * com o placeholder do `.env.example`, `seedAdmin` lança e a carga inteira aborta.
+ * Runner fino: chama três funções puras, cada uma sem efeito de topo (nenhum
+ * `main()` embutido nos módulos que ela importa) — `seedAdmin` (ADMIN a
+ * partir de `SEED_ADMIN_EMAIL`/`SEED_ADMIN_PASSWORD`, sem senha embutida,
+ * FR-002-021), `seedMaterial` (Direito Tributário/Obrigação Tributária,
+ * F2/NFR-005-003) e `seedDevEditor` (EDITOR de dev, sujeito do gate 9 das
+ * telas). O bootstrap do ADMIN roda primeiro: se `SEED_ADMIN_PASSWORD`
+ * estiver com o placeholder do `.env.example`, `seedAdmin` lança e a carga
+ * inteira aborta. Sem ADMIN (env ausente/parcial), o material é pulado —
+ * `RawContent` exige `authorId` (coluna `NOT NULL`, FK `Restrict`).
+ *
+ * Só este arquivo é executável como script (`tsx prisma/seed.ts` /
+ * `npm run db:seed`); `seed-admin.ts`, `seed-material.ts` e
+ * `seed-dev-editor.ts` só exportam funções — importá-los não escreve no
+ * banco. É por isso que o teste de integração importa `seedMaterial` de
+ * `./seed-material` e nunca de `./seed`: importar este arquivo executaria a
+ * carga real, contra o `.env` de verdade (`main()` abaixo é chamado no topo).
  */
 import { prisma } from '../src/lib/prisma';
-import type { MnemonicTechnique } from '../src/domain/types';
 import { type AdminSeedOutcome, seedAdmin } from './seed-admin';
-
-interface MnemonicSeed {
-  technique: MnemonicTechnique;
-  hook: string;
-  decoding: string;
-  source?: string;
-  flashcards: { front: string; back: string }[];
-}
-
-interface TopicSeed {
-  name: string;
-  slug: string;
-  mnemonics: MnemonicSeed[];
-}
-
-interface DisciplineSeed {
-  name: string;
-  slug: string;
-  topics: TopicSeed[];
-}
-
-const DISCIPLINES: DisciplineSeed[] = [
-  {
-    name: 'Direito Administrativo',
-    slug: 'direito-administrativo',
-    topics: [
-      {
-        name: 'Princípios da Administração Pública',
-        slug: 'principios-da-administracao-publica',
-        mnemonics: [
-          {
-            technique: 'ACRONYM',
-            hook: 'LIMPE',
-            decoding:
-              'Legalidade, Impessoalidade, Moralidade, Publicidade, Eficiência — os cinco princípios expressos.',
-            source: 'CF/88, art. 37, caput',
-            flashcards: [
-              {
-                front: 'Quais são os princípios expressos da Administração Pública?',
-                back: 'LIMPE: Legalidade, Impessoalidade, Moralidade, Publicidade e Eficiência (art. 37 da CF/88).',
-              },
-              {
-                front: 'Qual princípio do LIMPE foi incluído pela EC 19/1998?',
-                back: 'A Eficiência — o "E" do LIMPE é o mais novo.',
-              },
-            ],
-          },
-        ],
-      },
-      {
-        name: 'Atos Administrativos',
-        slug: 'atos-administrativos',
-        mnemonics: [
-          {
-            technique: 'ACRONYM',
-            hook: 'COM-FI-FOR-MO-OB',
-            decoding:
-              'Competência, Finalidade, Forma, Motivo e Objeto — os cinco elementos do ato administrativo.',
-            flashcards: [
-              {
-                front: 'Quais são os elementos do ato administrativo?',
-                back: 'Competência, Finalidade, Forma, Motivo e Objeto.',
-              },
-            ],
-          },
-        ],
-      },
-    ],
-  },
-  {
-    name: 'Direito Constitucional',
-    slug: 'direito-constitucional',
-    topics: [
-      {
-        name: 'Objetivos Fundamentais da República',
-        slug: 'objetivos-fundamentais-da-republica',
-        mnemonics: [
-          {
-            technique: 'ACROSTIC',
-            hook: 'Construir, Garantir, Erradicar, Promover',
-            decoding:
-              'Construir uma sociedade livre, justa e solidária; Garantir o desenvolvimento nacional; Erradicar a pobreza e a marginalização; Promover o bem de todos.',
-            source: 'CF/88, art. 3º',
-            flashcards: [
-              {
-                front: 'Quais são os quatro objetivos fundamentais da República (art. 3º)?',
-                back: 'Construir, Garantir, Erradicar e Promover — os verbos abrem cada inciso.',
-              },
-            ],
-          },
-        ],
-      },
-    ],
-  },
-];
+import { type DevEditorSeedOutcome, seedDevEditor } from './seed-dev-editor';
+import { seedMaterial } from './seed-material';
 
 function reportAdminSeed(outcome: AdminSeedOutcome): void {
   switch (outcome.status) {
@@ -126,85 +44,68 @@ function reportAdminSeed(outcome: AdminSeedOutcome): void {
   }
 }
 
+function reportDevEditorSeed(outcome: DevEditorSeedOutcome): void {
+  switch (outcome.status) {
+    case 'created':
+      console.log(`seed do EDITOR de dev — criado a partir do env (${outcome.email})`);
+      break;
+    case 'exists':
+      console.log('seed do EDITOR de dev — já existe um usuário com este e-mail, nada a criar');
+      break;
+    case 'partial':
+      console.log(
+        'seed do EDITOR de dev — só uma de SEED_EDITOR_EMAIL/SEED_EDITOR_PASSWORD definida; tratado como ausente',
+      );
+      break;
+    case 'not-configured':
+      console.log(
+        'seed do EDITOR de dev — SEED_EDITOR_EMAIL/SEED_EDITOR_PASSWORD ausentes, nenhum EDITOR criado',
+      );
+      break;
+  }
+}
+
+/**
+ * Resolve o id do ADMIN semeado a partir do desfecho de `seedAdmin`, para
+ * servir de `authorId` a `seedMaterial`. `created` já traz o e-mail; `exists`
+ * consulta o ADMIN já presente (pode não ser o do env deste run).
+ */
+async function resolveAdminId(outcome: AdminSeedOutcome): Promise<string | null> {
+  if (outcome.status === 'not-configured' || outcome.status === 'partial') return null;
+
+  const admin =
+    outcome.status === 'created'
+      ? await prisma.user.findUnique({ where: { email: outcome.email }, select: { id: true } })
+      : await prisma.user.findFirst({ where: { role: 'ADMIN' }, select: { id: true } });
+
+  return admin?.id ?? null;
+}
+
 async function main() {
-  reportAdminSeed(await seedAdmin(prisma));
+  const adminOutcome = await seedAdmin(prisma);
+  reportAdminSeed(adminOutcome);
 
-  for (const discipline of DISCIPLINES) {
-    const savedDiscipline = await prisma.discipline.upsert({
-      where: { slug: discipline.slug },
-      update: { name: discipline.name },
-      create: { name: discipline.name, slug: discipline.slug },
-    });
+  const adminId = await resolveAdminId(adminOutcome);
 
-    for (const topic of discipline.topics) {
-      const savedTopic = await prisma.topic.upsert({
-        where: { disciplineId_slug: { disciplineId: savedDiscipline.id, slug: topic.slug } },
-        update: { name: topic.name },
-        create: { disciplineId: savedDiscipline.id, name: topic.name, slug: topic.slug },
-      });
-
-      for (const mnemonic of topic.mnemonics) {
-        // Sem chave natural para mnemônico: o par (assunto, gancho) faz esse papel.
-        const existing = await prisma.mnemonic.findFirst({
-          where: { topicId: savedTopic.id, hook: mnemonic.hook },
-          select: { id: true },
-        });
-
-        const savedMnemonic = existing
-          ? await prisma.mnemonic.update({
-              where: { id: existing.id },
-              data: {
-                technique: mnemonic.technique,
-                decoding: mnemonic.decoding,
-                source: mnemonic.source ?? null,
-              },
-            })
-          : await prisma.mnemonic.create({
-              data: {
-                topicId: savedTopic.id,
-                technique: mnemonic.technique,
-                hook: mnemonic.hook,
-                decoding: mnemonic.decoding,
-                source: mnemonic.source ?? null,
-              },
-            });
-
-        for (const card of mnemonic.flashcards) {
-          const existingCard = await prisma.flashcard.findFirst({
-            where: { topicId: savedTopic.id, front: card.front },
-            select: { id: true },
-          });
-
-          if (existingCard) {
-            await prisma.flashcard.update({
-              where: { id: existingCard.id },
-              data: { back: card.back, mnemonicId: savedMnemonic.id },
-            });
-            continue;
-          }
-
-          await prisma.flashcard.create({
-            data: {
-              topicId: savedTopic.id,
-              mnemonicId: savedMnemonic.id,
-              front: card.front,
-              back: card.back,
-            },
-          });
-        }
-      }
-    }
+  if (adminId) {
+    await seedMaterial(prisma, { authorId: adminId });
+  } else {
+    console.log(
+      'seed do material — nenhum ADMIN disponível (env de bootstrap ausente/parcial), pulando a carga de Direito Tributário',
+    );
   }
 
-  const [disciplines, topics, mnemonics, flashcards] = await Promise.all([
+  reportDevEditorSeed(await seedDevEditor(prisma));
+
+  const [disciplines, topics, rawContents, ruleBreakdowns] = await Promise.all([
     prisma.discipline.count(),
     prisma.topic.count(),
-    prisma.mnemonic.count(),
-    prisma.flashcard.count(),
+    prisma.rawContent.count(),
+    prisma.ruleBreakdown.count(),
   ]);
 
   console.log(
-    `seed concluído — ${disciplines} disciplinas, ${topics} assuntos, ${mnemonics} mnemônicos, ${flashcards} cartões`,
+    `seed concluído — ${disciplines} disciplinas, ${topics} assuntos, ${rawContents} conteúdos brutos, ${ruleBreakdowns} quebras da regra`,
   );
 }
 

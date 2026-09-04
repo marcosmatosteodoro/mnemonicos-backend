@@ -32,7 +32,8 @@ export type AdminSeedOutcome =
   | { status: 'partial' }
   | { status: 'not-configured' };
 
-function deriveName(email: string): string {
+/** Reexportado para `seedDevEditor` — mesma derivação, mesma convenção de nome. */
+export function deriveName(email: string): string {
   const localPart = email.split('@')[0]?.trim();
   return localPart && localPart.length > 0 ? localPart : 'Administrador';
 }
