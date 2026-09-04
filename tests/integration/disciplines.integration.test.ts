@@ -123,7 +123,7 @@ describe('GET /disciplines — identidade parcial + AC-005-004 (fonte do campo t
     }
   });
 
-  it('sem sessão → 401; papel fora de EDITOR/ADMIN segue negado (deny-by-default)', async () => {
+  it('sem sessão → 401 (deny-by-default)', async () => {
     const res = await request(buildApp()).get('/disciplines');
     expect(res.status).toBe(401);
   });
