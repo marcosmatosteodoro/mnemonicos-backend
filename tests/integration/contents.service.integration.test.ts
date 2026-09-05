@@ -108,9 +108,8 @@ function actorOf(user: { id: string; role: UserRole }): ContentActor {
 }
 
 /**
- * Sonda de round-trips (lição [Performance]) — içada ao escopo do módulo
- * (EMENDA pós gate 1-7, Wave 3): nascia duplicada em dois `describe` (`getRawContent`
- * e `listRawContents`), verbatim.
+ * Sonda de round-trips (lição [Performance]) — única definição no módulo,
+ * reusada por `getRawContent` e `listRawContents`.
  */
 async function withQueryProbe(run: (probe: PrismaClient) => Promise<unknown>): Promise<string[]> {
   const probe = new PrismaClient({
@@ -517,7 +516,7 @@ describe('listRawContents — total aplica o mesmo predicado de escopo de data (
     expect(result.total).toBe(2);
   });
 
-  it('2 EDITORes (A, B) + item soft-deleted de A → total de A conta só os próprios ativos; total do ADMIN soma os dois — EMENDA pós gate 8 (Wave 3)', async () => {
+  it('2 EDITORes (A, B) + item soft-deleted de A → total de A conta só os próprios ativos; total do ADMIN soma os dois', async () => {
     const editorA = await createUser('EDITOR');
     const editorB = await createUser('EDITOR');
     const admin = await createUser('ADMIN');
@@ -661,8 +660,8 @@ const breakdownInputB: SaveRuleBreakdownInput = {
   essence: 'Segunda síntese, após alteração.',
   // Omitidos de propósito (undefined, não string) — simula o corpo de
   // requisição que não envia os campos; `saveRuleBreakdownSchema` colapsa
-  // undefined/null/'' para undefined (EMENDA pós gate 1-7, Wave 3), então
-  // `saveRuleBreakdown` grava null (A-005-009 — "não se aplica").
+  // undefined/null/'' para undefined, então `saveRuleBreakdown` grava null
+  // (A-005-009 — "não se aplica").
   condition: undefined,
   exception: undefined,
 };
@@ -803,12 +802,12 @@ describe('getRuleBreakdown / saveRuleBreakdown — recusa quando o pai não exis
 });
 
 /**
- * Ramo "pai alcançável, sem Quebra ainda" (EMENDA pós gate 1-7, Wave 3):
- * caminho feliz de T014 abrir o editor de uma Quebra nova. Decisão do Tech
- * Lead (reversível): `getRuleBreakdown` mantém o 404 — T014 trata esse 404
- * como "abrir formulário vazio".
+ * Ramo "pai alcançável, sem Quebra ainda": caminho feliz de T014 abrir o
+ * editor de uma Quebra nova. Decisão do Tech Lead (reversível):
+ * `getRuleBreakdown` mantém o 404 — T014 trata esse 404 como "abrir
+ * formulário vazio".
  */
-describe('getRuleBreakdown / saveRuleBreakdown — pai alcançável sem Quebra ainda (EMENDA retry Wave 3)', () => {
+describe('getRuleBreakdown / saveRuleBreakdown — pai alcançável sem Quebra ainda', () => {
   it('pai alcançável sem Quebra ainda → getRuleBreakdown recusa com 404, saveRuleBreakdown cria normalmente', async () => {
     const editorA = await createUser('EDITOR');
     const topicId = await createTopic();
@@ -832,19 +831,19 @@ describe('getRuleBreakdown / saveRuleBreakdown — pai alcançável sem Quebra a
 });
 
 /**
- * Precedência corrigida no retry (EMENDA pós gate 8/1-7, Wave 3): a ordem
- * original (`inexistente → soft-deleted → fora do alcance`) vazava existência
- * — um EDITOR A que possui o id de um `RawContent` de EDITOR B distinguia "não
- * encontrado" (id aleatório ou item ativo de B) de "foi removido" (item de B
- * soft-deleted), um oráculo de autoria via mensagem (A01). Ordem corrigida,
- * obrigatória: `inexistente → fora do alcance → soft-deleted`. Quem NÃO
- * alcança o pai (id aleatório OU item de outro autor, removido ou não) recebe
- * SEMPRE a mesma mensagem literal; só quem alcança (dono ou ADMIN) sobre item
- * soft-deleted vê a mensagem de remoção. Os casos abaixo são nomeados por
- * PAPEL (não por "quem vence") e comparam as duas mensagens de não-alcance
- * por igualdade literal entre si, não só por tipo `AppError`.
+ * Precedência de guards de `assertRawContentReachable`: `inexistente → fora
+ * do alcance → soft-deleted`. A ordem importa porque cada guard tem mensagem
+ * própria — quem NÃO alcança o pai (id aleatório OU item de outro autor,
+ * removido ou não) recebe SEMPRE a mesma mensagem literal; só quem alcança
+ * (dono ou ADMIN) sobre item soft-deleted vê a mensagem de remoção. Inverter
+ * a ordem (soft-delete antes do alcance) vazaria um oráculo de autoria via
+ * mensagem (A01): um EDITOR A que possui o id de um `RawContent` de EDITOR B
+ * distinguiria "não encontrado" (item ativo de B) de "foi removido" (item de
+ * B soft-deleted). Os casos abaixo são nomeados por PAPEL (não por "quem
+ * vence") e comparam as duas mensagens de não-alcance por igualdade literal
+ * entre si, não só por tipo `AppError`.
  */
-describe('assertRawContentReachable — precedência de guards corrigida (retry Wave 3, gate 8)', () => {
+describe('assertRawContentReachable — precedência de guards', () => {
   const NOT_FOUND_MESSAGE = 'Conteúdo bruto não encontrado.';
   const REMOVED_MESSAGE = 'Conteúdo bruto foi removido.';
 

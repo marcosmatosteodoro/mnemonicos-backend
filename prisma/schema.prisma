@@ -295,19 +295,15 @@ model RawContent {
   @@index([authorId])
   @@index([topicId])
   /// Cobre `listRawContents` (TASK-006-008) no ramo EDITOR: `where{authorId,
-  /// deletedAt} + orderBy createdAt desc` (retry Wave 3, gate 10 — Seq Scan em
-  /// 30-40k linhas sem este índice).
+  /// deletedAt} + orderBy createdAt desc` — sem este índice, Seq Scan em
+  /// volume de dezenas de milhares de linhas (medido por EXPLAIN).
   @@index([authorId, createdAt(sort: Desc)])
   /// Cobre `listRawContents` no ramo ADMIN (irrestrito): `where{deletedAt} +
   /// orderBy createdAt desc`, sem `authorId` no predicado.
   @@index([createdAt(sort: Desc)])
-  /// NÃO redundante após os dois índices acima (confirmado por EXPLAIN,
-  /// retry Wave 3): sem este índice, `count(*) … where deletedAt is null` do
-  /// ramo ADMIN (nenhum `authorId` no predicado, e a imensa maioria das linhas
-  /// é ativa) regride para Seq Scan — nem o índice composto nem o de
-  /// `createdAt` isolado cobrem `deletedAt` para permitir um Index Only Scan
-  /// quando a contagem precisa visitar TODAS as linhas correspondentes (a
-  /// `LIMIT` do `findMany` não ajuda o `count`).
+  /// NÃO redundante com os dois índices acima (confirmado por EXPLAIN): o
+  /// `count()` do ramo ADMIN precisa visitar todas as linhas correspondentes
+  /// a `deletedAt is null`, sem `LIMIT` — só este índice cobre isso.
   @@index([deletedAt])
   @@map("raw_contents")
 }

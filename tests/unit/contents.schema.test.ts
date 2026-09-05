@@ -212,7 +212,7 @@ describe('saveRuleBreakdownSchema — obrigatórios vs. opcionais (TASK-006-009,
     expect(result.success).toBe(true);
   });
 
-  it('aceita condition/exception explicitamente null (EMENDA pós gate 1-7, Wave 3) — round-trip ler→editar→salvar de T014 reenvia null, não 400', () => {
+  it('aceita condition/exception explicitamente null — round-trip ler→editar→salvar de T014 reenvia null, não 400', () => {
     const result = saveRuleBreakdownSchema.safeParse({
       ...minimalBreakdown,
       condition: null,

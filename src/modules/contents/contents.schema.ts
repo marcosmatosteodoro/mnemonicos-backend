@@ -101,9 +101,9 @@ export type ListRawContentsQuery = z.infer<typeof listRawContentsQuerySchema>;
  * (não-vazios); `condition`/`exception` opcionais (A-005-009 — vazio = "não se
  * aplica", nunca campo ausente do contrato).
  *
- * `condition`/`exception` aceitam `null` além de string/ausente (`nullable()`
- * — EMENDA pós gate 1-7, Wave 3): o frontend tipa os dois como
- * `string | null` (é o que `getRuleBreakdown` devolve quando não preenchidos),
+ * `condition`/`exception` aceitam `null` além de string/ausente (`nullable()`):
+ * o frontend tipa os dois como `string | null` (é o que `getRuleBreakdown`
+ * devolve quando não preenchidos),
  * então o ciclo ler→editar→salvar de T014 reenvia `null` no corpo do PUT
  * sempre que o campo não foi tocado no formulário. Sem `nullable()` aqui, esse
  * caminho feliz levava 400. `null` e string vazia colapsam para `undefined`

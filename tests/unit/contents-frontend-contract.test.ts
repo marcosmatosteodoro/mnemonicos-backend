@@ -3,27 +3,22 @@ import { resolve } from 'node:path';
 
 /**
  * Rede de paridade cross-repo das interfaces do Conteúdo bruto / Quebra da
- * regra (EMENDA pós gate 1-7, Wave 3 — TASK-006-010). Análoga a
- * `domain-types-parity.test.ts`, mas para as interfaces de `contents.service.ts`
- * (backend) × `src/types/domain.ts` (frontend): lê os dois arquivos como texto
- * e prova que os NOMES e a FORMA dos campos são idênticos dos dois lados — não
- * um fixture que se autoconfirma a partir de um dos lados (`api.test.ts`
- * montava o fixture a partir do próprio tipo do frontend, e não teria
- * acusado nenhuma das 4 divergências abaixo).
+ * regra. Análoga a `domain-types-parity.test.ts`, mas para as interfaces de
+ * `contents.service.ts` (backend) × `src/types/domain.ts` (frontend): lê os
+ * dois arquivos como texto e prova que os NOMES e a FORMA dos campos são
+ * idênticos dos dois lados — não um fixture que se autoconfirma a partir de
+ * um dos lados (um fixture montado a partir do próprio tipo do frontend não
+ * acusaria uma interface renomeada ou um campo fantasma no outro lado).
  *
- * As 4 divergências que este teste fecha (achado do code-reviewer, retry
- * Wave 3):
- *   1. `RawContentSummary`: `rawText`/`hasRuleBreakdown` (backend) vs.
- *      `rawTextExcerpt`/`hasBreakdown` (frontend, pré-retry) — alinhado ao
- *      nome do backend (o texto nunca foi truncado).
- *   2. `RuleBreakdown` do frontend prometia `id`/`rawContentId`/`createdAt`/
- *      `updatedAt` que `RuleBreakdownDetail` (backend) nunca devolve —
- *      removidos do frontend.
- *   3. `condition`/`exception`: fronteira do schema (Zod) passou a aceitar
- *      `null` (fixado em `contents.schema.test.ts`, não aqui — comparação de
- *      forma de interface não alcança comportamento de parse).
- *   4. `RawContent.deletedAt`: nunca projetado por `RAW_CONTENT_DETAIL_SELECT`
- *      — removido do tipo do frontend.
+ * Nomes canônicos (backend vence — a fonte real do dado):
+ *   - `RawContentSummary`: `rawText`/`hasRuleBreakdown` (o texto nunca é
+ *     truncado nesta fatia).
+ *   - `RuleBreakdown`: só os campos de conteúdo — `RuleBreakdownDetail`
+ *     (backend) nunca devolve `id`/`rawContentId`/`createdAt`/`updatedAt`.
+ *   - `RawContent`: sem `deletedAt` — `RAW_CONTENT_DETAIL_SELECT` nunca o
+ *     projeta.
+ * `condition`/`exception` aceitando `null` é comportamento de parse, fixado
+ * em `contents.schema.test.ts` — comparação de forma de interface não alcança.
  *
  * Repos symlinkados no workspace (mesmo padrão de `domain-types-parity.test.ts`):
  * o arquivo do frontend é lido pelo caminho relativo a partir daqui.
@@ -64,7 +59,7 @@ function extractInterfaceFields(source: string, interfaceName: string): string[]
     .filter((name): name is string => Boolean(name));
 }
 
-describe('paridade cross-repo — RawContentSummary/RuleBreakdown/RawContent (EMENDA pós gate 1-7, Wave 3)', () => {
+describe('paridade cross-repo — RawContentSummary/RuleBreakdown/RawContent', () => {
   const backendSource = readSourceFile(BACKEND_SERVICE);
   const frontendSource = readSourceFile(FRONTEND_TYPES);
 
