@@ -45,7 +45,7 @@ import { closeTestDb, resetDb, testPrisma } from './db';
  * declaração nasce negada), NFR-002-001 (deny-by-default), a EMENDA DEC-003-005
  * (chave exata `<MÉTODO> <caminho>` para toda rota montada — fecha o resíduo do
  * `:param` da irmã estática) e a EMENDA DEC-003-004 (`verifyOrigin` em toda
- * mutação autenticada por cookie).
+ * rota mutante montada — pública ou não).
  *
  * **Ordem de execução (Jest roda os `describe` na ordem do arquivo):** os blocos
  * que exercitam a `app` real e o registro `ROUTE_ROLES` vivo vêm todos antes do
@@ -322,8 +322,8 @@ describe('A-002-019 — /disciplines passa a exigir sessão', () => {
 });
 
 describe('EMENDA DEC-003-004 — verifyOrigin por POSIÇÃO: 1º handler nas mutações, ausente nos GETs (repo-wide)', () => {
-  it('cada POST/PATCH/PUT/DELETE não-público tem verifyOrigin como 1º handler da cadeia', () => {
-    const mutations = NON_PUBLIC.filter((route) => MUTATION_METHODS.has(route.method));
+  it('toda rota POST/PATCH/PUT/DELETE (pública ou não) tem verifyOrigin como 1º handler da cadeia', () => {
+    const mutations = ROUTES.filter((route) => MUTATION_METHODS.has(route.method));
     expect(mutations.length).toBeGreaterThan(0);
 
     const foraDaPrimeiraPosicao = mutations
