@@ -1,7 +1,11 @@
+import type * as ContentsSchemaModule from '../../src/modules/contents/contents.schema';
 import {
   createRawContentSchema,
   updateRawContentSchema,
 } from '../../src/modules/contents/contents.schema';
+import type * as DomainTypesModule from '../../src/domain/types';
+
+type SchemaModule = typeof ContentsSchemaModule;
 
 /**
  * `contents.schema.ts` (TASK-006-006 / COMP-006-002) — recusa e nomeia o campo
@@ -85,6 +89,69 @@ describe('createRawContentSchema — fonte normativa (AC-005-015)', () => {
     if (!result.success) {
       expect(result.error.issues.some((issue) => issue.path[0] === 'sourceType')).toBe(true);
     }
+  });
+});
+
+describe('contents.schema — enums vêm de domain/types (fonte única, retry Wave 2)', () => {
+  it('remover um valor de PROOF_RADAR_CLASSES em domain/types faz o schema também rejeitá-lo (mesma fonte, sem redeclaração local)', () => {
+    let mutatedSchema: SchemaModule | undefined;
+
+    jest.isolateModules(() => {
+      jest.doMock('../../src/domain/types', () => {
+        const actual = jest.requireActual<typeof DomainTypesModule>('../../src/domain/types');
+        return {
+          ...actual,
+          PROOF_RADAR_CLASSES: actual.PROOF_RADAR_CLASSES.filter((value) => value !== 'PEGADINHA'),
+        };
+      });
+
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      mutatedSchema = require('../../src/modules/contents/contents.schema') as SchemaModule;
+    });
+
+    const result = mutatedSchema?.createRawContentSchema.safeParse({
+      ...validInput,
+      radarClass: 'PEGADINHA',
+    });
+
+    expect(result?.success).toBe(false);
+
+    jest.dontMock('../../src/domain/types');
+  });
+});
+
+describe('createRawContentSchema — sourceUrl: allowlist de esquema http(s) (retry Wave 2, gate 8)', () => {
+  it('recusa javascript: (XSS armazenado em potencial)', () => {
+    const result = createRawContentSchema.safeParse({
+      ...validInput,
+      sourceUrl: 'javascript:alert(1)',
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues.some((issue) => issue.path[0] === 'sourceUrl')).toBe(true);
+    }
+  });
+
+  it('recusa data: (XSS armazenado em potencial)', () => {
+    const result = createRawContentSchema.safeParse({
+      ...validInput,
+      sourceUrl: 'data:text/html,x',
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues.some((issue) => issue.path[0] === 'sourceUrl')).toBe(true);
+    }
+  });
+
+  it('aceita https:// válido', () => {
+    const result = createRawContentSchema.safeParse({
+      ...validInput,
+      sourceUrl: 'https://planalto.gov.br/ctn',
+    });
+
+    expect(result.success).toBe(true);
   });
 });
 

@@ -173,7 +173,7 @@ describe('getRawContent — alcance e remoção reversível (prova 2/4; AC-005-0
     );
   });
 
-  it('soft-deleted de outro autor → 404 (par de guards que coincide; o filtro de remoção decide, mesmo com o alcance também negando)', async () => {
+  it('soft-deleted de outro autor → 404 — as duas negações valem, sem precedência a observar (where conjuntivo e comutativo)', async () => {
     const editorA = await createUser('EDITOR');
     const editorB = await createUser('EDITOR');
     const topicId = await createTopic();
@@ -308,7 +308,7 @@ describe('updateRawContent — autoria imutável + carimbo de última alteraçã
     ).rejects.toThrow(NotFoundError);
   });
 
-  it('soft-deleted de outro autor → 404 (par de guards que coincide)', async () => {
+  it('soft-deleted de outro autor → 404 — as duas negações valem, sem precedência a observar (where conjuntivo e comutativo)', async () => {
     const editorA = await createUser('EDITOR');
     const editorB = await createUser('EDITOR');
     const topicId = await createTopic();

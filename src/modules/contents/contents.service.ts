@@ -69,26 +69,6 @@ export interface RawContentDetail {
 type RawContentClient = Pick<typeof prisma, 'rawContent'>;
 
 /**
- * Resolve o `id` só quando ativo e no alcance do ator — guarda reusada por
- * `updateRawContent`/`softDeleteRawContent` antes de escrever. `RawContentWhereUniqueInput`
- * (o `where` de `update`) não aceita o tipo `Prisma.StringFilter` que `scopeWhere`
- * devolve para EDITOR, daí o `findFirst` (aceita `RawContentWhereInput`) resolver
- * o `id` primeiro, e o `update` seguinte usar só `{ id }` — 2 round-trips, contra
- * 1 de `getRawContent` (que não escreve).
- */
-async function findScopedActiveId(
-  id: string,
-  actor: ContentActor,
-  db: RawContentClient,
-): Promise<string | null> {
-  const row = await db.rawContent.findFirst({
-    where: { id, ...ACTIVE_RAW_CONTENT_WHERE, ...scopeWhere(actor) },
-    select: { id: true },
-  });
-  return row?.id ?? null;
-}
-
-/**
  * Cria o Conteúdo bruto com `authorId = actorId` — **nunca** do `input`
  * (`CreateRawContentInput` nem declara o campo; o schema o exclui na fronteira).
  */
@@ -136,8 +116,14 @@ export async function getRawContent(
  * Persiste os novos valores mantendo `authorId` intocado (FR-005-013) e carimba
  * quem/quando alterou por último (`lastEditedById`/`lastEditedAt` = o ator
  * atual, mesmo quando é um ADMIN editando item de outro EDITOR — AC-005-036).
- * A guarda (id inexistente, soft-deleted, fora do alcance) resolve **antes** da
- * escrita, pelo mesmo `findScopedActiveId` de `softDeleteRawContent`.
+ *
+ * A guarda (id inexistente, soft-deleted, fora do alcance) e a escrita são o
+ * **mesmo** statement (`updateMany` com o predicado de escopo no `where`),
+ * nunca um `findFirst` de guarda seguido de `update` por `id` isolado: dois
+ * statements deixariam uma janela entre a checagem e a escrita onde uma
+ * revogação de alcance concorrente seria ignorada. `count === 0` cobre as
+ * três causas de recusa (a distinção "não existe" vs "não é seu" permanece
+ * indistinguível — a garantia de A01 continua de pé).
  */
 export async function updateRawContent(
   id: string,
@@ -145,11 +131,8 @@ export async function updateRawContent(
   actor: ContentActor,
   db: RawContentClient = prisma,
 ): Promise<RawContentDetail> {
-  const scopedId = await findScopedActiveId(id, actor, db);
-  if (scopedId === null) throw new NotFoundError('Conteúdo bruto não encontrado.');
-
-  return db.rawContent.update({
-    where: { id: scopedId },
+  const result = await db.rawContent.updateMany({
+    where: { id, ...ACTIVE_RAW_CONTENT_WHERE, ...scopeWhere(actor) },
     data: {
       topicId: input.topicId,
       rawText: input.rawText,
@@ -160,17 +143,24 @@ export async function updateRawContent(
       lastEditedById: actor.id,
       lastEditedAt: new Date(),
     },
-    select: RAW_CONTENT_DETAIL_SELECT,
   });
+
+  if (result.count === 0) throw new NotFoundError('Conteúdo bruto não encontrado.');
+
+  return db.rawContent.findUniqueOrThrow({ where: { id }, select: RAW_CONTENT_DETAIL_SELECT });
 }
 
 /**
  * Remoção reversível (DEC-006-001): marca `deletedAt`, nunca `DELETE` físico —
  * a `RuleBreakdown` vinculada permanece na linha (fica inalcançável através do
  * pai, TASK-006-009). Não toca `authorId`/`lastEditedById`: o soft-delete não é
- * uma edição de autoria (AC-005-036). A mesma guarda ativa+alcance de
- * `findScopedActiveId` recusa (a) id inexistente, (b) já soft-deleted — a
- * chamada não é reidempotente, nunca re-carimba a marca — e (c) fora do
+ * uma edição de autoria (AC-005-036).
+ *
+ * Guarda e escrita no **mesmo** `updateMany` (mesma razão de `updateRawContent`
+ * acima): sob concorrência, dois soft-deletes simultâneos não podem os dois
+ * passar pela guarda e um re-carimbar `deletedAt` (a chamada não é
+ * reidempotente — `count === 0` na segunda vez, nunca um novo carimbo).
+ * `count === 0` cobre (a) id inexistente, (b) já soft-deleted, (c) fora do
  * alcance.
  */
 export async function softDeleteRawContent(
@@ -178,12 +168,10 @@ export async function softDeleteRawContent(
   actor: ContentActor,
   db: RawContentClient = prisma,
 ): Promise<void> {
-  const scopedId = await findScopedActiveId(id, actor, db);
-  if (scopedId === null) throw new NotFoundError('Conteúdo bruto não encontrado.');
-
-  await db.rawContent.update({
-    where: { id: scopedId },
+  const result = await db.rawContent.updateMany({
+    where: { id, ...ACTIVE_RAW_CONTENT_WHERE, ...scopeWhere(actor) },
     data: { deletedAt: new Date() },
-    select: { id: true },
   });
+
+  if (result.count === 0) throw new NotFoundError('Conteúdo bruto não encontrado.');
 }

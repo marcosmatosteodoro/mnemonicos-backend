@@ -1,24 +1,17 @@
 import { z } from 'zod';
 
+import { NORMATIVE_SOURCE_TYPES, PROOF_RADAR_CLASSES } from '../../domain/types';
+
 /**
- * Schemas Zod do Conteúdo bruto (COMP-006-002 / TASK-006-006). Os literais dos
- * dois enums espelham `schema.prisma` (`ProofRadarClass`, `NormativeSourceType`);
- * ficam **inline** aqui — não importados de `domain/types.ts` — porque a
- * mirragem cross-repo desses enums é COMP-006-008/TASK-006-004, tarefa paralela
- * e disjunta desta (Wave 2). `listRawContentsQuerySchema` (TASK-006-008) e
+ * Schemas Zod do Conteúdo bruto (COMP-006-002 / TASK-006-006). Os dois enums
+ * (`ProofRadarClass`, `NormativeSourceType`) vêm de `domain/types.ts` — fonte
+ * única espelhada de `schema.prisma` (COMP-006-008/TASK-006-004), sob o teste
+ * de divergência cross-repo `tests/unit/domain-types-parity.test.ts`. Esta
+ * fronteira de validação decide o que a API aceita: reescrevê-los aqui à mão
+ * ficaria fora dessa rede de paridade e poderia divergir de `schema.prisma`
+ * sem nada acusar. `listRawContentsQuerySchema` (TASK-006-008) e
  * `saveRuleBreakdownSchema` (TASK-006-009) nascem em tarefas seguintes.
  */
-
-const PROOF_RADAR_CLASSES = ['ALTA', 'MEDIA', 'DETALHE', 'EXCECAO', 'PEGADINHA'] as const;
-
-const NORMATIVE_SOURCE_TYPES = [
-  'CF',
-  'CTN',
-  'LEI',
-  'LEI_COMPLEMENTAR',
-  'SUMULA',
-  'ATO_NORMATIVO',
-] as const;
 
 /**
  * Citação obrigatória quando o tipo do dispositivo normativo é informado
@@ -56,7 +49,17 @@ const rawContentFieldsSchema = z.object({
     .enum(NORMATIVE_SOURCE_TYPES, { error: 'Tipo de fonte normativa inválido.' })
     .optional(),
   sourceCitation: z.string().trim().min(1, 'Informe a citação do dispositivo.').optional(),
-  sourceUrl: z.string().trim().min(1, 'Informe o link da fonte.').optional(),
+  /**
+   * Allowlist de esquema `http(s)`: sem ela, `javascript:`/`data:`/`vbscript:`
+   * persistem como link normativo válido e viram XSS armazenado quando
+   * T013/T014 renderizarem `sourceUrl` como link.
+   */
+  sourceUrl: z
+    .string()
+    .trim()
+    .max(2048, 'Link muito longo.')
+    .pipe(z.url({ protocol: /^https?$/, error: 'URL deve ser http(s).' }))
+    .optional(),
 });
 
 /** Criação de Conteúdo bruto (FR-005-001/002/003/010/011). */
