@@ -11,6 +11,11 @@
  * inteira aborta. Sem ADMIN (env ausente/parcial), o material é pulado —
  * `RawContent` exige `authorId` (coluna `NOT NULL`, FK `Restrict`).
  *
+ * **`seedMaterial` não é puramente aditiva**: remove o material legado de
+ * Direito Administrativo/Constitucional antes de semear Direito Tributário
+ * (A-005-011) — guardado para nunca rodar em produção (`isProduction` de
+ * `seed-material.ts`, default `env.NODE_ENV === 'production'`).
+ *
  * Só este arquivo é executável como script (`tsx prisma/seed.ts` /
  * `npm run db:seed`); `seed-admin.ts`, `seed-material.ts` e
  * `seed-dev-editor.ts` só exportam funções — importá-los não escreve no

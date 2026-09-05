@@ -2,6 +2,7 @@ import { seedAdmin } from '../../prisma/seed-admin';
 import { seedDevEditor } from '../../prisma/seed-dev-editor';
 import { seedMaterial } from '../../prisma/seed-material';
 import { PROOF_RADAR_CLASSES } from '../../src/domain/types';
+import { verifyPassword } from '../../src/lib/password';
 import { closeTestDb, resetDb, testPrisma } from './db';
 
 /**
@@ -44,6 +45,18 @@ async function seedAdminAndMaterial(): Promise<{ id: string; email: string }> {
   await seedMaterial(testPrisma, { authorId: admin.id });
 
   return admin;
+}
+
+/**
+ * Semeia diretamente (via `testPrisma`, não via `seedMaterial`) o material
+ * legado que F2 substitui — Direito Administrativo/Constitucional. Sem isto
+ * o caso (iv) roda sobre um banco já truncado pelo `beforeEach`, sem nenhum
+ * legado a não-remover: o mutante "remover a chamada de
+ * `removeLegacyDisciplines` dentro de `seedMaterial`" sobrevive, porque não há
+ * legado para permanecer.
+ */
+async function seedLegacyDiscipline(slug: string, name: string): Promise<void> {
+  await testPrisma.discipline.create({ data: { name, slug } });
 }
 
 describe('seedMaterial — AC-005-027: carga de exemplo de Obrigação Tributária', () => {
@@ -109,8 +122,23 @@ describe('seedMaterial — AC-005-027: carga de exemplo de Obrigação Tributár
     }
   });
 
-  it('(iv) nenhum material de Direito Administrativo/Constitucional remanesce após seedMaterial', async () => {
-    await seedAdminAndMaterial();
+  it('(iv) a semente SUBSTITUI o legado — material pré-existente de Direito Administrativo/Constitucional some após seedMaterial', async () => {
+    // Semeia o legado ANTES de seedMaterial — sem isto o mutante "remover a
+    // chamada de removeLegacyDisciplines" sobrevive (nada a não-remover).
+    await seedLegacyDiscipline('direito-administrativo', 'Direito Administrativo');
+    await seedLegacyDiscipline('direito-constitucional', 'Direito Constitucional');
+    expect(
+      await testPrisma.discipline.count({
+        where: { name: { in: ['Direito Administrativo', 'Direito Constitucional'] } },
+      }),
+    ).toBe(2);
+
+    const outcome = await seedAdmin(testPrisma, { email: ADMIN_EMAIL, password: ADMIN_PASSWORD });
+    if (outcome.status !== 'created') {
+      throw new Error(`seedAdmin não criou o ADMIN esperado pelo teste: ${outcome.status}`);
+    }
+    const admin = await testPrisma.user.findUniqueOrThrow({ where: { email: outcome.email } });
+    await seedMaterial(testPrisma, { authorId: admin.id });
 
     const legacyDisciplines = await testPrisma.discipline.count({
       where: { name: { in: ['Direito Administrativo', 'Direito Constitucional'] } },
@@ -125,6 +153,24 @@ describe('seedMaterial — AC-005-027: carga de exemplo de Obrigação Tributár
     expect(await testPrisma.mnemonic.count()).toBe(0);
   });
 
+  it('em produção (isProduction=true), removeLegacyDisciplines não toca disciplinas existentes (retry Wave 2, gate 8)', async () => {
+    await seedLegacyDiscipline('direito-administrativo', 'Direito Administrativo');
+    await seedLegacyDiscipline('direito-constitucional', 'Direito Constitucional');
+
+    const outcome = await seedAdmin(testPrisma, { email: ADMIN_EMAIL, password: ADMIN_PASSWORD });
+    if (outcome.status !== 'created') {
+      throw new Error(`seedAdmin não criou o ADMIN esperado pelo teste: ${outcome.status}`);
+    }
+    const admin = await testPrisma.user.findUniqueOrThrow({ where: { email: outcome.email } });
+
+    await seedMaterial(testPrisma, { authorId: admin.id, isProduction: true });
+
+    const legacyDisciplines = await testPrisma.discipline.count({
+      where: { name: { in: ['Direito Administrativo', 'Direito Constitucional'] } },
+    });
+    expect(legacyDisciplines).toBe(2);
+  });
+
   it('invariante §1.3 — nenhum RawContent semeado fica sem radarClass', async () => {
     await seedAdminAndMaterial();
 
@@ -137,10 +183,11 @@ describe('seedMaterial — AC-005-027: carga de exemplo de Obrigação Tributár
 });
 
 describe('seedDevEditor — sujeito de dev do gate 9 das telas', () => {
-  it('credenciais presentes: cria exatamente 1 EDITOR com o e-mail dado', async () => {
+  it('credenciais presentes: cria exatamente 1 EDITOR com o e-mail dado, senha hasheada (nunca em claro)', async () => {
+    const plainPassword = 'editor-dev-secret-1234';
     const outcome = await seedDevEditor(testPrisma, {
       email: 'editor.dev@example.com',
-      password: 'editor-dev-secret-1234',
+      password: plainPassword,
     });
 
     expect(outcome).toEqual({ status: 'created', email: 'editor.dev@example.com' });
@@ -148,12 +195,40 @@ describe('seedDevEditor — sujeito de dev do gate 9 das telas', () => {
     const editors = await testPrisma.user.findMany({ where: { role: 'EDITOR' } });
     expect(editors).toHaveLength(1);
     expect(editors[0]?.email).toBe('editor.dev@example.com');
+
+    // Mutante: gravar a senha em claro faz esta asserção reprovar.
+    expect(editors[0]?.passwordHash).not.toBe(plainPassword);
+    expect(await verifyPassword(plainPassword, editors[0]?.passwordHash ?? '')).toBe(true);
   });
 
   it('chamado sem argumentos / credencial ausente: nenhum EDITOR criado e não lança', async () => {
     const outcome = await seedDevEditor(testPrisma, { email: undefined, password: undefined });
 
     expect(outcome).toEqual({ status: 'not-configured' });
+    expect(await testPrisma.user.count({ where: { role: 'EDITOR' } })).toBe(0);
+  });
+
+  it('e-mail já pertence a um usuário existente → exists, role/senha inalterados (retry Wave 2, gate 8)', async () => {
+    const existingEmail = 'ja.existe@example.com';
+    const original = await testPrisma.user.create({
+      data: {
+        email: existingEmail,
+        name: 'Usuária original',
+        passwordHash: 'hash-original-irrelevante',
+        role: 'ADMIN',
+      },
+    });
+
+    const outcome = await seedDevEditor(testPrisma, {
+      email: existingEmail,
+      password: 'nova-senha-que-nao-deveria-entrar',
+    });
+
+    expect(outcome).toEqual({ status: 'exists' });
+
+    const reread = await testPrisma.user.findUniqueOrThrow({ where: { id: original.id } });
+    expect(reread.role).toBe('ADMIN');
+    expect(reread.passwordHash).toBe('hash-original-irrelevante');
     expect(await testPrisma.user.count({ where: { role: 'EDITOR' } })).toBe(0);
   });
 });

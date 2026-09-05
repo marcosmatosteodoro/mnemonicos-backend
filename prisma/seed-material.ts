@@ -8,7 +8,13 @@
  * este módulo nunca escreve no banco por si só — só a chamada explícita de
  * `seedMaterial` escreve. `authorId` vem de quem chama (o ADMIN é assunto do
  * bootstrap em `seed-admin.ts`, não deste laço).
+ *
+ * **Não é puramente aditiva**: `removeLegacyDisciplines` apaga Direito
+ * Administrativo/Constitucional (A-005-011) e cascateia até
+ * `CardState`/`Review` de estudante — guardada para nunca rodar em produção
+ * (`isProduction`, injetável para teste, default `env.NODE_ENV === 'production'`).
  */
+import { env } from '../src/config/env';
 import type { NormativeSourceType, ProofRadarClass } from '../src/domain/types';
 import type { PrismaClient } from '../src/generated/prisma/client';
 
@@ -95,9 +101,21 @@ const LEGACY_DISCIPLINE_SLUGS = ['direito-administrativo', 'direito-constitucion
  * caso ainda exista de uma carga anterior à F2. `onDelete: Cascade` de
  * `Topic`/`Mnemonic`/`Flashcard` até `Discipline` faz o resto descer junto.
  * No-op quando já removido (idempotente).
+ *
+ * **Nunca roda em produção**: sem esta guarda, um `DATABASE_URL` de
+ * staging/produção perderia dado de estudante (`CardState`/`Review`
+ * cascateiam junto) a cada `npm run db:seed` — contraria a regra do projeto
+ * de nunca alterar estrutura/dado silenciosamente.
  */
-async function removeLegacyDisciplines(client: PrismaClient): Promise<void> {
+async function removeLegacyDisciplines(client: PrismaClient, isProduction: boolean): Promise<void> {
+  if (isProduction) return;
   await client.discipline.deleteMany({ where: { slug: { in: LEGACY_DISCIPLINE_SLUGS } } });
+}
+
+interface SeedMaterialOptions {
+  authorId: string;
+  /** Injetável para teste; default `env.NODE_ENV === 'production'`. */
+  isProduction?: boolean;
 }
 
 /**
@@ -107,9 +125,9 @@ async function removeLegacyDisciplines(client: PrismaClient): Promise<void> {
  */
 export async function seedMaterial(
   client: PrismaClient,
-  { authorId }: { authorId: string },
+  { authorId, isProduction = env.NODE_ENV === 'production' }: SeedMaterialOptions,
 ): Promise<void> {
-  await removeLegacyDisciplines(client);
+  await removeLegacyDisciplines(client, isProduction);
 
   for (const discipline of DISCIPLINES) {
     const savedDiscipline = await client.discipline.upsert({
