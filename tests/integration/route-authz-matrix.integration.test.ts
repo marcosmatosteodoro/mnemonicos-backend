@@ -321,8 +321,8 @@ describe('A-002-019 — /disciplines passa a exigir sessão', () => {
   });
 });
 
-describe('EMENDA DEC-003-004 — verifyOrigin por POSIÇÃO: 1º handler nas mutações, ausente nos GETs (repo-wide, retry pós gate 1-7)', () => {
-  it('cada POST/PATCH/PUT/DELETE não-público tem verifyOrigin como 1º handler da cadeia (não só "em algum lugar")', () => {
+describe('EMENDA DEC-003-004 — verifyOrigin por POSIÇÃO: 1º handler nas mutações, ausente nos GETs (repo-wide)', () => {
+  it('cada POST/PATCH/PUT/DELETE não-público tem verifyOrigin como 1º handler da cadeia', () => {
     const mutations = NON_PUBLIC.filter((route) => MUTATION_METHODS.has(route.method));
     expect(mutations.length).toBeGreaterThan(0);
 
