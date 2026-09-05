@@ -321,15 +321,23 @@ describe('A-002-019 — /disciplines passa a exigir sessão', () => {
   });
 });
 
-describe('EMENDA DEC-003-004 — verifyOrigin em toda rota de mutação não-pública', () => {
-  it('cada POST/PATCH/PUT/DELETE não-público tem verifyOrigin (por referência de função) na cadeia', () => {
+describe('EMENDA DEC-003-004 — verifyOrigin por POSIÇÃO: 1º handler nas mutações, ausente nos GETs (repo-wide, retry pós gate 1-7)', () => {
+  it('cada POST/PATCH/PUT/DELETE não-público tem verifyOrigin como 1º handler da cadeia (não só "em algum lugar")', () => {
     const mutations = NON_PUBLIC.filter((route) => MUTATION_METHODS.has(route.method));
     expect(mutations.length).toBeGreaterThan(0);
 
-    const semVerifyOrigin = mutations
-      .filter((route) => !route.handlers.includes(verifyOrigin))
+    const foraDaPrimeiraPosicao = mutations
+      .filter((route) => route.handlers[0] !== verifyOrigin)
       .map(key);
-    expect(semVerifyOrigin).toEqual([]);
+    expect(foraDaPrimeiraPosicao).toEqual([]);
+  });
+
+  it('nenhum GET não-público tem verifyOrigin na cadeia (leitura não exige defesa CSRF)', () => {
+    const reads = NON_PUBLIC.filter((route) => route.method === 'GET');
+    expect(reads.length).toBeGreaterThan(0);
+
+    const comVerifyOrigin = reads.filter((route) => route.handlers.includes(verifyOrigin)).map(key);
+    expect(comVerifyOrigin).toEqual([]);
   });
 });
 
