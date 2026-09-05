@@ -5,12 +5,17 @@ import { PrismaPg } from '@prisma/adapter-pg';
 import type { UserRole } from '../../src/domain/types';
 import { PrismaClient } from '../../src/generated/prisma/client';
 import { AppError, NotFoundError } from '../../src/http/errors';
-import type { CreateRawContentInput } from '../../src/modules/contents/contents.schema';
+import type {
+  CreateRawContentInput,
+  SaveRuleBreakdownInput,
+} from '../../src/modules/contents/contents.schema';
 import {
   type ContentActor,
   createRawContent,
   getRawContent,
+  getRuleBreakdown,
   listRawContents,
+  saveRuleBreakdown,
   softDeleteRawContent,
   updateRawContent,
 } from '../../src/modules/contents/contents.service';
@@ -608,5 +613,198 @@ describe('listRawContents — round-trips fixados (lição [Performance], gate 1
     );
 
     expect(queries).toHaveLength(2);
+  });
+});
+
+/**
+ * `getRuleBreakdown`/`saveRuleBreakdown` (TASK-006-009 / COMP-006-003) — quarta
+ * fatia do service: upsert 1:1 da Quebra da regra por `rawContentId` (`@unique`,
+ * T001), obrigatoriedade dos 4 blocos essenciais e inalcançabilidade herdada do
+ * pai (DEC-006-001). Fechamento contável do gate 8 (2 métodos, 2 provas): as
+ * **2** funções que tocam `raw_contents` via `assertRawContentReachable` —
+ * `getRuleBreakdown` (leitura) e `saveRuleBreakdown` (escrita em
+ * `rule_breakdowns` condicionada ao pai) — têm cada uma prova de segunda
+ * instância cuja mutação do predicado reprova, incluindo a negação da
+ * **escrita** de EDITOR A sobre o `RawContent` de EDITOR B (IDOR de escrita —
+ * decisão 4.232).
+ */
+const breakdownInputA: SaveRuleBreakdownInput = {
+  concept: 'Vínculo jurídico entre Fisco e contribuinte.',
+  action: 'Cobrar o tributo devido.',
+  object: 'A obrigação tributária.',
+  condition: 'Quando há substituição tributária.',
+  exception: 'Salvo isenção legal expressa.',
+  essence: 'Nasce da ocorrência do fato gerador.',
+};
+
+const breakdownInputB: SaveRuleBreakdownInput = {
+  concept: 'Segundo conceito, após alteração.',
+  action: 'Segunda ação, após alteração.',
+  object: 'Segundo objeto, após alteração.',
+  essence: 'Segunda síntese, após alteração.',
+};
+
+describe('saveRuleBreakdown / getRuleBreakdown — round-trip e atualização in-place (AC-005-019, AC-005-024, prova 1/2 gate 8)', () => {
+  it('grava os 6 campos, lê exatamente como persistido; 2ª gravação atualiza a mesma linha e a leitura seguinte reflete os novos valores', async () => {
+    const editorA = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const seeded = await seedRawContent({ authorId: editorA.id, topicId });
+
+    const saved = await saveRuleBreakdown(seeded.id, breakdownInputA, actorOf(editorA), testPrisma);
+    expect(saved).toEqual({
+      concept: breakdownInputA.concept,
+      action: breakdownInputA.action,
+      object: breakdownInputA.object,
+      condition: breakdownInputA.condition,
+      exception: breakdownInputA.exception,
+      essence: breakdownInputA.essence,
+    });
+
+    const read = await getRuleBreakdown(seeded.id, actorOf(editorA), testPrisma);
+    expect(read).toEqual(saved);
+
+    // 2ª gravação: outros valores, e condition/exception omitidos ("não se
+    // aplica" — A-005-009) → viram null, nunca preservam o valor antigo.
+    const updated = await saveRuleBreakdown(
+      seeded.id,
+      breakdownInputB,
+      actorOf(editorA),
+      testPrisma,
+    );
+    expect(updated.concept).toBe(breakdownInputB.concept);
+    expect(updated.action).toBe(breakdownInputB.action);
+    expect(updated.object).toBe(breakdownInputB.object);
+    expect(updated.essence).toBe(breakdownInputB.essence);
+    expect(updated.condition).toBeNull();
+    expect(updated.exception).toBeNull();
+
+    const rereadAfterUpdate = await getRuleBreakdown(seeded.id, actorOf(editorA), testPrisma);
+    expect(rereadAfterUpdate).toEqual(updated);
+
+    // Upsert 1:1 (AC-005-020): a 2ª gravação nunca cria uma segunda linha.
+    const rowCount = await testPrisma.ruleBreakdown.count({
+      where: { rawContentId: seeded.id },
+    });
+    expect(rowCount).toBe(1);
+  });
+});
+
+describe('saveRuleBreakdown — unicidade 1:1 sob corrida (AC-005-020, fronteira: RawContent sem RuleBreakdown)', () => {
+  it('2 saveRuleBreakdown concorrentes para o mesmo rawContentId sem Quebra prévia → exatamente 1 linha; conteúdo é um dos dois inputs', async () => {
+    const editorA = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const seeded = await seedRawContent({ authorId: editorA.id, topicId });
+
+    // Mutante do critério (check-then-act: findFirst + create incondicional,
+    // sem apoiar no `@unique`/`upsert`): sob esta corrida, criaria 2 linhas.
+    // O `@unique` + `upsert` nativo do Postgres resolve atomicamente.
+    await Promise.all([
+      saveRuleBreakdown(seeded.id, breakdownInputA, actorOf(editorA), testPrisma),
+      saveRuleBreakdown(seeded.id, breakdownInputB, actorOf(editorA), testPrisma),
+    ]);
+
+    const count = await testPrisma.ruleBreakdown.count({ where: { rawContentId: seeded.id } });
+    expect(count).toBe(1);
+
+    const row = await testPrisma.ruleBreakdown.findUniqueOrThrow({
+      where: { rawContentId: seeded.id },
+    });
+    expect([breakdownInputA.concept, breakdownInputB.concept]).toContain(row.concept);
+  });
+});
+
+describe('getRuleBreakdown / saveRuleBreakdown — recusa quando o pai não existe/soft-deleted/fora do alcance (AC-005-021, AC-005-013, AC-005-037, AC-005-031, prova 2/2 gate 8)', () => {
+  it('rawContentId inexistente → AppError nas duas funções', async () => {
+    const editorA = await createUser('EDITOR');
+    const randomId = randomUUID();
+
+    await expect(getRuleBreakdown(randomId, actorOf(editorA), testPrisma)).rejects.toThrow(
+      AppError,
+    );
+    await expect(
+      saveRuleBreakdown(randomId, breakdownInputA, actorOf(editorA), testPrisma),
+    ).rejects.toThrow(AppError);
+  });
+
+  it('pai soft-deleted (mesmo autor) → AppError nas duas funções; a Quebra gravada antes da remoção continua no banco, mas inalcançável (AC-005-013, AC-005-031, AC-005-037) — mutação de `deletedAt: null` reprova este caso', async () => {
+    const editorA = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const seeded = await seedRawContent({ authorId: editorA.id, topicId });
+    await saveRuleBreakdown(seeded.id, breakdownInputA, actorOf(editorA), testPrisma);
+
+    await softDeleteRawContent(seeded.id, actorOf(editorA), testPrisma);
+
+    await expect(getRuleBreakdown(seeded.id, actorOf(editorA), testPrisma)).rejects.toThrow(
+      AppError,
+    );
+    await expect(
+      saveRuleBreakdown(seeded.id, breakdownInputB, actorOf(editorA), testPrisma),
+    ).rejects.toThrow(AppError);
+
+    const orphan = await testPrisma.ruleBreakdown.findUnique({
+      where: { rawContentId: seeded.id },
+    });
+    expect(orphan).not.toBeNull();
+    expect(orphan?.concept).toBe(breakdownInputA.concept);
+  });
+
+  it('pai de outro autor (EDITOR B), ator EDITOR A → AppError nas duas funções (IDOR de escrita — decisão 4.232); nenhum byte alcança rule_breakdowns — mutação do alcance reprova este caso', async () => {
+    const editorA = await createUser('EDITOR');
+    const editorB = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const seeded = await seedRawContent({ authorId: editorB.id, topicId });
+
+    await expect(getRuleBreakdown(seeded.id, actorOf(editorA), testPrisma)).rejects.toThrow(
+      NotFoundError,
+    );
+    await expect(
+      saveRuleBreakdown(seeded.id, breakdownInputA, actorOf(editorA), testPrisma),
+    ).rejects.toThrow(NotFoundError);
+
+    const count = await testPrisma.ruleBreakdown.count({ where: { rawContentId: seeded.id } });
+    expect(count).toBe(0);
+  });
+
+  it('ADMIN alcança leitura e escrita da Quebra de conteúdo de EDITOR (ramo ADMIN do alcance)', async () => {
+    const editorA = await createUser('EDITOR');
+    const admin = await createUser('ADMIN');
+    const topicId = await createTopic();
+    const seeded = await seedRawContent({ authorId: editorA.id, topicId });
+
+    const saved = await saveRuleBreakdown(seeded.id, breakdownInputA, actorOf(admin), testPrisma);
+    expect(saved.concept).toBe(breakdownInputA.concept);
+
+    const read = await getRuleBreakdown(seeded.id, actorOf(admin), testPrisma);
+    expect(read).toEqual(saved);
+  });
+});
+
+/**
+ * Árvore de decisão com precedência (lição [Testes] "um caso por PAR de ramos
+ * que coincide"): `assertRawContentReachable` avalia `inexistente → soft-deleted
+ * → fora do alcance`, nessa ordem. O par alcançável que coincide é
+ * `soft-deleted ∧ fora do alcance`; `inexistente` não coincide com os demais
+ * (id ausente não tem autor nem `deletedAt`). O caso abaixo nomeia quem vence
+ * e assere a mensagem específica de "removido" — o mutante que troca a ordem
+ * dos guards `soft-deleted`/`fora do alcance` faria esta asserção observar
+ * "não encontrado" em vez de "foi removido", e reprovaria.
+ */
+describe('árvore de decisão com precedência — par coincidente soft-deleted ∧ fora do alcance', () => {
+  it('conteúdo removido E de outro autor → recusa por remoção (removido vence sobre "fora do alcance")', async () => {
+    const editorA = await createUser('EDITOR');
+    const editorB = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const seeded = await seedRawContent({
+      authorId: editorB.id,
+      topicId,
+      deletedAt: new Date(),
+    });
+
+    await expect(getRuleBreakdown(seeded.id, actorOf(editorA), testPrisma)).rejects.toThrow(
+      'Conteúdo bruto foi removido.',
+    );
+    await expect(
+      saveRuleBreakdown(seeded.id, breakdownInputA, actorOf(editorA), testPrisma),
+    ).rejects.toThrow('Conteúdo bruto foi removido.');
   });
 });

@@ -9,8 +9,7 @@ import { NORMATIVE_SOURCE_TYPES, PROOF_RADAR_CLASSES } from '../../domain/types'
  * de divergência cross-repo `tests/unit/domain-types-parity.test.ts`. Esta
  * fronteira de validação decide o que a API aceita: reescrevê-los aqui à mão
  * ficaria fora dessa rede de paridade e poderia divergir de `schema.prisma`
- * sem nada acusar. `saveRuleBreakdownSchema` (TASK-006-009) nasce em tarefa
- * seguinte.
+ * sem nada acusar.
  */
 
 /**
@@ -95,3 +94,20 @@ export const listRawContentsQuerySchema = z.object({
 });
 
 export type ListRawContentsQuery = z.infer<typeof listRawContentsQuerySchema>;
+
+/**
+ * Quebra da regra (COMP-006-002/COMP-006-003, TASK-006-009) — FR-005-017,
+ * AC-005-022: `concept`, `action`, `object` e `essence` obrigatórios
+ * (não-vazios); `condition`/`exception` opcionais (A-005-009 — vazio = "não se
+ * aplica", nunca campo ausente do contrato).
+ */
+export const saveRuleBreakdownSchema = z.object({
+  concept: z.string().trim().min(1, 'Informe o conceito (CONCEITO).'),
+  action: z.string().trim().min(1, 'Informe a ação (AÇÃO).'),
+  object: z.string().trim().min(1, 'Informe o objeto (OBJETO).'),
+  essence: z.string().trim().min(1, 'Informe a síntese da regra essencial.'),
+  condition: z.string().trim().optional(),
+  exception: z.string().trim().optional(),
+});
+
+export type SaveRuleBreakdownInput = z.infer<typeof saveRuleBreakdownSchema>;

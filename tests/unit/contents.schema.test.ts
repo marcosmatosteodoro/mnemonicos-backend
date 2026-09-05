@@ -2,6 +2,7 @@ import type * as ContentsSchemaModule from '../../src/modules/contents/contents.
 import {
   createRawContentSchema,
   listRawContentsQuerySchema,
+  saveRuleBreakdownSchema,
   updateRawContentSchema,
 } from '../../src/modules/contents/contents.schema';
 import type * as DomainTypesModule from '../../src/domain/types';
@@ -177,6 +178,83 @@ describe('listRawContentsQuerySchema — só page/perPage (NFR-005-004, TASK-006
   it('coerção numérica: strings vindas de query string viram number', () => {
     const result = listRawContentsQuerySchema.parse({ page: '3', perPage: '15' });
     expect(result).toEqual({ page: 3, perPage: 15 });
+  });
+});
+
+describe('saveRuleBreakdownSchema — obrigatórios vs. opcionais (TASK-006-009, AC-005-022)', () => {
+  const minimalBreakdown = {
+    concept: 'Vínculo jurídico entre Fisco e contribuinte.',
+    action: 'Cobrar o tributo devido.',
+    object: 'A obrigação tributária.',
+    essence: 'Nasce da ocorrência do fato gerador.',
+  };
+
+  it('aceita o conjunto mínimo (concept, action, object, essence) sem condition/exception', () => {
+    const result = saveRuleBreakdownSchema.safeParse(minimalBreakdown);
+    expect(result.success).toBe(true);
+  });
+
+  it('aceita com condition/exception explicitamente vazios ("não se aplica" — A-005-009)', () => {
+    const result = saveRuleBreakdownSchema.safeParse({
+      ...minimalBreakdown,
+      condition: '',
+      exception: '',
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('aceita com condition/exception preenchidos', () => {
+    const result = saveRuleBreakdownSchema.safeParse({
+      ...minimalBreakdown,
+      condition: 'Quando há substituição tributária.',
+      exception: 'Salvo isenção legal expressa.',
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('falta concept → rejeita e nomeia concept', () => {
+    const { concept: _concept, ...withoutConcept } = minimalBreakdown;
+    const result = saveRuleBreakdownSchema.safeParse(withoutConcept);
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues.some((issue) => issue.path[0] === 'concept')).toBe(true);
+    }
+  });
+
+  it('falta action → rejeita e nomeia action', () => {
+    const { action: _action, ...withoutAction } = minimalBreakdown;
+    const result = saveRuleBreakdownSchema.safeParse(withoutAction);
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues.some((issue) => issue.path[0] === 'action')).toBe(true);
+    }
+  });
+
+  it('falta object → rejeita e nomeia object', () => {
+    const { object: _object, ...withoutObject } = minimalBreakdown;
+    const result = saveRuleBreakdownSchema.safeParse(withoutObject);
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues.some((issue) => issue.path[0] === 'object')).toBe(true);
+    }
+  });
+
+  it('falta essence → rejeita e nomeia essence', () => {
+    const { essence: _essence, ...withoutEssence } = minimalBreakdown;
+    const result = saveRuleBreakdownSchema.safeParse(withoutEssence);
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues.some((issue) => issue.path[0] === 'essence')).toBe(true);
+    }
+  });
+
+  it('essence vazia (string em branco) → rejeita — não-vazio é a régua, não só presença', () => {
+    const result = saveRuleBreakdownSchema.safeParse({ ...minimalBreakdown, essence: '   ' });
+    expect(result.success).toBe(false);
   });
 });
 

@@ -5,6 +5,7 @@ import { prisma } from '../../lib/prisma';
 import type {
   CreateRawContentInput,
   ListRawContentsQuery,
+  SaveRuleBreakdownInput,
   UpdateRawContentInput,
 } from './contents.schema';
 
@@ -271,4 +272,127 @@ export async function listRawContents(
     perPage,
     total,
   };
+}
+
+/**
+ * Guarda o alcance do `RawContent` pai para a Quebra da regra (COMP-006-003 /
+ * TASK-006-009) — reusa `ACTIVE_RAW_CONTENT_WHERE` e `scopeWhere` (T006/T008),
+ * não reimplementa o predicado de alcance nem o filtro `deletedAt: null`.
+ *
+ * **Guards avaliados em ordem declarada** (lição [Testes] "Árvore de decisão
+ * com precedência: um caso por PAR de ramos que coincide"):
+ * `inexistente → soft-deleted → fora do alcance`. O par alcançável
+ * `soft-deleted ∧ fora do alcance` (`RawContent` de outro autor, já removido)
+ * resolve para **"removido"**: reflete o estado real do dado, não a autoria.
+ * `inexistente` e `fora do alcance` compartilham a **mesma** mensagem — a
+ * distinção "não existe" vs. "existe, mas não é seu" segue indistinguível
+ * (nunca 403, mesma política de T006 contra oráculo de autoria).
+ */
+async function assertRawContentReachable(
+  rawContentId: string,
+  actor: ContentActor,
+  db: RawContentClient,
+): Promise<void> {
+  const parent = await db.rawContent.findUnique({
+    where: { id: rawContentId },
+    select: { authorId: true, deletedAt: true },
+  });
+
+  if (parent === null) {
+    throw new NotFoundError('Conteúdo bruto não encontrado.');
+  }
+
+  if (parent.deletedAt !== ACTIVE_RAW_CONTENT_WHERE.deletedAt) {
+    throw new NotFoundError('Conteúdo bruto foi removido.');
+  }
+
+  const scope = scopeWhere(actor);
+  if (scope.authorId !== undefined && parent.authorId !== scope.authorId) {
+    throw new NotFoundError('Conteúdo bruto não encontrado.');
+  }
+}
+
+const RULE_BREAKDOWN_SELECT = {
+  concept: true,
+  action: true,
+  object: true,
+  condition: true,
+  exception: true,
+  essence: true,
+} as const satisfies Prisma.RuleBreakdownSelect;
+
+export interface RuleBreakdownDetail {
+  concept: string;
+  action: string;
+  object: string;
+  condition: string | null;
+  exception: string | null;
+  essence: string;
+}
+
+/** Cliente Prisma injetável do par `getRuleBreakdown`/`saveRuleBreakdown`. */
+type RuleBreakdownClient = Pick<typeof prisma, 'rawContent' | 'ruleBreakdown'>;
+
+/**
+ * Devolve a Quebra da regra do `rawContentId` (FR-005-016, AC-005-021,
+ * AC-005-031, AC-005-037): recusa via `assertRawContentReachable` quando o pai
+ * não existe, está soft-deleted ou está fora do alcance do ator; 404 também
+ * quando o pai é alcançável mas ainda não tem Quebra salva (nenhum
+ * `saveRuleBreakdown` anterior).
+ */
+export async function getRuleBreakdown(
+  rawContentId: string,
+  actor: ContentActor,
+  db: RuleBreakdownClient = prisma,
+): Promise<RuleBreakdownDetail> {
+  await assertRawContentReachable(rawContentId, actor, db);
+
+  const row = await db.ruleBreakdown.findUnique({
+    where: { rawContentId },
+    select: RULE_BREAKDOWN_SELECT,
+  });
+
+  if (row === null) throw new NotFoundError('Quebra da regra não encontrada.');
+
+  return row;
+}
+
+/**
+ * Upsert **1:1** por `rawContentId` (`@unique` do schema — T001; FR-005-014,
+ * FR-005-015, AC-005-019, AC-005-020, AC-005-024): a 1ª gravação cria, as
+ * seguintes atualizam a **mesma** linha — nunca uma segunda. Mesma recusa de
+ * pai de `getRuleBreakdown` (`assertRawContentReachable`), incluindo a
+ * **negação de escrita** quando o `RawContent` é de outro autor (IDOR de
+ * escrita — decisão 4.232): a guarda roda **antes** do `upsert`, então nenhum
+ * byte chega a `rule_breakdowns` quando o ator não alcança o pai.
+ *
+ * Sob concorrência (2 chamadas simultâneas para o mesmo `rawContentId` sem
+ * Quebra prévia), o `@unique` + `upsert` nativo do Postgres (`INSERT … ON
+ * CONFLICT … DO UPDATE`) resolve atomicamente: no máximo 1 linha resulta,
+ * nunca 2 — o service não faz `findFirst` + `create` (check-then-act), que
+ * deixaria uma janela de corrida entre a checagem e a escrita.
+ */
+export async function saveRuleBreakdown(
+  rawContentId: string,
+  input: SaveRuleBreakdownInput,
+  actor: ContentActor,
+  db: RuleBreakdownClient = prisma,
+): Promise<RuleBreakdownDetail> {
+  await assertRawContentReachable(rawContentId, actor, db);
+
+  const fields = {
+    concept: input.concept,
+    action: input.action,
+    object: input.object,
+    condition: input.condition ?? null,
+    exception: input.exception ?? null,
+    essence: input.essence,
+  };
+
+  return db.ruleBreakdown.upsert({
+    where: { rawContentId },
+    create: { rawContentId, ...fields },
+    update: fields,
+    select: RULE_BREAKDOWN_SELECT,
+  });
 }
