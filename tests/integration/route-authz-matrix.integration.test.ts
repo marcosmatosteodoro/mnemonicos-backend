@@ -151,7 +151,7 @@ afterAll(async () => {
 });
 
 describe('fonte de medição da métrica §1.3 — censo das rotas montadas', () => {
-  it('a árvore montada é exatamente estes 12 pares método+caminho (tripwire: rota nova sem atualizar a suíte falha aqui)', () => {
+  it('a árvore montada é exatamente estes 19 pares método+caminho (tripwire: rota nova sem atualizar a suíte falha aqui)', () => {
     expect(ROUTES.map(key).sort()).toEqual(
       [
         'GET /health',
@@ -166,6 +166,13 @@ describe('fonte de medição da métrica §1.3 — censo das rotas montadas', ()
         'PATCH /users/:id/disable',
         'POST /users/:id/reset-password',
         'GET /disciplines',
+        'GET /contents',
+        'POST /contents',
+        'GET /contents/:id',
+        'PATCH /contents/:id',
+        'DELETE /contents/:id',
+        'GET /contents/:id/breakdown',
+        'PUT /contents/:id/breakdown',
       ].sort(),
     );
   });
@@ -224,7 +231,7 @@ describe('AC-002-018 — nenhuma capacidade de auto-registro na superfície mont
     expect(suspicious).toEqual([]);
   });
 
-  it('POST /users (única rota que cria conta) exige {ADMIN}; as demais POST não-{ADMIN} são de sessão, não de criação de conta', () => {
+  it('POST /users (única rota que cria conta) exige {ADMIN}; as demais POST não-{ADMIN} não criam conta (sessão ou domínio de conteúdo — TASK-006-011)', () => {
     expect(REGISTRY.get('POST /users')).toEqual(new Set<UserRole>(['ADMIN']));
 
     const postRoutes = NON_PUBLIC.filter((route) => route.method === 'POST');
@@ -234,7 +241,7 @@ describe('AC-002-018 — nenhuma capacidade de auto-registro na superfície mont
       .filter((route) => !isAdminOnly(key(route)))
       .map((route) => route.path)
       .sort();
-    expect(nonAdminPost).toEqual(['/auth/change-password', '/auth/logout']);
+    expect(nonAdminPost).toEqual(['/auth/change-password', '/auth/logout', '/contents']);
   });
 
   it('POST /api/v1/users sem sessão → 401; com sessão de EDITOR → 403', async () => {
@@ -350,6 +357,59 @@ describe('montagem — caminho feliz (oráculo distinto do request): sessão leg
     expect(ROUTE_ROLES.size).toBeGreaterThanOrEqual(NON_PUBLIC.length);
     expect(() => declareRouteRoles('GET', '/rota-em-runtime', ['ADMIN'])).toThrow(/selad/i);
   });
+
+  it('[Arquitetura] GET /contents com sessão de EDITOR → 200, e com sessão de ADMIN → 200 (mutante que move a declaração de papéis para dentro do handler faz este caso virar 403)', async () => {
+    const { access: editorAccess } = await seedSession('EDITOR');
+    const asEditor = await request(app)
+      .get('/api/v1/contents')
+      .set('Cookie', `${ACCESS_COOKIE}=${editorAccess}`);
+    expect(asEditor.status).toBe(200);
+
+    const { access: adminAccess } = await seedSession('ADMIN');
+    const asAdmin = await request(app)
+      .get('/api/v1/contents')
+      .set('Cookie', `${ACCESS_COOKIE}=${adminAccess}`);
+    expect(asAdmin.status).toBe(200);
+  });
+});
+
+describe('TASK-006-011 — as 7 rotas de /contents sob a barreira (topologia adversarial, itens i/ii/v da lição [Segurança])', () => {
+  const CONTENT_ROUTE_KEYS = [
+    'GET /contents',
+    'POST /contents',
+    'GET /contents/:id',
+    'PATCH /contents/:id',
+    'DELETE /contents/:id',
+    'GET /contents/:id/breakdown',
+    'PUT /contents/:id/breakdown',
+  ];
+
+  it('cada uma das 7 rotas está declarada como {EDITOR, ADMIN}; GET/POST em /contents e GET/PUT em /contents/:id/breakdown têm chaves PRÓPRIAS (ii: 2º método no mesmo caminho)', () => {
+    for (const routeKey of CONTENT_ROUTE_KEYS) {
+      expect(REGISTRY.get(routeKey)).toEqual(new Set<UserRole>(['EDITOR', 'ADMIN']));
+    }
+
+    // Chaves independentes: nenhum par herda a declaração do outro pelo caminho.
+    expect(ROUTE_ROLES.has('GET /contents')).toBe(true);
+    expect(ROUTE_ROLES.has('POST /contents')).toBe(true);
+    expect(ROUTE_ROLES.has('GET /contents/:id/breakdown')).toBe(true);
+    expect(ROUTE_ROLES.has('PUT /contents/:id/breakdown')).toBe(true);
+  });
+
+  it('STUDENT recusado (403) nas 7 rotas — (i) a rota irmã estática GET /contents não "vaza" a permissividade para GET /contents/:id, nem vice-versa; (v) todas as 7 recusam STUDENT', async () => {
+    const contentRoutes = NON_PUBLIC.filter((route) => route.path.startsWith('/contents'));
+    expect(contentRoutes.map(key).sort()).toEqual([...CONTENT_ROUTE_KEYS].sort());
+
+    const { access } = await seedSession('STUDENT');
+
+    for (const route of contentRoutes) {
+      const res = await send(app, route.method, `/api/v1${concrete(route.path)}`).set(
+        'Cookie',
+        `${ACCESS_COOKIE}=${access}`,
+      );
+      expect(res.status).toBe(403);
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -425,6 +485,88 @@ describe('AC-002-014 — rota sem declaração de papel nasce negada (falha fech
     // undefined` reabriria exatamente este caminho.
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ leaked: true });
+  });
+});
+
+describe('[Testes] TASK-006-011 — assertDenyByDefault: teste de FUNÇÃO sobre as 7 rotas de /contents (iii + a lição "asserção de invariante exige DOIS testes: função + wiring")', () => {
+  const noop = (_req: unknown, res: { json: (b: unknown) => void }): void => res.json({ ok: true });
+
+  it('(a) reprova uma árvore com uma das 7 rotas de /contents sem declaração; aceita a árvore com as 7 declaradas', () => {
+    resetRouteRoles();
+    const incomplete = Router();
+    incomplete.use(requireAuth);
+    incomplete.get('/contents', requireRole('GET', '/contents', 'EDITOR', 'ADMIN'), noop);
+    incomplete.post('/contents', requireRole('POST', '/contents', 'EDITOR', 'ADMIN'), noop);
+    incomplete.get('/contents/:id', requireRole('GET', '/contents/:id', 'EDITOR', 'ADMIN'), noop);
+    incomplete.patch(
+      '/contents/:id',
+      requireRole('PATCH', '/contents/:id', 'EDITOR', 'ADMIN'),
+      noop,
+    );
+    incomplete.delete(
+      '/contents/:id',
+      requireRole('DELETE', '/contents/:id', 'EDITOR', 'ADMIN'),
+      noop,
+    );
+    incomplete.get(
+      '/contents/:id/breakdown',
+      requireRole('GET', '/contents/:id/breakdown', 'EDITOR', 'ADMIN'),
+      noop,
+    );
+    // 7ª rota SEM requireRole — não declara "PUT /contents/:id/breakdown".
+    incomplete.put('/contents/:id/breakdown', noop);
+
+    expect(() => assertDenyByDefault(incomplete)).toThrow(/PUT \/contents\/:id\/breakdown/);
+
+    resetRouteRoles();
+    const complete = Router();
+    complete.use(requireAuth);
+    complete.get('/contents', requireRole('GET', '/contents', 'EDITOR', 'ADMIN'), noop);
+    complete.post('/contents', requireRole('POST', '/contents', 'EDITOR', 'ADMIN'), noop);
+    complete.get('/contents/:id', requireRole('GET', '/contents/:id', 'EDITOR', 'ADMIN'), noop);
+    complete.patch('/contents/:id', requireRole('PATCH', '/contents/:id', 'EDITOR', 'ADMIN'), noop);
+    complete.delete(
+      '/contents/:id',
+      requireRole('DELETE', '/contents/:id', 'EDITOR', 'ADMIN'),
+      noop,
+    );
+    complete.get(
+      '/contents/:id/breakdown',
+      requireRole('GET', '/contents/:id/breakdown', 'EDITOR', 'ADMIN'),
+      noop,
+    );
+    complete.put(
+      '/contents/:id/breakdown',
+      requireRole('PUT', '/contents/:id/breakdown', 'EDITOR', 'ADMIN'),
+      noop,
+    );
+
+    expect(() => assertDenyByDefault(complete)).not.toThrow();
+  });
+});
+
+describe('[retry CR1] TASK-006-011 — assertDenyByDefault tem teste de WIRING específico de /contents (armamento no boot, não só de função)', () => {
+  afterEach(() => {
+    jest.dontMock('../../src/modules/contents/contents.routes');
+  });
+
+  it('(b) reimportar a árvore de montagem (routes.ts) com uma rota /contents sem requireRole → a carga do módulo LANÇA', async () => {
+    // Fecho falsificável (mutante d da TASK): comentar a linha
+    // `assertDenyByDefault(apiRoutes);` de routes.ts deixa ESTE teste vermelho.
+    await expect(
+      jest.isolateModulesAsync(async () => {
+        jest.doMock('../../src/modules/contents/contents.routes', () => {
+          const rogue = Router();
+          // não-pública, montada sem requireRole → sem chave "PUT /contents/:id/breakdown" em ROUTE_ROLES
+          rogue.put('/contents/:id/breakdown', (_req, res) => res.json({ leaked: true }));
+          return { contentsRoutes: rogue };
+        });
+
+        // `.js` explícito: `import()` num módulo CJS segue a resolução ESM do
+        // nodenext (o `moduleNameMapper` do Jest reescreve para o `.ts`).
+        await import('../../src/http/routes.js');
+      }),
+    ).rejects.toThrow(/PUT \/contents\/:id\/breakdown/);
   });
 });
 

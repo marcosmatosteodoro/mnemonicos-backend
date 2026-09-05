@@ -96,6 +96,17 @@ export const listRawContentsQuerySchema = z.object({
 export type ListRawContentsQuery = z.infer<typeof listRawContentsQuerySchema>;
 
 /**
+ * `:id` das rotas de `contents.routes.ts` (TASK-006-011) — precisa ser um UUID
+ * para sequer chegar ao service (mesmo padrão de `userIdParamSchema`,
+ * `users.schema.ts`).
+ */
+export const rawContentIdParamSchema = z.object({
+  id: z.uuid('Identificador de conteúdo bruto inválido.'),
+});
+
+export type RawContentIdParam = z.infer<typeof rawContentIdParamSchema>;
+
+/**
  * Quebra da regra (COMP-006-002/COMP-006-003, TASK-006-009) — FR-005-017,
  * AC-005-022: `concept`, `action`, `object` e `essence` obrigatórios
  * (não-vazios); `condition`/`exception` opcionais (A-005-009 — vazio = "não se

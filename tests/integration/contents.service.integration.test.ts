@@ -26,8 +26,20 @@ import { TEST_DATABASE_URL } from './db-url';
  * `contents.service.ts` — ciclo de vida do Conteúdo bruto (TASK-006-006 /
  * COMP-006-003) sobre o Postgres real (harness de TASK-003-016).
  *
+ * **Reconciliação agregada (TASK-006-011, achado do qa) — 7 métodos, 7 provas**:
+ * todo método de `contents.service.ts` que referencia `raw_contents` tem prova
+ * de mutação de escopo nomeada nesta suíte. As 7 provas se somam em 3 fatias
+ * (cada uma com seu próprio inventário local, abaixo):
+ *   - TASK-006-006 (4 métodos, 4 provas): `createRawContent`, `getRawContent`,
+ *     `updateRawContent`, `softDeleteRawContent`.
+ *   - TASK-006-008 (1 método, 1 prova): `listRawContents`.
+ *   - TASK-006-009 (2 métodos, 2 provas): `getRuleBreakdown`, `saveRuleBreakdown`.
+ * 4 + 1 + 2 = 7 métodos, 7 provas — nenhum método de leitura/escrita de
+ * `raw_contents` fica sem prova de mutação nomeada.
+ *
  * Inventário de casos do critério de mutação **contável** (lição ativa
- * [Segurança] "enumerar por DADO, não por rota") — **4 métodos, 4 provas**:
+ * [Segurança] "enumerar por DADO, não por rota") — 1ª fatia, **4 métodos, 4
+ * provas**:
  *   1. `createRawContent`  — "authorId vem do actorId, nunca do input"
  *   2. `getRawContent`     — "fora do alcance → 404" (mutação do alcance) +
  *                            "soft-deleted → 404" (mutação de `deletedAt`)
