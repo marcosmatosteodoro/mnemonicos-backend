@@ -9,8 +9,8 @@ import { NORMATIVE_SOURCE_TYPES, PROOF_RADAR_CLASSES } from '../../domain/types'
  * de divergência cross-repo `tests/unit/domain-types-parity.test.ts`. Esta
  * fronteira de validação decide o que a API aceita: reescrevê-los aqui à mão
  * ficaria fora dessa rede de paridade e poderia divergir de `schema.prisma`
- * sem nada acusar. `listRawContentsQuerySchema` (TASK-006-008) e
- * `saveRuleBreakdownSchema` (TASK-006-009) nascem em tarefas seguintes.
+ * sem nada acusar. `saveRuleBreakdownSchema` (TASK-006-009) nasce em tarefa
+ * seguinte.
  */
 
 /**
@@ -81,3 +81,17 @@ export const updateRawContentSchema = rawContentFieldsSchema
   .superRefine(requireCitationWhenSourceType);
 
 export type UpdateRawContentInput = z.infer<typeof updateRawContentSchema>;
+
+/**
+ * Query de `listRawContents` (TASK-006-008) — **apenas** `page`/`perPage`
+ * (NFR-005-004: esta fatia não promete filtro nenhum; disciplina/tema/classe
+ * do radar ficam para F10). Sem `.passthrough()`: `z.object` já descarta
+ * chave desconhecida por padrão, então um `disciplineId`/`radarClass` enviado
+ * pelo cliente nunca alcança o service.
+ */
+export const listRawContentsQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  perPage: z.coerce.number().int().min(1).max(100).default(20),
+});
+
+export type ListRawContentsQuery = z.infer<typeof listRawContentsQuerySchema>;

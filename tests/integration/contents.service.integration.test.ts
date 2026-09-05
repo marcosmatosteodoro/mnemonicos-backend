@@ -10,6 +10,7 @@ import {
   type ContentActor,
   createRawContent,
   getRawContent,
+  listRawContents,
   softDeleteRawContent,
   updateRawContent,
 } from '../../src/modules/contents/contents.service';
@@ -43,17 +44,25 @@ async function createUser(role: UserRole = 'EDITOR') {
 }
 
 async function createTopic(): Promise<string> {
+  const { topicId } = await createTopicWithNames();
+  return topicId;
+}
+
+/** Variante de `createTopic` que devolve os nomes semeados, para asserção do resumo. */
+async function createTopicWithNames(): Promise<{
+  topicId: string;
+  disciplineName: string;
+  topicName: string;
+}> {
+  const disciplineName = `Disciplina ${randomUUID()}`;
+  const topicName = `Tema ${randomUUID()}`;
   const discipline = await testPrisma.discipline.create({
-    data: { name: `Disciplina ${randomUUID()}`, slug: `disciplina-${randomUUID()}` },
+    data: { name: disciplineName, slug: `disciplina-${randomUUID()}` },
   });
   const topic = await testPrisma.topic.create({
-    data: {
-      disciplineId: discipline.id,
-      name: `Tema ${randomUUID()}`,
-      slug: `tema-${randomUUID()}`,
-    },
+    data: { disciplineId: discipline.id, name: topicName, slug: `tema-${randomUUID()}` },
   });
-  return topic.id;
+  return { topicId: topic.id, disciplineName, topicName };
 }
 
 interface RawContentSeed {
@@ -67,6 +76,8 @@ interface RawContentSeed {
   deletedAt?: Date | null;
   lastEditedById?: string | null;
   lastEditedAt?: Date | null;
+  /** Ponto fixo de `createdAt` — usado para fixar ordem determinística sem `sleep` entre criações. */
+  createdAt?: Date;
 }
 
 async function seedRawContent(seed: RawContentSeed) {
@@ -76,6 +87,7 @@ async function seedRawContent(seed: RawContentSeed) {
       topicId: seed.topicId,
       rawText: seed.rawText ?? 'Art. 113 do CTN define a obrigação tributária.',
       radarClass: seed.radarClass ?? 'ALTA',
+      createdAt: seed.createdAt,
       sourceType: seed.sourceType,
       sourceCitation: seed.sourceCitation,
       sourceUrl: seed.sourceUrl,
@@ -400,5 +412,201 @@ describe('softDeleteRawContent — remoção reversível (prova 4/4; AC-005-013,
 
     const row = await testPrisma.rawContent.findUniqueOrThrow({ where: { id: seeded.id } });
     expect(row.deletedAt).toBeNull();
+  });
+});
+
+/**
+ * `listRawContents` (TASK-006-008 / COMP-006-003) — terceira fatia do
+ * service, único método novo desta TASK que toca `raw_contents` em leitura
+ * (fechamento contável do gate 8: 1 método, 1 prova de mutação do predicado
+ * de escopo + 1 caso por ramo de alcance).
+ */
+describe('listRawContents — ordenação, envelope e resumo (AC-005-001, AC-005-035)', () => {
+  it('3 itens do mesmo autor em createdAt distintos → data do mais recente para o mais antigo, envelope completo, resumo não-nulo', async () => {
+    const editorA = await createUser('EDITOR');
+    const { topicId, disciplineName, topicName } = await createTopicWithNames();
+
+    const oldest = await seedRawContent({
+      authorId: editorA.id,
+      topicId,
+      createdAt: new Date('2026-01-01T00:00:00Z'),
+    });
+    const middle = await seedRawContent({
+      authorId: editorA.id,
+      topicId,
+      createdAt: new Date('2026-01-02T00:00:00Z'),
+    });
+    const newest = await seedRawContent({
+      authorId: editorA.id,
+      topicId,
+      createdAt: new Date('2026-01-03T00:00:00Z'),
+    });
+
+    const result = await listRawContents({ page: 1, perPage: 20 }, actorOf(editorA), testPrisma);
+
+    expect(Object.keys(result).sort()).toEqual(['data', 'page', 'perPage', 'total']);
+    expect(result.data.map((item) => item.id)).toEqual([newest.id, middle.id, oldest.id]);
+    for (const item of result.data) {
+      expect(item.disciplineName).toBe(disciplineName);
+      expect(item.topicName).toBe(topicName);
+      expect(item.radarClass).not.toBeNull();
+    }
+  });
+});
+
+describe('listRawContents — alcance por autor (AC-005-018, gate 8, prova 1/1 desta TASK)', () => {
+  it('ADMIN alcança itens de outro autor; EDITOR só os próprios', async () => {
+    const editorA = await createUser('EDITOR');
+    const editorB = await createUser('EDITOR');
+    const admin = await createUser('ADMIN');
+    const topicId = await createTopic();
+
+    const activeA = await seedRawContent({ authorId: editorA.id, topicId });
+    const deletedA = await seedRawContent({
+      authorId: editorA.id,
+      topicId,
+      deletedAt: new Date(),
+    });
+    const activeB = await seedRawContent({ authorId: editorB.id, topicId });
+
+    const asEditorA = await listRawContents({ page: 1, perPage: 20 }, actorOf(editorA), testPrisma);
+    const ids = asEditorA.data.map((item) => item.id);
+    expect(ids).toEqual([activeA.id]);
+    expect(ids).not.toContain(deletedA.id);
+    expect(ids).not.toContain(activeB.id);
+
+    const asAdmin = await listRawContents({ page: 1, perPage: 20 }, actorOf(admin), testPrisma);
+    const adminIds = asAdmin.data.map((item) => item.id);
+    expect(adminIds.sort()).toEqual([activeA.id, activeB.id].sort());
+    expect(adminIds).not.toContain(deletedA.id);
+  });
+});
+
+describe('listRawContents — total aplica o mesmo predicado de escopo de data (paginação)', () => {
+  it('3 itens do EDITOR (1 soft-deleted) → data.length === 2 e total === 2 (não 3)', async () => {
+    const editorA = await createUser('EDITOR');
+    const topicId = await createTopic();
+
+    await seedRawContent({ authorId: editorA.id, topicId });
+    await seedRawContent({ authorId: editorA.id, topicId });
+    await seedRawContent({ authorId: editorA.id, topicId, deletedAt: new Date() });
+
+    const result = await listRawContents({ page: 1, perPage: 10 }, actorOf(editorA), testPrisma);
+
+    expect(result.data).toHaveLength(2);
+    expect(result.total).toBe(2);
+  });
+});
+
+describe('listRawContents — sourceCitation e flag "tem Quebra da regra" (AC-005-016, AC-005-025)', () => {
+  it('item com fonte + Quebra traz a citação e a flag true; item sem Quebra traz a flag false', async () => {
+    const editorA = await createUser('EDITOR');
+    const topicId = await createTopic();
+
+    const withBreakdown = await seedRawContent({
+      authorId: editorA.id,
+      topicId,
+      sourceType: 'CTN',
+      sourceCitation: 'CTN, art. 113',
+    });
+    await testPrisma.ruleBreakdown.create({
+      data: {
+        rawContentId: withBreakdown.id,
+        concept: 'conceito',
+        action: 'ação',
+        object: 'objeto',
+        essence: 'síntese',
+      },
+    });
+    const withoutBreakdown = await seedRawContent({ authorId: editorA.id, topicId });
+
+    const result = await listRawContents({ page: 1, perPage: 20 }, actorOf(editorA), testPrisma);
+
+    const summaryWith = result.data.find((item) => item.id === withBreakdown.id);
+    const summaryWithout = result.data.find((item) => item.id === withoutBreakdown.id);
+
+    expect(summaryWith?.sourceCitation).toBe('CTN, art. 113');
+    expect(summaryWith?.hasRuleBreakdown).toBe(true);
+    expect(summaryWithout?.hasRuleBreakdown).toBe(false);
+  });
+});
+
+describe('listRawContents — select explícito (nenhum include implícito de relação)', () => {
+  it('Object.keys(summary) == conjunto documentado de RawContentSummary — sem chave crua de relação', async () => {
+    const editorA = await createUser('EDITOR');
+    const topicId = await createTopic();
+    await seedRawContent({ authorId: editorA.id, topicId });
+
+    const result = await listRawContents({ page: 1, perPage: 20 }, actorOf(editorA), testPrisma);
+
+    expect(result.data).toHaveLength(1);
+    const [summary] = result.data;
+    if (!summary) throw new Error('fixture não gerou item — assert acima já deveria ter reprovado');
+
+    expect(Object.keys(summary).sort()).toEqual(
+      [
+        'id',
+        'rawText',
+        'disciplineName',
+        'topicName',
+        'radarClass',
+        'sourceCitation',
+        'hasRuleBreakdown',
+      ].sort(),
+    );
+  });
+});
+
+describe('listRawContents — round-trips fixados (lição [Performance], gate 10)', () => {
+  async function withQueryProbe(run: (probe: PrismaClient) => Promise<unknown>): Promise<string[]> {
+    const probe = new PrismaClient({
+      adapter: new PrismaPg({ connectionString: TEST_DATABASE_URL, max: 1 }),
+      log: [{ emit: 'event', level: 'query' }],
+    });
+    const queries: string[] = [];
+    probe.$on('query', (event) => queries.push(event.query));
+
+    try {
+      await run(probe);
+    } finally {
+      await probe.$disconnect();
+    }
+
+    return queries;
+  }
+
+  it('1 item semeado (com Topic/Discipline/RuleBreakdown reais) → exatamente 2 eventos query', async () => {
+    const editorA = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const seeded = await seedRawContent({ authorId: editorA.id, topicId });
+    await testPrisma.ruleBreakdown.create({
+      data: {
+        rawContentId: seeded.id,
+        concept: 'conceito',
+        action: 'ação',
+        object: 'objeto',
+        essence: 'síntese',
+      },
+    });
+
+    const queries = await withQueryProbe((probe) =>
+      listRawContents({ page: 1, perPage: 20 }, actorOf(editorA), probe),
+    );
+
+    expect(queries).toHaveLength(2);
+  });
+
+  it('3 itens semeados → ainda exatamente 2 eventos query (não cresce com o nº de itens)', async () => {
+    const editorA = await createUser('EDITOR');
+    const topicId = await createTopic();
+    await seedRawContent({ authorId: editorA.id, topicId });
+    await seedRawContent({ authorId: editorA.id, topicId });
+    await seedRawContent({ authorId: editorA.id, topicId });
+
+    const queries = await withQueryProbe((probe) =>
+      listRawContents({ page: 1, perPage: 20 }, actorOf(editorA), probe),
+    );
+
+    expect(queries).toHaveLength(2);
   });
 });

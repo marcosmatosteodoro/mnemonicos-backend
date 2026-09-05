@@ -1,6 +1,7 @@
 import type * as ContentsSchemaModule from '../../src/modules/contents/contents.schema';
 import {
   createRawContentSchema,
+  listRawContentsQuerySchema,
   updateRawContentSchema,
 } from '../../src/modules/contents/contents.schema';
 import type * as DomainTypesModule from '../../src/domain/types';
@@ -152,6 +153,30 @@ describe('createRawContentSchema — sourceUrl: allowlist de esquema http(s) (re
     });
 
     expect(result.success).toBe(true);
+  });
+});
+
+describe('listRawContentsQuerySchema — só page/perPage (NFR-005-004, TASK-006-008)', () => {
+  it('parse de um objeto com filtro estranho devolve exatamente { page, perPage } — chaves de filtro somem', () => {
+    const result = listRawContentsQuerySchema.parse({
+      page: 2,
+      perPage: 10,
+      disciplineId: 'x',
+      radarClass: 'ALTA',
+    });
+
+    expect(result).toEqual({ page: 2, perPage: 10 });
+    expect(Object.keys(result).sort()).toEqual(['page', 'perPage']);
+  });
+
+  it('omissão de page/perPage aplica os defaults documentados (1 / 20)', () => {
+    const result = listRawContentsQuerySchema.parse({});
+    expect(result).toEqual({ page: 1, perPage: 20 });
+  });
+
+  it('coerção numérica: strings vindas de query string viram number', () => {
+    const result = listRawContentsQuerySchema.parse({ page: '3', perPage: '15' });
+    expect(result).toEqual({ page: 3, perPage: 15 });
   });
 });
 

@@ -1,14 +1,19 @@
-import type { UserRole } from '../../domain/types';
+import type { Paginated, ProofRadarClass, UserRole } from '../../domain/types';
 import type { Prisma } from '../../generated/prisma/client';
 import { NotFoundError } from '../../http/errors';
 import { prisma } from '../../lib/prisma';
-import type { CreateRawContentInput, UpdateRawContentInput } from './contents.schema';
+import type {
+  CreateRawContentInput,
+  ListRawContentsQuery,
+  UpdateRawContentInput,
+} from './contents.schema';
 
 /**
  * Núcleo do ciclo de vida do Conteúdo bruto (COMP-006-003 / TASK-006-006):
- * criar, reabrir, editar e remover (reversível). `listRawContents`
- * (TASK-006-008) e a Quebra da regra (TASK-006-009) reusam o helper de alcance
- * e o filtro `deletedAt: null` exportados daqui — não os recriam.
+ * criar, reabrir, editar e remover (reversível), mais a listagem paginada
+ * (`listRawContents`, TASK-006-008). A Quebra da regra (TASK-006-009) reusa o
+ * helper de alcance e o filtro `deletedAt: null` exportados daqui — não os
+ * recria.
  *
  * Alcance por papel (lição [Segurança] "enumerar por DADO, não por rota"):
  * EDITOR só alcança o que registrou; ADMIN é irrestrito. Toda leitura/edição/
@@ -174,4 +179,96 @@ export async function softDeleteRawContent(
   });
 
   if (result.count === 0) throw new NotFoundError('Conteúdo bruto não encontrado.');
+}
+
+/**
+ * Resumo exibido na listagem (COMP-006-003 / TASK-006-008) — **local ao
+ * módulo** (resolução 5 do manifesto): não entra em `domain/types.ts`. `id`
+ * entra apesar de não constar do texto do item do manifesto porque a via de
+ * acesso à Quebra da regra por item (TASK-006-012/013, FR-005-022) navega por
+ * `/content/<id>/breakdown` — sem `id` a listagem não seria navegável.
+ */
+export interface RawContentSummary {
+  id: string;
+  rawText: string;
+  disciplineName: string;
+  topicName: string;
+  radarClass: ProofRadarClass;
+  sourceCitation: string | null;
+  hasRuleBreakdown: boolean;
+}
+
+/**
+ * `select` explícito do join `RawContent → Topic → Discipline` (lição
+ * [Performance]): nenhuma relação crua (`topic`, `author`, `breakdown`)
+ * alcança o objeto devolvido — a projeção de existência da Quebra usa
+ * `breakdown: { select: { id: true } }`, nunca `include`, para não carregar a
+ * `RuleBreakdown` inteira só para saber se ela existe.
+ */
+const RAW_CONTENT_SUMMARY_SELECT = {
+  id: true,
+  rawText: true,
+  radarClass: true,
+  sourceCitation: true,
+  topic: { select: { name: true, discipline: { select: { name: true } } } },
+  breakdown: { select: { id: true } },
+} as const satisfies Prisma.RawContentSelect;
+
+type RawContentSummaryRow = Prisma.RawContentGetPayload<{
+  select: typeof RAW_CONTENT_SUMMARY_SELECT;
+}>;
+
+function toRawContentSummary(row: RawContentSummaryRow): RawContentSummary {
+  return {
+    id: row.id,
+    rawText: row.rawText,
+    disciplineName: row.topic.discipline.name,
+    topicName: row.topic.name,
+    radarClass: row.radarClass,
+    sourceCitation: row.sourceCitation,
+    hasRuleBreakdown: row.breakdown !== null,
+  };
+}
+
+/**
+ * Lista os Conteúdos brutos ativos no alcance do ator (FR-005-005, FR-005-024
+ * — AC-005-001, AC-005-018, AC-005-035). Reusa o **mesmo** par `scopeWhere` +
+ * `ACTIVE_RAW_CONTENT_WHERE` do ciclo de vida (TASK-006-006) tanto no
+ * `findMany` quanto no `count` — o predicado de escopo de `total` nunca
+ * diverge do de `data` (paginação errada + vazamento da contagem de
+ * removidos, se divergisse). Ordenação `createdAt desc` determinística.
+ *
+ * Round-trips fixados em teste (gate 10): `findMany` (join `Topic →
+ * Discipline` + projeção de existência de `breakdown`, `relationJoins` como
+ * DEFAULT global do Prisma 7 para relação para-um) e `count`, sempre 2 — não
+ * cresce com o nº de itens.
+ */
+export async function listRawContents(
+  query: ListRawContentsQuery,
+  actor: ContentActor,
+  db: RawContentClient = prisma,
+): Promise<Paginated<RawContentSummary>> {
+  const { page, perPage } = query;
+  const where: Prisma.RawContentWhereInput = {
+    ...ACTIVE_RAW_CONTENT_WHERE,
+    ...scopeWhere(actor),
+  };
+
+  const [rows, total] = await Promise.all([
+    db.rawContent.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      skip: (page - 1) * perPage,
+      take: perPage,
+      select: RAW_CONTENT_SUMMARY_SELECT,
+    }),
+    db.rawContent.count({ where }),
+  ]);
+
+  return {
+    data: rows.map(toRawContentSummary),
+    page,
+    perPage,
+    total,
+  };
 }
