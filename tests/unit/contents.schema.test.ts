@@ -212,6 +212,35 @@ describe('saveRuleBreakdownSchema — obrigatórios vs. opcionais (TASK-006-009,
     expect(result.success).toBe(true);
   });
 
+  it('aceita condition/exception explicitamente null (EMENDA pós gate 1-7, Wave 3) — round-trip ler→editar→salvar de T014 reenvia null, não 400', () => {
+    const result = saveRuleBreakdownSchema.safeParse({
+      ...minimalBreakdown,
+      condition: null,
+      exception: null,
+    });
+
+    expect(result.success).toBe(true);
+    // null colapsa para undefined na saída — mesma semântica de "não se
+    // aplica" que a string vazia, nunca um `null` distinto no output do parse.
+    if (result.success) {
+      expect(result.data.condition).toBeUndefined();
+      expect(result.data.exception).toBeUndefined();
+    }
+  });
+
+  it('condition/exception vazios/null saem como undefined do parse (não preservam o valor de entrada)', () => {
+    const empty = saveRuleBreakdownSchema.safeParse({
+      ...minimalBreakdown,
+      condition: '',
+      exception: '',
+    });
+    expect(empty.success).toBe(true);
+    if (empty.success) {
+      expect(empty.data.condition).toBeUndefined();
+      expect(empty.data.exception).toBeUndefined();
+    }
+  });
+
   it('falta concept → rejeita e nomeia concept', () => {
     const { concept: _concept, ...withoutConcept } = minimalBreakdown;
     const result = saveRuleBreakdownSchema.safeParse(withoutConcept);

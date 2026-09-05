@@ -107,6 +107,38 @@ function actorOf(user: { id: string; role: UserRole }): ContentActor {
   return { id: user.id, role: user.role };
 }
 
+/**
+ * Sonda de round-trips (lição [Performance]) — içada ao escopo do módulo
+ * (EMENDA pós gate 1-7, Wave 3): nascia duplicada em dois `describe` (`getRawContent`
+ * e `listRawContents`), verbatim.
+ */
+async function withQueryProbe(run: (probe: PrismaClient) => Promise<unknown>): Promise<string[]> {
+  const probe = new PrismaClient({
+    adapter: new PrismaPg({ connectionString: TEST_DATABASE_URL, max: 1 }),
+    log: [{ emit: 'event', level: 'query' }],
+  });
+  const queries: string[] = [];
+  probe.$on('query', (event) => queries.push(event.query));
+
+  try {
+    await run(probe);
+  } finally {
+    await probe.$disconnect();
+  }
+
+  return queries;
+}
+
+/** Captura a mensagem de um `AppError` esperado, para comparação literal entre recusas. */
+async function captureMessage(fn: () => Promise<unknown>): Promise<string> {
+  try {
+    await fn();
+  } catch (err) {
+    return (err as Error).message;
+  }
+  throw new Error('esperava rejeição, mas a chamada resolveu');
+}
+
 beforeEach(async () => {
   await resetDb();
 });
@@ -217,23 +249,6 @@ describe('getRawContent — alcance e remoção reversível (prova 2/4; AC-005-0
 });
 
 describe('getRawContent — round-trips fixados (lição [Performance])', () => {
-  async function withQueryProbe(run: (probe: PrismaClient) => Promise<unknown>): Promise<string[]> {
-    const probe = new PrismaClient({
-      adapter: new PrismaPg({ connectionString: TEST_DATABASE_URL, max: 1 }),
-      log: [{ emit: 'event', level: 'query' }],
-    });
-    const queries: string[] = [];
-    probe.$on('query', (event) => queries.push(event.query));
-
-    try {
-      await run(probe);
-    } finally {
-      await probe.$disconnect();
-    }
-
-    return queries;
-  }
-
   it('resolve o Conteúdo bruto com exatamente 1 round-trip (select explícito, sem include)', async () => {
     const editorA = await createUser('EDITOR');
     const topicId = await createTopic();
@@ -501,6 +516,25 @@ describe('listRawContents — total aplica o mesmo predicado de escopo de data (
     expect(result.data).toHaveLength(2);
     expect(result.total).toBe(2);
   });
+
+  it('2 EDITORes (A, B) + item soft-deleted de A → total de A conta só os próprios ativos; total do ADMIN soma os dois — EMENDA pós gate 8 (Wave 3)', async () => {
+    const editorA = await createUser('EDITOR');
+    const editorB = await createUser('EDITOR');
+    const admin = await createUser('ADMIN');
+    const topicId = await createTopic();
+
+    await seedRawContent({ authorId: editorA.id, topicId });
+    await seedRawContent({ authorId: editorA.id, topicId, deletedAt: new Date() });
+    await seedRawContent({ authorId: editorB.id, topicId });
+
+    // Mutante do critério: count({ where: ACTIVE_RAW_CONTENT_WHERE }) sem
+    // `authorId` faria `asEditorA.total` contar também o item de B (2, não 1).
+    const asEditorA = await listRawContents({ page: 1, perPage: 10 }, actorOf(editorA), testPrisma);
+    expect(asEditorA.total).toBe(1);
+
+    const asAdmin = await listRawContents({ page: 1, perPage: 10 }, actorOf(admin), testPrisma);
+    expect(asAdmin.total).toBe(2);
+  });
 });
 
 describe('listRawContents — sourceCitation e flag "tem Quebra da regra" (AC-005-016, AC-005-025)', () => {
@@ -563,23 +597,6 @@ describe('listRawContents — select explícito (nenhum include implícito de re
 });
 
 describe('listRawContents — round-trips fixados (lição [Performance], gate 10)', () => {
-  async function withQueryProbe(run: (probe: PrismaClient) => Promise<unknown>): Promise<string[]> {
-    const probe = new PrismaClient({
-      adapter: new PrismaPg({ connectionString: TEST_DATABASE_URL, max: 1 }),
-      log: [{ emit: 'event', level: 'query' }],
-    });
-    const queries: string[] = [];
-    probe.$on('query', (event) => queries.push(event.query));
-
-    try {
-      await run(probe);
-    } finally {
-      await probe.$disconnect();
-    }
-
-    return queries;
-  }
-
   it('1 item semeado (com Topic/Discipline/RuleBreakdown reais) → exatamente 2 eventos query', async () => {
     const editorA = await createUser('EDITOR');
     const topicId = await createTopic();
@@ -642,6 +659,12 @@ const breakdownInputB: SaveRuleBreakdownInput = {
   action: 'Segunda ação, após alteração.',
   object: 'Segundo objeto, após alteração.',
   essence: 'Segunda síntese, após alteração.',
+  // Omitidos de propósito (undefined, não string) — simula o corpo de
+  // requisição que não envia os campos; `saveRuleBreakdownSchema` colapsa
+  // undefined/null/'' para undefined (EMENDA pós gate 1-7, Wave 3), então
+  // `saveRuleBreakdown` grava null (A-005-009 — "não se aplica").
+  condition: undefined,
+  exception: undefined,
 };
 
 describe('saveRuleBreakdown / getRuleBreakdown — round-trip e atualização in-place (AC-005-019, AC-005-024, prova 1/2 gate 8)', () => {
@@ -780,31 +803,109 @@ describe('getRuleBreakdown / saveRuleBreakdown — recusa quando o pai não exis
 });
 
 /**
- * Árvore de decisão com precedência (lição [Testes] "um caso por PAR de ramos
- * que coincide"): `assertRawContentReachable` avalia `inexistente → soft-deleted
- * → fora do alcance`, nessa ordem. O par alcançável que coincide é
- * `soft-deleted ∧ fora do alcance`; `inexistente` não coincide com os demais
- * (id ausente não tem autor nem `deletedAt`). O caso abaixo nomeia quem vence
- * e assere a mensagem específica de "removido" — o mutante que troca a ordem
- * dos guards `soft-deleted`/`fora do alcance` faria esta asserção observar
- * "não encontrado" em vez de "foi removido", e reprovaria.
+ * Ramo "pai alcançável, sem Quebra ainda" (EMENDA pós gate 1-7, Wave 3):
+ * caminho feliz de T014 abrir o editor de uma Quebra nova. Decisão do Tech
+ * Lead (reversível): `getRuleBreakdown` mantém o 404 — T014 trata esse 404
+ * como "abrir formulário vazio".
  */
-describe('árvore de decisão com precedência — par coincidente soft-deleted ∧ fora do alcance', () => {
-  it('conteúdo removido E de outro autor → recusa por remoção (removido vence sobre "fora do alcance")', async () => {
+describe('getRuleBreakdown / saveRuleBreakdown — pai alcançável sem Quebra ainda (EMENDA retry Wave 3)', () => {
+  it('pai alcançável sem Quebra ainda → getRuleBreakdown recusa com 404, saveRuleBreakdown cria normalmente', async () => {
+    const editorA = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const seeded = await seedRawContent({ authorId: editorA.id, topicId });
+
+    await expect(getRuleBreakdown(seeded.id, actorOf(editorA), testPrisma)).rejects.toThrow(
+      'Quebra da regra não encontrada.',
+    );
+
+    const created = await saveRuleBreakdown(
+      seeded.id,
+      breakdownInputA,
+      actorOf(editorA),
+      testPrisma,
+    );
+    expect(created.concept).toBe(breakdownInputA.concept);
+
+    const read = await getRuleBreakdown(seeded.id, actorOf(editorA), testPrisma);
+    expect(read).toEqual(created);
+  });
+});
+
+/**
+ * Precedência corrigida no retry (EMENDA pós gate 8/1-7, Wave 3): a ordem
+ * original (`inexistente → soft-deleted → fora do alcance`) vazava existência
+ * — um EDITOR A que possui o id de um `RawContent` de EDITOR B distinguia "não
+ * encontrado" (id aleatório ou item ativo de B) de "foi removido" (item de B
+ * soft-deleted), um oráculo de autoria via mensagem (A01). Ordem corrigida,
+ * obrigatória: `inexistente → fora do alcance → soft-deleted`. Quem NÃO
+ * alcança o pai (id aleatório OU item de outro autor, removido ou não) recebe
+ * SEMPRE a mesma mensagem literal; só quem alcança (dono ou ADMIN) sobre item
+ * soft-deleted vê a mensagem de remoção. Os casos abaixo são nomeados por
+ * PAPEL (não por "quem vence") e comparam as duas mensagens de não-alcance
+ * por igualdade literal entre si, não só por tipo `AppError`.
+ */
+describe('assertRawContentReachable — precedência de guards corrigida (retry Wave 3, gate 8)', () => {
+  const NOT_FOUND_MESSAGE = 'Conteúdo bruto não encontrado.';
+  const REMOVED_MESSAGE = 'Conteúdo bruto foi removido.';
+
+  it('não-dono sobre conteúdo removido de outro autor → recusa indistinguível de "não encontrado"', async () => {
     const editorA = await createUser('EDITOR');
     const editorB = await createUser('EDITOR');
     const topicId = await createTopic();
-    const seeded = await seedRawContent({
+    const removedOfB = await seedRawContent({
       authorId: editorB.id,
       topicId,
       deletedAt: new Date(),
     });
 
-    await expect(getRuleBreakdown(seeded.id, actorOf(editorA), testPrisma)).rejects.toThrow(
-      'Conteúdo bruto foi removido.',
+    const messageForRandomId = await captureMessage(() =>
+      getRuleBreakdown(randomUUID(), actorOf(editorA), testPrisma),
+    );
+    const messageForRemovedOfOtherAuthor = await captureMessage(() =>
+      getRuleBreakdown(removedOfB.id, actorOf(editorA), testPrisma),
+    );
+
+    // Comparação literal entre as duas recusas de não-alcance — não só tipo
+    // AppError. O mutante que reordena de volta (soft-deleted antes de fora
+    // do alcance) faria `messageForRemovedOfOtherAuthor` virar REMOVED_MESSAGE.
+    expect(messageForRemovedOfOtherAuthor).toBe(messageForRandomId);
+    expect(messageForRemovedOfOtherAuthor).toBe(NOT_FOUND_MESSAGE);
+    expect(messageForRemovedOfOtherAuthor).not.toBe(REMOVED_MESSAGE);
+
+    await expect(
+      saveRuleBreakdown(removedOfB.id, breakdownInputA, actorOf(editorA), testPrisma),
+    ).rejects.toThrow(NOT_FOUND_MESSAGE);
+  });
+
+  it('dono sobre o próprio conteúdo removido → recusa por remoção', async () => {
+    const editorA = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const ownRemoved = await seedRawContent({
+      authorId: editorA.id,
+      topicId,
+      deletedAt: new Date(),
+    });
+
+    await expect(getRuleBreakdown(ownRemoved.id, actorOf(editorA), testPrisma)).rejects.toThrow(
+      REMOVED_MESSAGE,
     );
     await expect(
-      saveRuleBreakdown(seeded.id, breakdownInputA, actorOf(editorA), testPrisma),
-    ).rejects.toThrow('Conteúdo bruto foi removido.');
+      saveRuleBreakdown(ownRemoved.id, breakdownInputA, actorOf(editorA), testPrisma),
+    ).rejects.toThrow(REMOVED_MESSAGE);
+  });
+
+  it('ADMIN sobre conteúdo removido de EDITOR → recusa por remoção (ramo ADMIN do alcance)', async () => {
+    const editorA = await createUser('EDITOR');
+    const admin = await createUser('ADMIN');
+    const topicId = await createTopic();
+    const removed = await seedRawContent({
+      authorId: editorA.id,
+      topicId,
+      deletedAt: new Date(),
+    });
+
+    await expect(getRuleBreakdown(removed.id, actorOf(admin), testPrisma)).rejects.toThrow(
+      REMOVED_MESSAGE,
+    );
   });
 });

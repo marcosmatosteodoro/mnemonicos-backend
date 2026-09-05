@@ -100,14 +100,33 @@ export type ListRawContentsQuery = z.infer<typeof listRawContentsQuerySchema>;
  * AC-005-022: `concept`, `action`, `object` e `essence` obrigatórios
  * (não-vazios); `condition`/`exception` opcionais (A-005-009 — vazio = "não se
  * aplica", nunca campo ausente do contrato).
+ *
+ * `condition`/`exception` aceitam `null` além de string/ausente (`nullable()`
+ * — EMENDA pós gate 1-7, Wave 3): o frontend tipa os dois como
+ * `string | null` (é o que `getRuleBreakdown` devolve quando não preenchidos),
+ * então o ciclo ler→editar→salvar de T014 reenvia `null` no corpo do PUT
+ * sempre que o campo não foi tocado no formulário. Sem `nullable()` aqui, esse
+ * caminho feliz levava 400. `null` e string vazia colapsam para `undefined`
+ * (mesma semântica de "não se aplica" — A-005-009), nunca preservam `null`
+ * como valor distinto de "ausente" na saída do parse.
  */
 export const saveRuleBreakdownSchema = z.object({
   concept: z.string().trim().min(1, 'Informe o conceito (CONCEITO).'),
   action: z.string().trim().min(1, 'Informe a ação (AÇÃO).'),
   object: z.string().trim().min(1, 'Informe o objeto (OBJETO).'),
   essence: z.string().trim().min(1, 'Informe a síntese da regra essencial.'),
-  condition: z.string().trim().optional(),
-  exception: z.string().trim().optional(),
+  condition: z
+    .string()
+    .trim()
+    .nullable()
+    .optional()
+    .transform((value) => value || undefined),
+  exception: z
+    .string()
+    .trim()
+    .nullable()
+    .optional()
+    .transform((value) => value || undefined),
 });
 
 export type SaveRuleBreakdownInput = z.infer<typeof saveRuleBreakdownSchema>;

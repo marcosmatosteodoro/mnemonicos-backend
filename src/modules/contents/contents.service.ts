@@ -18,10 +18,14 @@ import type {
  *
  * Alcance por papel (lição [Segurança] "enumerar por DADO, não por rota"):
  * EDITOR só alcança o que registrou; ADMIN é irrestrito. Toda leitura/edição/
- * remoção passa pelo **mesmo** par `scopeWhere` + `ACTIVE_RAW_CONTENT_WHERE`, e
- * as três causas de recusa (id inexistente, soft-deleted, fora do alcance)
- * convergem para o **mesmo** `AppError` 404 — nunca 403 — para não dar a quem
- * pede um oráculo que distinga "não existe" de "existe, mas não é seu".
+ * remoção passa pelo **mesmo** par `scopeWhere` + `ACTIVE_RAW_CONTENT_WHERE`.
+ * Quem NÃO alcança o pai (id inexistente OU fora do alcance do ator) recebe
+ * sempre a mesma mensagem ("Conteúdo bruto não encontrado.") — nunca 403 —
+ * para não dar a quem pede um oráculo que distinga "não existe" de "existe,
+ * mas não é seu". A mensagem de remoção ("Conteúdo bruto foi removido.") só
+ * chega a quem alcança o pai (dono ou ADMIN) sobre um item soft-deleted: ela
+ * nomeia um fato sobre um dado que o ator já tem o direito de ver, não vaza
+ * autoria de terceiro.
  */
 
 export interface ContentActor {
@@ -279,14 +283,20 @@ export async function listRawContents(
  * TASK-006-009) — reusa `ACTIVE_RAW_CONTENT_WHERE` e `scopeWhere` (T006/T008),
  * não reimplementa o predicado de alcance nem o filtro `deletedAt: null`.
  *
- * **Guards avaliados em ordem declarada** (lição [Testes] "Árvore de decisão
- * com precedência: um caso por PAR de ramos que coincide"):
- * `inexistente → soft-deleted → fora do alcance`. O par alcançável
+ * **Guards avaliados em ordem declarada, obrigatória** (lição [Testes] "Árvore
+ * de decisão com precedência: um caso por PAR de ramos que coincide"):
+ * `inexistente → fora do alcance → soft-deleted`. A guarda de alcance nunca
+ * fica atrás da guarda de soft-delete: se ficasse, um EDITOR que possui o id
+ * de um `RawContent` de outro autor distinguiria "não encontrado" (id
+ * aleatório ou item ativo de outro autor) de "foi removido" (item de outro
+ * autor soft-deleted) — um oráculo de autoria via mensagem (A01). Por isso
+ * `inexistente` e `fora do alcance` são resolvidos **antes** de olhar
+ * `deletedAt`, e os dois compartilham a **mesma** mensagem ("Conteúdo bruto
+ * não encontrado."). Só quem alcança o pai (dono ou ADMIN) chega ao guard de
+ * soft-delete e pode ver "Conteúdo bruto foi removido." — o par
  * `soft-deleted ∧ fora do alcance` (`RawContent` de outro autor, já removido)
- * resolve para **"removido"**: reflete o estado real do dado, não a autoria.
- * `inexistente` e `fora do alcance` compartilham a **mesma** mensagem — a
- * distinção "não existe" vs. "existe, mas não é seu" segue indistinguível
- * (nunca 403, mesma política de T006 contra oráculo de autoria).
+ * resolve para **"não encontrado"**, nunca "removido": o ator nunca alcançou
+ * o dado para ter o direito de saber que ele foi removido.
  */
 async function assertRawContentReachable(
   rawContentId: string,
@@ -302,13 +312,13 @@ async function assertRawContentReachable(
     throw new NotFoundError('Conteúdo bruto não encontrado.');
   }
 
-  if (parent.deletedAt !== ACTIVE_RAW_CONTENT_WHERE.deletedAt) {
-    throw new NotFoundError('Conteúdo bruto foi removido.');
-  }
-
   const scope = scopeWhere(actor);
   if (scope.authorId !== undefined && parent.authorId !== scope.authorId) {
     throw new NotFoundError('Conteúdo bruto não encontrado.');
+  }
+
+  if (parent.deletedAt !== ACTIVE_RAW_CONTENT_WHERE.deletedAt) {
+    throw new NotFoundError('Conteúdo bruto foi removido.');
   }
 }
 
