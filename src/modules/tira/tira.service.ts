@@ -1,12 +1,12 @@
-import type { Prisma } from '../../generated/prisma/client';
+import { Prisma } from '../../generated/prisma/client';
 import { ConflictError } from '../../http/errors';
 import { prisma } from '../../lib/prisma';
-import { assertRawContentReachable, type ContentActor } from '../contents/contents.service';
+import {
+  assertRawContentReachable,
+  type ContentActor,
+  type RuleBreakdownDetail,
+} from '../contents/contents.service';
 import { recordProductionStageEvent } from '../production-events/production-events.service';
-// Named import (não namespace): erros de constraint do Prisma são um tipo, não
-// uma função a espiar — reexportado por `../../generated/prisma/client` como
-// `Prisma.PrismaClientKnownRequestError` (mesmo padrão de `users.service.ts`).
-import { Prisma as PrismaRuntime } from '../../generated/prisma/client';
 
 /**
  * Núcleo do módulo Tira mnemônica (COMP-012-004 / TASK-012-005): geração
@@ -27,15 +27,6 @@ export interface MnemonicStripDetail {
   frames: MnemonicFrameDetail[];
 }
 
-/** Blocos da Quebra da regra relevantes à geração — sem `essence` (A-011-002/A-011-010, essência não vira Quadro). */
-interface RuleBreakdownBlocks {
-  concept: string;
-  action: string;
-  object: string;
-  condition: string | null;
-  exception: string | null;
-}
-
 /**
  * Ordem canônica do método (FR-011-001): 1 item por Bloco não-vazio, posições
  * 1..N sem lacuna. Pura, sem I/O — testável isoladamente (mesmo espírito de
@@ -43,7 +34,7 @@ interface RuleBreakdownBlocks {
  * aplica", `null` ou `''`) não geram Quadro (AC-011-002).
  */
 export function buildInitialFrames(
-  breakdown: Pick<RuleBreakdownBlocks, 'concept' | 'action' | 'object' | 'condition' | 'exception'>,
+  breakdown: Pick<RuleBreakdownDetail, 'concept' | 'action' | 'object' | 'condition' | 'exception'>,
 ): Array<{ text: string; position: number; originBlock: string }> {
   const canonicalOrder: Array<{ originBlock: string; text: string | null }> = [
     { originBlock: 'concept', text: breakdown.concept },
@@ -192,7 +183,7 @@ export async function openMnemonicStrip(
     });
   } catch (error) {
     if (
-      error instanceof PrismaRuntime.PrismaClientKnownRequestError &&
+      error instanceof Prisma.PrismaClientKnownRequestError &&
       error.code === 'P2002' &&
       ruleBreakdownId !== undefined
     ) {

@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { PrismaPg } from '@prisma/adapter-pg';
 
 import { PrismaClient } from '../../src/generated/prisma/client';
-import { ConflictError } from '../../src/http/errors';
+import { ConflictError, NotFoundError } from '../../src/http/errors';
 import type { ContentActor } from '../../src/modules/contents/contents.service';
 // Namespace (não named import): espiar `recordProductionStageEvent` (AC-011-015,
 // fail-secure) exige o objeto de módulo para `jest.spyOn` — mesmo padrão de
@@ -224,8 +224,13 @@ describe('openMnemonicStrip — soft-delete do RawContent de origem torna a Tira
     });
 
     await expect(openMnemonicStrip(rawContent.id, actorOf(editor), testPrisma)).rejects.toThrow(
-      'Conteúdo bruto foi removido.',
+      NotFoundError,
     );
+
+    const message = await captureMessage(() =>
+      openMnemonicStrip(rawContent.id, actorOf(editor), testPrisma),
+    );
+    expect(message).toBe('Conteúdo bruto foi removido.');
 
     const strip = await testPrisma.mnemonicStrip.findUnique({ where: { id: created.id } });
     expect(strip).not.toBeNull();
