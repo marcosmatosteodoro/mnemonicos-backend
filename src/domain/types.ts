@@ -37,3 +37,77 @@ export interface SessionUser {
   email: string;
   role: UserRole;
 }
+
+/**
+ * Envelope de paginação compartilhado por toda listagem do backend; puro, sem
+ * I/O.
+ */
+export interface Paginated<T> {
+  data: T[];
+  page: number;
+  perPage: number;
+  total: number;
+}
+
+/**
+ * Classe do radar de prova e tipo de fonte normativa do Conteúdo bruto (F2).
+ * Fonte canônica: `mnemonicos-backend/prisma/schema.prisma` (enums
+ * `ProofRadarClass` / `NormativeSourceType`). O teste de divergência
+ * cross-repo é `mnemonicos-backend/tests/unit/domain-types-parity.test.ts`
+ * (estendido a estes dois enums em TASK-006-007).
+ */
+export const PROOF_RADAR_CLASSES = ['ALTA', 'MEDIA', 'DETALHE', 'EXCECAO', 'PEGADINHA'] as const;
+
+export type ProofRadarClass = (typeof PROOF_RADAR_CLASSES)[number];
+
+export const NORMATIVE_SOURCE_TYPES = [
+  'CF',
+  'CTN',
+  'LEI',
+  'LEI_COMPLEMENTAR',
+  'SUMULA',
+  'ATO_NORMATIVO',
+] as const;
+
+export type NormativeSourceType = (typeof NORMATIVE_SOURCE_TYPES)[number];
+
+/**
+ * Conteúdo bruto de produção — espelha o model `RawContent` de
+ * `prisma/schema.prisma`. Espelhado em
+ * `mnemonicos-frontend/src/types/domain.ts`: mudança de um lado entra no
+ * mesmo diff que o outro, ou o contrato quebra em runtime sem o typecheck
+ * acusar.
+ */
+export interface RawContent {
+  id: string;
+  topicId: string;
+  authorId: string;
+  rawText: string;
+  radarClass: ProofRadarClass;
+  sourceType: NormativeSourceType | null;
+  sourceCitation: string | null;
+  sourceUrl: string | null;
+  lastEditedById: string | null;
+  lastEditedAt: Date | null;
+  deletedAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+/**
+ * Quebra da regra — 1:1 com `RawContent` (`rawContentId` único), espelha o
+ * model `RuleBreakdown` do mesmo schema. Espelhada em
+ * `mnemonicos-frontend/src/types/domain.ts`.
+ */
+export interface RuleBreakdown {
+  id: string;
+  rawContentId: string;
+  concept: string;
+  action: string;
+  object: string;
+  condition: string | null;
+  exception: string | null;
+  essence: string;
+  createdAt: Date;
+  updatedAt: Date;
+}

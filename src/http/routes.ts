@@ -1,6 +1,7 @@
 import { Router } from 'express';
 
 import { protectedAuthRoutes, publicAuthRoutes } from '../modules/auth/auth.routes';
+import { contentsRoutes } from '../modules/contents/contents.routes';
 import { disciplinesRoutes } from '../modules/disciplines/disciplines.routes';
 import { healthRoutes } from '../modules/health/health.routes';
 import { usersRoutes } from '../modules/users/users.routes';
@@ -19,8 +20,9 @@ import { ROUTE_ROLES, sealRouteRoles, type HttpMethod } from './route-roles';
  *      todo caminho fora de `PUBLIC_PATH_ALLOWLIST` que não declare papel em
  *      `ROUTE_ROLES` (403, mesmo com sessão válida — falha fechada);
  *   3. rotas protegidas — `protectedAuthRoutes`, `usersRoutes`,
- *      `disciplinesRoutes` — cada uma declara `"<MÉTODO> <caminho>"` em
- *      `ROUTE_ROLES` via `requireRole(...)` no ponto de montagem.
+ *      `disciplinesRoutes`, `contentsRoutes` — cada uma declara
+ *      `"<MÉTODO> <caminho>"` em `ROUTE_ROLES` via `requireRole(...)` no ponto
+ *      de montagem.
  *
  * Árvore **plana**: nenhum `apiRoutes.use('/prefixo', subRouter)`. O caminho que
  * `requireRole` declara tem de ser o mesmo `req.path` que `requireAuth` compara —
@@ -43,6 +45,7 @@ apiRoutes.use(requireAuth);
 apiRoutes.use(protectedAuthRoutes);
 apiRoutes.use(usersRoutes);
 apiRoutes.use(disciplinesRoutes);
+apiRoutes.use(contentsRoutes);
 
 /** Par `<MÉTODO> <caminho-completo>` de uma rota concreta da árvore plana. */
 export interface MountedRoute {

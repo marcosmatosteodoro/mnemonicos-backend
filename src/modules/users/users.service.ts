@@ -1,10 +1,9 @@
-import type { SessionUser } from '../../domain/types';
+import type { Paginated, SessionUser } from '../../domain/types';
 import { Prisma } from '../../generated/prisma/client';
 import { ConflictError, NotFoundError } from '../../http/errors';
 import { hashPassword } from '../../lib/password';
 import { prisma } from '../../lib/prisma';
 import { revokeAllSessionsOp } from '../auth/session-revocation';
-import type { Paginated } from '../disciplines/disciplines.service';
 import type { CreateUserInput, ListUsersQuery } from './users.schema';
 
 /**

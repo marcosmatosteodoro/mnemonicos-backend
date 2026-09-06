@@ -9,6 +9,19 @@ const postgresUrl = z
     message: 'deve ser uma URL postgresql://',
   });
 
+/**
+ * `.optional()` que também perdoa string vazia. `dotenv` não distingue chave
+ * ausente de `CHAVE=` sem valor — as duas chegam como `''` em `process.env`.
+ * Sem esta normalização, todo campo `.optional()` cujo `.env.example` traga a
+ * chave com valor vazio (placeholder a preencher) reprova a validação do Zod
+ * (que só perdoa **ausência** da chave) e derruba o boot inteiro para quem
+ * segue `cp .env.example .env` — condição da CLASSE inteira de campo
+ * opcional, não de uma instância.
+ */
+function optionalEmptyString<T extends z.ZodType>(schema: T) {
+  return z.preprocess((value) => (value === '' ? undefined : value), schema.optional());
+}
+
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().positive().max(65535).default(3333),
@@ -26,7 +39,7 @@ const envSchema = z.object({
     ),
 
   DATABASE_URL: postgresUrl,
-  DIRECT_URL: postgresUrl.optional(),
+  DIRECT_URL: optionalEmptyString(postgresUrl),
 
   /// 32 caracteres é o piso; gere com `openssl rand -base64 48`.
   JWT_SECRET: z.string().min(32, 'deve ter ao menos 32 caracteres'),
@@ -41,8 +54,12 @@ const envSchema = z.object({
     .transform((value) => value === 'true'),
 
   /// Credenciais de bootstrap do 1º ADMIN, lidas pelo seed. Ausentes (ou só uma delas) → o seed não cria ninguém.
-  SEED_ADMIN_EMAIL: z.email().optional(),
-  SEED_ADMIN_PASSWORD: z.string().min(12).optional(),
+  SEED_ADMIN_EMAIL: optionalEmptyString(z.email()),
+  SEED_ADMIN_PASSWORD: optionalEmptyString(z.string().min(12)),
+
+  /// Credenciais do EDITOR de dev (gate 9 das telas), lidas pelo seed. Ausentes (ou só uma delas) → o seed não cria ninguém.
+  SEED_EDITOR_EMAIL: optionalEmptyString(z.email()),
+  SEED_EDITOR_PASSWORD: optionalEmptyString(z.string().min(12)),
 
   /// TTLs de sessão (DEC-003-003), afináveis sem redeploy.
   AUTH_ACCESS_TTL_MINUTES: z.coerce.number().int().positive().default(15),
@@ -55,6 +72,13 @@ const envSchema = z.object({
   ARGON2_TIME_COST: z.coerce.number().int().positive().default(2),
   ARGON2_PARALLELISM: z.coerce.number().int().positive().default(1),
 });
+
+/**
+ * Exportado só para o teste de fronteira (`envSchema.safeParse` contra o
+ * `.env.example` versionado, sem passar por `process.env`) — o schema de
+ * verdade continua validado uma única vez, na carga deste módulo, abaixo.
+ */
+export { envSchema };
 
 const parsed = envSchema.safeParse(process.env);
 
