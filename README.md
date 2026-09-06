@@ -210,7 +210,19 @@ O que ainda **falta** e é pré-requisito antes de expor dados de usuário:
 Projeto Vercel próprio apontando para este diretório. O `vercel.json` reescreve
 todas as rotas para `api/index.ts`, que exporta a app Express.
 
-- Build command: `vercel-build` (`prisma generate`) — detectado automaticamente.
+`"framework": null` está no `vercel.json` porque a detecção automática de
+framework da Vercel varre a raiz do projeto (e `src/`) por um arquivo cujo
+nome case com sua lista de detecção de app Express — hoje `src/app.ts` e
+`src/server.ts` — e, se casar, serve `/` por essa detecção em vez de cair no
+rewrite `/(.*) -> /api`. Enquanto o rewrite for o mecanismo de entrada deste
+projeto, `"framework": null` não sai: foi assim que o KAN-49 provou o `GET /`
+respondendo 500 (a detecção casava com `src/app.ts`, que não tem
+`export default` nem `app.listen`).
+
+- Build command: `vercel-build` (`prisma generate`) — `"framework": null`
+  desliga só a detecção de framework; o script `vercel-build` continua
+  detectado e executado normalmente (são mecanismos distintos e
+  independentes da Vercel).
 - Variáveis de ambiente (Production e Preview):
 
 | Variável       | Observação                                                |
