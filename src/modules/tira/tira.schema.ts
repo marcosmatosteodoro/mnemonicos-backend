@@ -1,20 +1,21 @@
 import { z } from 'zod';
 
-// Reuso explícito: `:id` (rawContentId) das rotas de `tira.routes.ts` é o mesmo
-// parâmetro já validado em `contents.schema.ts` — nunca redeclarado aqui
-// (TASK-012-003, COMP-012-003).
-import { rawContentIdParamSchema } from '../contents/contents.schema';
-
 /**
  * Schemas Zod do módulo Tira mnemônica (COMP-012-003 / TASK-012-003). Cobrem as
  * 3 mutações de Quadro (adicionar, editar texto, reordenar) e o param
- * `:frameId` das rotas — nenhuma rota nem service entra nesta TASK
- * (COMP-012-004/COMP-012-006 são tasks à parte).
+ * `:frameId` das rotas.
  */
+
+/**
+ * Texto do Quadro — fonte única da regra (`z.string().trim().min(1, ...)`)
+ * reusada por `addMnemonicFrameSchema` e `updateMnemonicFrameSchema` (mesmo
+ * campo `text` da mesma entidade, mesma mensagem pt-BR).
+ */
+const frameTextSchema = z.string().trim().min(1, 'Informe o texto do quadro.');
 
 /** Adicionar Quadro à Tira (FR-011-003). */
 export const addMnemonicFrameSchema = z.object({
-  text: z.string().trim().min(1, 'Informe o texto do quadro.'),
+  text: frameTextSchema,
   position: z.number().int().min(1, 'A posição deve ser um número inteiro maior ou igual a 1.'),
 });
 
@@ -22,7 +23,7 @@ export type AddMnemonicFrameInput = z.infer<typeof addMnemonicFrameSchema>;
 
 /** Editar o texto de um Quadro existente (FR-011-004). */
 export const updateMnemonicFrameSchema = z.object({
-  text: z.string().trim().min(1, 'Informe o texto do quadro.'),
+  text: frameTextSchema,
 });
 
 export type UpdateMnemonicFrameInput = z.infer<typeof updateMnemonicFrameSchema>;
@@ -48,7 +49,3 @@ export const mnemonicFrameIdParamSchema = z.object({
 });
 
 export type MnemonicFrameIdParam = z.infer<typeof mnemonicFrameIdParamSchema>;
-
-// Re-exportado (não redeclarado) para que `tira.routes.ts` (COMP-012-006)
-// valide `:id` sem precisar importar de `contents.schema` diretamente.
-export { rawContentIdParamSchema };

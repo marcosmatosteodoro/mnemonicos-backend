@@ -1,10 +1,10 @@
 import {
   addMnemonicFrameSchema,
   mnemonicFrameIdParamSchema,
-  rawContentIdParamSchema,
   reorderMnemonicFramesSchema,
   updateMnemonicFrameSchema,
 } from '../../src/modules/tira/tira.schema';
+import { rawContentIdParamSchema } from '../../src/modules/contents/contents.schema';
 
 /**
  * `tira.schema.ts` (TASK-012-003 / COMP-012-003) — item do Inclui sem AC
@@ -97,7 +97,7 @@ describe('mnemonicFrameIdParamSchema', () => {
 });
 
 describe('rawContentIdParamSchema — reusado (não redeclarado) de contents.schema', () => {
-  it('está disponível via tira.schema (reuso explícito do `:id`)', () => {
+  it('aceita um UUID válido no param `:id`', () => {
     const result = rawContentIdParamSchema.safeParse({
       id: '018f4d4a-1b1e-7c3a-8b1a-000000000003',
     });
