@@ -70,29 +70,30 @@ Detalhes que valem saber:
 
 ## Scripts
 
-| Script                 | O que faz                              |
-| ---------------------- | -------------------------------------- |
-| `npm run dev`          | Sobe o Postgres e depois a aplicação   |
-| `npm run dev:no-db`    | Só a aplicação (`tsx watch`)           |
-| `npm run build`        | `prisma generate` + `tsc` para `dist/` |
-| `npm start`            | Roda o build                           |
-| `npm run lint`         | ESLint (com type-checking)             |
-| `npm run typecheck`    | `tsc --noEmit`                         |
-| `npm run format:check` | Prettier em modo verificação           |
-| `npm test`             | Jest                                   |
-| `npm run test:ci`      | Jest com cobertura                     |
-| `npm run validate`     | format:check + lint + typecheck + test |
-| `npm run db:setup`     | `db:up` + `db:deploy` + `db:seed`      |
-| `npm run db:up`        | Sobe o Postgres e espera ficar healthy |
-| `npm run db:down`      | Para o container (mantém os dados)     |
-| `npm run db:destroy`   | Para o container e apaga o volume      |
-| `npm run db:psql`      | `psql` dentro do container             |
-| `npm run db:logs`      | Log do Postgres                        |
-| `npm run db:migrate`   | `prisma migrate dev`                   |
-| `npm run db:deploy`    | `prisma migrate deploy` (produção)     |
-| `npm run db:seed`      | Popula o acervo de exemplo             |
-| `npm run db:studio`    | Prisma Studio                          |
-| `npm run db:format`    | `prisma format` no schema              |
+| Script                 | O que faz                                                                                                    |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `npm run dev`          | Sobe o Postgres e depois a aplicação                                                                         |
+| `npm run dev:no-db`    | Só a aplicação (`tsx watch`)                                                                                 |
+| `npm run build`        | `prisma generate` + `tsc` para `dist/`                                                                       |
+| `npm start`            | Roda o build                                                                                                 |
+| `npm run vercel-build` | `prisma generate` + `prisma migrate deploy` — Build Command da Vercel, roda (e migra produção) a cada deploy |
+| `npm run lint`         | ESLint (com type-checking)                                                                                   |
+| `npm run typecheck`    | `tsc --noEmit`                                                                                               |
+| `npm run format:check` | Prettier em modo verificação                                                                                 |
+| `npm test`             | Jest                                                                                                         |
+| `npm run test:ci`      | Jest com cobertura                                                                                           |
+| `npm run validate`     | format:check + lint + typecheck + test                                                                       |
+| `npm run db:setup`     | `db:up` + `db:deploy` + `db:seed`                                                                            |
+| `npm run db:up`        | Sobe o Postgres e espera ficar healthy                                                                       |
+| `npm run db:down`      | Para o container (mantém os dados)                                                                           |
+| `npm run db:destroy`   | Para o container e apaga o volume                                                                            |
+| `npm run db:psql`      | `psql` dentro do container                                                                                   |
+| `npm run db:logs`      | Log do Postgres                                                                                              |
+| `npm run db:migrate`   | `prisma migrate dev`                                                                                         |
+| `npm run db:deploy`    | `prisma migrate deploy` (produção)                                                                           |
+| `npm run db:seed`      | Popula o acervo de exemplo                                                                                   |
+| `npm run db:studio`    | Prisma Studio                                                                                                |
+| `npm run db:format`    | `prisma format` no schema                                                                                    |
 
 ## Estrutura
 
@@ -210,7 +211,9 @@ O que ainda **falta** e é pré-requisito antes de expor dados de usuário:
 Projeto Vercel próprio apontando para este diretório. O `vercel.json` reescreve
 todas as rotas para `api/index.ts`, que exporta a app Express.
 
-- Build command: `vercel-build` (`prisma generate`) — detectado automaticamente.
+- Build command: `vercel-build` (`prisma generate && prisma migrate deploy`) —
+  apontado manualmente no painel da Vercel (Project Settings → Build & Development
+  Settings → Build Command); não é o default do framework preset.
 - Variáveis de ambiente (Production e Preview):
 
 | Variável       | Observação                                                |
@@ -223,8 +226,31 @@ todas as rotas para `api/index.ts`, que exporta a app Express.
 | `LOG_LEVEL`    | `info`                                                    |
 
 Marque `DATABASE_URL`, `DIRECT_URL` e `JWT_SECRET` como **Sensitive** no painel.
-As migrações não rodam no build da Vercel — aplique-as num passo próprio
-(`npm run db:deploy`) antes de promover a versão.
+O `vercel-build` já aplica as migrações pendentes (`prisma migrate deploy`) a cada
+deploy. O `prisma.config.ts` resolve a URL de migração como `DIRECT_URL ?? DATABASE_URL`:
+sem `DIRECT_URL` nas env vars, o Prisma **não recusa** — cai silenciosamente na
+`DATABASE_URL` do pooler e tenta rodar o DDL por ela, um caminho que o pgbouncer não
+suporta e que nunca foi testado neste projeto. Preview e Production compartilhando o
+mesmo banco significa que todo push de branch também migra produção; não há segregação
+de ambiente hoje.
+
+### Migração falha (P3009): destravando o deploy
+
+Se uma migração falha em produção, o Prisma grava a linha como `FAILED` em
+`_prisma_migrations`, e todo `migrate deploy` seguinte aborta com `P3009: migrate found
+failed migrations in the target database, new migrations will not be applied`. Como o
+`vercel-build` roda a cada deploy, isso trava a esteira inteira — inclusive um hotfix de
+segurança — até a migração ser resolvida manualmente.
+
+1. Identifique a migração falha: `npx prisma migrate status` (lê `DIRECT_URL`) lista o
+   nome marcado como `FAILED`.
+2. Resolva contra produção, rodando com `DIRECT_URL` no ambiente:
+   `npx prisma migrate resolve --rolled-back <nome_da_migração>` se o efeito da migração
+   não chegou a ficar aplicado, ou `--applied <nome_da_migração>` se ficou e só o
+   registro em `_prisma_migrations` está inconsistente.
+3. **Break-glass**: para destravar um deploy de emergência sem tocar o banco, aponte o
+   Build Command do painel da Vercel para `npm run build` (não migra) até o passo 2 ser
+   feito; depois volte para `npm run vercel-build`.
 
 Para rodar em host tradicional (Docker, Railway, Render), o entrypoint é
 `dist/server.js` via `npm start`; `api/index.ts` e `vercel.json` são ignorados.
