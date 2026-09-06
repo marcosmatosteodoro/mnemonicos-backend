@@ -19,6 +19,11 @@ import {
   softDeleteRawContent,
   updateRawContent,
 } from '../../src/modules/contents/contents.service';
+// Namespace (não named import): TASK-010-003 espia `recordProductionStageEvent`
+// (AC-009-010, fail-secure) — precisa do objeto de módulo, não do binding
+// isolado, para o spy interceptar a chamada feita de dentro de
+// `contents.service.ts`.
+import * as productionEventsService from '../../src/modules/production-events/production-events.service';
 import { closeTestDb, resetDb, testPrisma } from './db';
 import { TEST_DATABASE_URL } from './db-url';
 
@@ -918,5 +923,274 @@ describe('assertRawContentReachable — precedência de guards', () => {
     await expect(getRuleBreakdown(removed.id, actorOf(admin), testPrisma)).rejects.toThrow(
       REMOVED_MESSAGE,
     );
+  });
+});
+
+/**
+ * COMP-010-006 (TASK-010-003) — integração transacional da emissão de eventos
+ * de etapa de produção em `contents.service.ts` (SPEC-009/PLAN-010). Os 5
+ * gatilhos de emissão (criação, edição de Conteúdo bruto; 1º salvamento e
+ * salvamentos subsequentes da Quebra da regra; soft-delete sem emissão nova) +
+ * o tripwire de fail-secure (AC-009-010) são condição de pronto desta fatia
+ * (RISK-009-002/TRISK-010-003), não opcionais.
+ */
+function createRawContentInputFor(topicId: string): CreateRawContentInput {
+  return {
+    topicId,
+    rawText: 'Art. 113 do CTN define a obrigação tributária.',
+    radarClass: 'ALTA',
+  };
+}
+
+describe('createRawContent — emissão dos 3 eventos de etapa na criação (AC-009-001, AC-009-002)', () => {
+  it('grava ABERTURA+CONCLUSAO de CONTEUDO_BRUTO e ABERTURA de QUEBRA_DA_REGRA, atribuídos ao autor da criação', async () => {
+    const editorA = await createUser('EDITOR');
+    const topicId = await createTopic();
+
+    const created = await createRawContent(
+      createRawContentInputFor(topicId),
+      editorA.id,
+      testPrisma,
+    );
+
+    const events = await productionEventsService.listProductionStageEvents(created.id, testPrisma);
+    const contentEvents = events.filter((event) => event.stageType === 'CONTEUDO_BRUTO');
+    const breakdownEvents = events.filter((event) => event.stageType === 'QUEBRA_DA_REGRA');
+
+    expect(contentEvents.map((event) => event.transitionType)).toEqual(['ABERTURA', 'CONCLUSAO']);
+    expect(breakdownEvents.map((event) => event.transitionType)).toEqual(['ABERTURA']);
+    expect(events.every((event) => event.actorId === editorA.id)).toBe(true);
+  });
+});
+
+describe('saveRuleBreakdown — 1º salvamento registra CONCLUSAO da Quebra da regra (AC-009-003)', () => {
+  it('soma o evento QUEBRA_DA_REGRA (CONCLUSAO) aos já existentes na criação', async () => {
+    const editorA = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const created = await createRawContent(
+      createRawContentInputFor(topicId),
+      editorA.id,
+      testPrisma,
+    );
+
+    await saveRuleBreakdown(created.id, breakdownInputA, actorOf(editorA), testPrisma);
+
+    const events = await productionEventsService.listProductionStageEvents(created.id, testPrisma);
+    const breakdownEvents = events.filter((event) => event.stageType === 'QUEBRA_DA_REGRA');
+
+    expect(breakdownEvents.map((event) => event.transitionType)).toEqual(['ABERTURA', 'CONCLUSAO']);
+  });
+});
+
+describe('updateRawContent — edição após conclusão registra RETRABALHO, nunca uma 2ª CONCLUSAO (AC-009-004)', () => {
+  it('grava RETRABALHO de CONTEUDO_BRUTO; só 1 CONCLUSAO de CONTEUDO_BRUTO no total', async () => {
+    const editorA = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const created = await createRawContent(
+      createRawContentInputFor(topicId),
+      editorA.id,
+      testPrisma,
+    );
+
+    await updateRawContent(created.id, { rawText: 'texto editado' }, actorOf(editorA), testPrisma);
+
+    const events = await productionEventsService.listProductionStageEvents(created.id, testPrisma);
+    const contentEvents = events.filter((event) => event.stageType === 'CONTEUDO_BRUTO');
+
+    expect(contentEvents.map((event) => event.transitionType)).toEqual([
+      'ABERTURA',
+      'CONCLUSAO',
+      'RETRABALHO',
+    ]);
+    expect(contentEvents.filter((event) => event.transitionType === 'CONCLUSAO')).toHaveLength(1);
+  });
+});
+
+describe('saveRuleBreakdown — novo salvamento após conclusão registra RETRABALHO, nunca uma 2ª CONCLUSAO (AC-009-005)', () => {
+  it('grava RETRABALHO de QUEBRA_DA_REGRA; só 1 CONCLUSAO de QUEBRA_DA_REGRA no total', async () => {
+    const editorA = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const created = await createRawContent(
+      createRawContentInputFor(topicId),
+      editorA.id,
+      testPrisma,
+    );
+
+    await saveRuleBreakdown(created.id, breakdownInputA, actorOf(editorA), testPrisma);
+    await saveRuleBreakdown(created.id, breakdownInputB, actorOf(editorA), testPrisma);
+
+    const events = await productionEventsService.listProductionStageEvents(created.id, testPrisma);
+    const breakdownEvents = events.filter((event) => event.stageType === 'QUEBRA_DA_REGRA');
+
+    expect(breakdownEvents.map((event) => event.transitionType)).toEqual([
+      'ABERTURA',
+      'CONCLUSAO',
+      'RETRABALHO',
+    ]);
+    expect(breakdownEvents.filter((event) => event.transitionType === 'CONCLUSAO')).toHaveLength(1);
+  });
+});
+
+/**
+ * Teste de concorrência REAL (não sequencial): prova, sob corrida verdadeira
+ * (`Promise.all`), a exclusividade da 1ª CONCLUSAO que os 2 testes acima só
+ * provam sob a serialização controlada pelo próprio teste (chamadas em
+ * sequência, `await` uma de cada vez). A garantia vem de DEC-010-007: o
+ * `@unique` de `RuleBreakdown.rawContentId` serializa as 2 transações
+ * completas (upsert + emissão de evento) via lock de índice único do
+ * Postgres — a 2ª só lê `productionStageEvent` depois do commit da 1ª,
+ * propriedade emergente do schema de F2, sem lock explícito adicional nesta
+ * fatia.
+ */
+describe('saveRuleBreakdown — concorrência real do 1º salvamento (AC-009-003/AC-009-005, DEC-010-007)', () => {
+  it('2 chamadas concorrentes (Promise.all) sobre o mesmo rawContentId recém-criado (só ABERTURA no histórico) → exatamente 1 CONCLUSAO de QUEBRA_DA_REGRA', async () => {
+    const editorA = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const created = await createRawContent(
+      createRawContentInputFor(topicId),
+      editorA.id,
+      testPrisma,
+    );
+
+    // Mutante do critério: se a decisão de transição não se apoiasse no lock
+    // do `@unique` (ex.: `findFirst` + `create` incondicional em vez de
+    // `upsert`), as 2 transações leriam 0 CONCLUSAO simultaneamente e
+    // gravariam 2 eventos de CONCLUSAO — a asserção abaixo reprovaria.
+    await Promise.all([
+      saveRuleBreakdown(created.id, breakdownInputA, actorOf(editorA), testPrisma),
+      saveRuleBreakdown(created.id, breakdownInputB, actorOf(editorA), testPrisma),
+    ]);
+
+    const events = await productionEventsService.listProductionStageEvents(created.id, testPrisma);
+    const conclusoes = events.filter(
+      (event) => event.stageType === 'QUEBRA_DA_REGRA' && event.transitionType === 'CONCLUSAO',
+    );
+
+    expect(conclusoes).toHaveLength(1);
+
+    const row = await testPrisma.ruleBreakdown.findUniqueOrThrow({
+      where: { rawContentId: created.id },
+    });
+    expect([breakdownInputA.concept, breakdownInputB.concept]).toContain(row.concept);
+  });
+});
+
+describe('softDeleteRawContent — remoção reversível não gera evento novo (AC-009-007, parte)', () => {
+  it('a lista de eventos antes e depois do soft-delete é exatamente a mesma', async () => {
+    const editorA = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const created = await createRawContent(
+      createRawContentInputFor(topicId),
+      editorA.id,
+      testPrisma,
+    );
+
+    const before = await productionEventsService.listProductionStageEvents(created.id, testPrisma);
+    await softDeleteRawContent(created.id, actorOf(editorA), testPrisma);
+    const after = await productionEventsService.listProductionStageEvents(created.id, testPrisma);
+
+    expect(after).toEqual(before);
+  });
+});
+
+/**
+ * Fail-secure (AC-009-010, NFR-009-002): falha na emissão do evento reverte a
+ * mutação de negócio inteira — nenhum estado meio-salvo. 3 casos, mesma
+ * técnica de injeção de falha (`jest.spyOn` sobre `recordProductionStageEvent`,
+ * `mockRejectedValueOnce`) — o mutante que remover a reversão da transação
+ * (ex.: um `try/catch` que engolisse o erro da emissão) faz cada um destes
+ * 4 testes falhar.
+ */
+describe('Fail-secure: falha na emissão do evento reverte a mutação de negócio inteira (AC-009-010)', () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('(a) createRawContent: emissão falhando propaga e nenhuma linha de RawContent persiste', async () => {
+    const editorA = await createUser('EDITOR');
+    const topicId = await createTopic();
+
+    jest
+      .spyOn(productionEventsService, 'recordProductionStageEvent')
+      .mockRejectedValueOnce(new Error('falha simulada na emissão'));
+
+    await expect(
+      createRawContent(createRawContentInputFor(topicId), editorA.id, testPrisma),
+    ).rejects.toThrow('falha simulada na emissão');
+
+    const count = await testPrisma.rawContent.count();
+    expect(count).toBe(0);
+  });
+
+  it('(b) updateRawContent: emissão de RETRABALHO falhando propaga e a edição não persiste', async () => {
+    const editorA = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const created = await createRawContent(
+      createRawContentInputFor(topicId),
+      editorA.id,
+      testPrisma,
+    );
+    const before = await testPrisma.rawContent.findUniqueOrThrow({ where: { id: created.id } });
+
+    jest
+      .spyOn(productionEventsService, 'recordProductionStageEvent')
+      .mockRejectedValueOnce(new Error('falha simulada na emissão'));
+
+    await expect(
+      updateRawContent(
+        created.id,
+        { rawText: 'nunca deveria persistir' },
+        actorOf(editorA),
+        testPrisma,
+      ),
+    ).rejects.toThrow('falha simulada na emissão');
+
+    const after = await testPrisma.rawContent.findUniqueOrThrow({ where: { id: created.id } });
+    expect(after).toEqual(before);
+  });
+
+  it('(c.1) saveRuleBreakdown — 1º salvamento: emissão falhando propaga e nenhuma RuleBreakdown é criada', async () => {
+    const editorA = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const created = await createRawContent(
+      createRawContentInputFor(topicId),
+      editorA.id,
+      testPrisma,
+    );
+
+    jest
+      .spyOn(productionEventsService, 'recordProductionStageEvent')
+      .mockRejectedValueOnce(new Error('falha simulada na emissão'));
+
+    await expect(
+      saveRuleBreakdown(created.id, breakdownInputA, actorOf(editorA), testPrisma),
+    ).rejects.toThrow('falha simulada na emissão');
+
+    const count = await testPrisma.ruleBreakdown.count({ where: { rawContentId: created.id } });
+    expect(count).toBe(0);
+  });
+
+  it('(c.2) saveRuleBreakdown — salvamento subsequente: emissão falhando propaga e a RuleBreakdown existente não é atualizada', async () => {
+    const editorA = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const created = await createRawContent(
+      createRawContentInputFor(topicId),
+      editorA.id,
+      testPrisma,
+    );
+    await saveRuleBreakdown(created.id, breakdownInputA, actorOf(editorA), testPrisma);
+
+    jest
+      .spyOn(productionEventsService, 'recordProductionStageEvent')
+      .mockRejectedValueOnce(new Error('falha simulada na emissão'));
+
+    await expect(
+      saveRuleBreakdown(created.id, breakdownInputB, actorOf(editorA), testPrisma),
+    ).rejects.toThrow('falha simulada na emissão');
+
+    const row = await testPrisma.ruleBreakdown.findUniqueOrThrow({
+      where: { rawContentId: created.id },
+    });
+    expect(row.concept).toBe(breakdownInputA.concept);
   });
 });

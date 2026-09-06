@@ -2,6 +2,7 @@ import type { Paginated, ProofRadarClass, UserRole } from '../../domain/types';
 import type { Prisma } from '../../generated/prisma/client';
 import { NotFoundError } from '../../http/errors';
 import { prisma } from '../../lib/prisma';
+import { recordProductionStageEvent } from '../production-events/production-events.service';
 import type {
   CreateRawContentInput,
   ListRawContentsQuery,
@@ -75,29 +76,69 @@ export interface RawContentDetail {
   updatedAt: Date;
 }
 
-/** Cliente Prisma injetável (mesmo padrão de `disciplines.service.ts`/`DisciplineReader`). */
-type RawContentClient = Pick<typeof prisma, 'rawContent'>;
+/**
+ * Cliente Prisma injetável (mesmo padrão de `disciplines.service.ts`/`DisciplineReader`).
+ * Ganha `'$transaction'` (COMP-010-003/DEC-010-003): a mutação de negócio e a
+ * emissão de evento de etapa (`recordProductionStageEvent`) rodam na MESMA
+ * transação interativa — invisível a quem chama com o default `prisma`.
+ */
+type RawContentClient = Pick<typeof prisma, 'rawContent' | '$transaction'>;
 
 /**
  * Cria o Conteúdo bruto com `authorId = actorId` — **nunca** do `input`
  * (`CreateRawContentInput` nem declara o campo; o schema o exclui na fronteira).
+ *
+ * Transação interativa (DEC-010-003, NFR-009-002/AC-009-010): a criação e as 3
+ * emissões de evento de etapa (abertura+conclusão de "Conteúdo bruto", abertura
+ * de "Quebra da regra" — §4 de PLAN-010, FR-009-001/FR-009-002) são atômicas —
+ * falha em qualquer uma reverte a transação inteira, nenhum estado meio-salvo.
+ * `now` computado uma única vez (mesmo instante para as 3 emissões; `sequence`
+ * desempata a ordem, AC-009-008).
  */
 export async function createRawContent(
   input: CreateRawContentInput,
   actorId: string,
   db: RawContentClient = prisma,
 ): Promise<RawContentDetail> {
-  return db.rawContent.create({
-    data: {
-      topicId: input.topicId,
-      rawText: input.rawText,
-      radarClass: input.radarClass,
-      sourceType: input.sourceType,
-      sourceCitation: input.sourceCitation,
-      sourceUrl: input.sourceUrl,
-      authorId: actorId,
-    },
-    select: RAW_CONTENT_DETAIL_SELECT,
+  return db.$transaction(async (tx) => {
+    const now = new Date();
+
+    const created = await tx.rawContent.create({
+      data: {
+        topicId: input.topicId,
+        rawText: input.rawText,
+        radarClass: input.radarClass,
+        sourceType: input.sourceType,
+        sourceCitation: input.sourceCitation,
+        sourceUrl: input.sourceUrl,
+        authorId: actorId,
+      },
+      select: RAW_CONTENT_DETAIL_SELECT,
+    });
+
+    // 0 eventos existentes para o par → decide ABERTURA.
+    await recordProductionStageEvent(tx, {
+      rawContentId: created.id,
+      stageType: 'CONTEUDO_BRUTO',
+      actorId,
+      now,
+    });
+    // já existe a ABERTURA gravada acima, na mesma tx → decide CONCLUSAO.
+    await recordProductionStageEvent(tx, {
+      rawContentId: created.id,
+      stageType: 'CONTEUDO_BRUTO',
+      actorId,
+      now,
+    });
+    // 0 eventos existentes para este outro par (stageType distinto) → ABERTURA.
+    await recordProductionStageEvent(tx, {
+      rawContentId: created.id,
+      stageType: 'QUEBRA_DA_REGRA',
+      actorId,
+      now,
+    });
+
+    return created;
   });
 }
 
@@ -134,6 +175,13 @@ export async function getRawContent(
  * revogação de alcance concorrente seria ignorada. `count === 0` cobre as
  * três causas de recusa (a distinção "não existe" vs "não é seu" permanece
  * indistinguível — a garantia de A01 continua de pé).
+ *
+ * Transação interativa (DEC-010-003, NFR-009-002/AC-009-010): a escrita e a
+ * emissão do evento de retrabalho (FR-009-004) são atômicas. Como a criação já
+ * gravou abertura+conclusão de "Conteúdo bruto" (A-009-008), a regra de
+ * `recordProductionStageEvent` decide RETRABALHO sempre aqui, sem este
+ * chamador precisar saber disso (DEC-010-005). `now` computado uma única vez —
+ * mesmo instante para o carimbo (`lastEditedAt`) e para o evento.
  */
 export async function updateRawContent(
   id: string,
@@ -141,23 +189,34 @@ export async function updateRawContent(
   actor: ContentActor,
   db: RawContentClient = prisma,
 ): Promise<RawContentDetail> {
-  const result = await db.rawContent.updateMany({
-    where: { id, ...ACTIVE_RAW_CONTENT_WHERE, ...scopeWhere(actor) },
-    data: {
-      topicId: input.topicId,
-      rawText: input.rawText,
-      radarClass: input.radarClass,
-      sourceType: input.sourceType,
-      sourceCitation: input.sourceCitation,
-      sourceUrl: input.sourceUrl,
-      lastEditedById: actor.id,
-      lastEditedAt: new Date(),
-    },
+  return db.$transaction(async (tx) => {
+    const now = new Date();
+
+    const result = await tx.rawContent.updateMany({
+      where: { id, ...ACTIVE_RAW_CONTENT_WHERE, ...scopeWhere(actor) },
+      data: {
+        topicId: input.topicId,
+        rawText: input.rawText,
+        radarClass: input.radarClass,
+        sourceType: input.sourceType,
+        sourceCitation: input.sourceCitation,
+        sourceUrl: input.sourceUrl,
+        lastEditedById: actor.id,
+        lastEditedAt: now,
+      },
+    });
+
+    if (result.count === 0) throw new NotFoundError('Conteúdo bruto não encontrado.');
+
+    await recordProductionStageEvent(tx, {
+      rawContentId: id,
+      stageType: 'CONTEUDO_BRUTO',
+      actorId: actor.id,
+      now,
+    });
+
+    return tx.rawContent.findUniqueOrThrow({ where: { id }, select: RAW_CONTENT_DETAIL_SELECT });
   });
-
-  if (result.count === 0) throw new NotFoundError('Conteúdo bruto não encontrado.');
-
-  return db.rawContent.findUniqueOrThrow({ where: { id }, select: RAW_CONTENT_DETAIL_SELECT });
 }
 
 /**
@@ -340,8 +399,13 @@ export interface RuleBreakdownDetail {
   essence: string;
 }
 
-/** Cliente Prisma injetável do par `getRuleBreakdown`/`saveRuleBreakdown`. */
-type RuleBreakdownClient = Pick<typeof prisma, 'rawContent' | 'ruleBreakdown'>;
+/**
+ * Cliente Prisma injetável do par `getRuleBreakdown`/`saveRuleBreakdown`.
+ * Ganha `'$transaction'` (COMP-010-003/DEC-010-003) pelo mesmo motivo de
+ * `RawContentClient` acima — só `saveRuleBreakdown` a usa, `getRuleBreakdown`
+ * segue sem transação (não emite evento).
+ */
+type RuleBreakdownClient = Pick<typeof prisma, 'rawContent' | 'ruleBreakdown' | '$transaction'>;
 
 /**
  * Devolve a Quebra da regra do `rawContentId` (FR-005-016, AC-005-021,
@@ -380,7 +444,17 @@ export async function getRuleBreakdown(
  * Quebra prévia), o `@unique` + `upsert` nativo do Postgres (`INSERT … ON
  * CONFLICT … DO UPDATE`) resolve atomicamente: no máximo 1 linha resulta,
  * nunca 2 — o service não faz `findFirst` + `create` (check-then-act), que
- * deixaria uma janela de corrida entre a checagem e a escrita.
+ * deixaria uma janela de corrida entre a checagem e a escrita. O lock de
+ * índice único desse `@unique` também serializa as 2 transações completas
+ * (upsert + emissão de evento) uma atrás da outra — a 2ª só lê
+ * `productionStageEvent` depois do commit da 1ª, propriedade emergente do
+ * schema de F2 (DEC-010-007), sem lock explícito adicional nesta fatia.
+ *
+ * Transação interativa (DEC-010-003, NFR-009-002/AC-009-010): o upsert e a
+ * emissão de evento (FR-009-003/FR-009-005) são atômicos. `recordProductionStageEvent`
+ * decide CONCLUSAO na 1ª chamada (só existe a ABERTURA gravada na criação do
+ * pai) e RETRABALHO nas seguintes (já existe CONCLUSAO) — sem este chamador
+ * precisar saber qual é qual (DEC-010-005).
  */
 export async function saveRuleBreakdown(
   rawContentId: string,
@@ -388,21 +462,33 @@ export async function saveRuleBreakdown(
   actor: ContentActor,
   db: RuleBreakdownClient = prisma,
 ): Promise<RuleBreakdownDetail> {
-  await assertRawContentReachable(rawContentId, actor, db);
+  return db.$transaction(async (tx) => {
+    await assertRawContentReachable(rawContentId, actor, tx);
 
-  const fields = {
-    concept: input.concept,
-    action: input.action,
-    object: input.object,
-    condition: input.condition ?? null,
-    exception: input.exception ?? null,
-    essence: input.essence,
-  };
+    const now = new Date();
+    const fields = {
+      concept: input.concept,
+      action: input.action,
+      object: input.object,
+      condition: input.condition ?? null,
+      exception: input.exception ?? null,
+      essence: input.essence,
+    };
 
-  return db.ruleBreakdown.upsert({
-    where: { rawContentId },
-    create: { rawContentId, ...fields },
-    update: fields,
-    select: RULE_BREAKDOWN_SELECT,
+    const saved = await tx.ruleBreakdown.upsert({
+      where: { rawContentId },
+      create: { rawContentId, ...fields },
+      update: fields,
+      select: RULE_BREAKDOWN_SELECT,
+    });
+
+    await recordProductionStageEvent(tx, {
+      rawContentId,
+      stageType: 'QUEBRA_DA_REGRA',
+      actorId: actor.id,
+      now,
+    });
+
+    return saved;
   });
 }
