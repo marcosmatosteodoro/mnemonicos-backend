@@ -5,6 +5,8 @@ import {
   USER_ROLES,
   PROOF_RADAR_CLASSES,
   NORMATIVE_SOURCE_TYPES,
+  PRODUCTION_STAGE_TYPES,
+  PRODUCTION_EVENT_TRANSITIONS,
   type SessionUser,
 } from '../../src/domain/types';
 
@@ -114,6 +116,29 @@ describe('paridade de tipos de domínio backend ⇆ frontend (NFR-002-007 / AC-0
     expect(frontendTypes).toEqual(backendTypes);
     // o símbolo importado confere com a fonte que o teste leu como texto
     expect([...NORMATIVE_SOURCE_TYPES].sort()).toEqual(backendTypes);
+  });
+
+  it('expõe PRODUCTION_STAGE_TYPES em autoconsistência backend-only (DEC-010-006) — comparação cross-repo entra quando o frontend espelhar (F10)', () => {
+    const declaredStageTypes = extractConstArray(backendSource, 'PRODUCTION_STAGE_TYPES').sort();
+
+    expect(declaredStageTypes).toEqual(['CONTEUDO_BRUTO', 'QUEBRA_DA_REGRA']);
+    // o símbolo importado confere com a fonte que o teste leu como texto —
+    // sem 2º lado da comparação: não há PRODUCTION_STAGE_TYPES no frontend
+    // ainda (DEC-010-006)
+    expect([...PRODUCTION_STAGE_TYPES].sort()).toEqual(declaredStageTypes);
+  });
+
+  it('expõe PRODUCTION_EVENT_TRANSITIONS em autoconsistência backend-only (DEC-010-006) — comparação cross-repo entra quando o frontend espelhar (F10)', () => {
+    const declaredTransitions = extractConstArray(
+      backendSource,
+      'PRODUCTION_EVENT_TRANSITIONS',
+    ).sort();
+
+    expect(declaredTransitions).toEqual(['ABERTURA', 'CONCLUSAO', 'RETRABALHO']);
+    // o símbolo importado confere com a fonte que o teste leu como texto —
+    // sem 2º lado da comparação: não há PRODUCTION_EVENT_TRANSITIONS no
+    // frontend ainda (DEC-010-006)
+    expect([...PRODUCTION_EVENT_TRANSITIONS].sort()).toEqual(declaredTransitions);
   });
 
   it('declara a interface SessionUser com o mesmo conjunto de campos nos dois repositórios', () => {

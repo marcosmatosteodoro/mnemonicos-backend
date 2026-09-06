@@ -72,6 +72,23 @@ export const NORMATIVE_SOURCE_TYPES = [
 export type NormativeSourceType = (typeof NORMATIVE_SOURCE_TYPES)[number];
 
 /**
+ * Tipo de etapa e tipo de transição do evento de etapa de produção (F3,
+ * SPEC-009). Fonte canônica: `mnemonicos-backend/prisma/schema.prisma` (enums
+ * `ProductionStageType` / `ProductionEventTransition`). O teste de
+ * autoconsistência é `mnemonicos-backend/tests/unit/domain-types-parity.test.ts`
+ * (TASK-010-001) — **diferente** dos pares acima, este **não** tem espelho em
+ * `mnemonicos-frontend/src/types/domain.ts` nesta fatia (DEC-010-006, YAGNI:
+ * sem consumidor de tela/rota até F10).
+ */
+export const PRODUCTION_STAGE_TYPES = ['CONTEUDO_BRUTO', 'QUEBRA_DA_REGRA'] as const;
+
+export type ProductionStageType = (typeof PRODUCTION_STAGE_TYPES)[number];
+
+export const PRODUCTION_EVENT_TRANSITIONS = ['ABERTURA', 'CONCLUSAO', 'RETRABALHO'] as const;
+
+export type ProductionEventTransition = (typeof PRODUCTION_EVENT_TRANSITIONS)[number];
+
+/**
  * Conteúdo bruto de produção — espelha o model `RawContent` de
  * `prisma/schema.prisma`. Espelhado em
  * `mnemonicos-frontend/src/types/domain.ts`: mudança de um lado entra no
