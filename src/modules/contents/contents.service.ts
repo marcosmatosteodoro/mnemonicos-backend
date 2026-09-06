@@ -357,7 +357,7 @@ export async function listRawContents(
  * resolve para **"não encontrado"**, nunca "removido": o ator nunca alcançou
  * o dado para ter o direito de saber que ele foi removido.
  */
-async function assertRawContentReachable(
+export async function assertRawContentReachable(
   rawContentId: string,
   actor: ContentActor,
   db: RawContentClient,
