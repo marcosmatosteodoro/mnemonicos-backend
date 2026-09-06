@@ -24,6 +24,7 @@ import {
  */
 const BACKEND_TYPES = resolve(__dirname, '../../src/domain/types.ts');
 const FRONTEND_TYPES = resolve(__dirname, '../../../mnemonicos-frontend/src/types/domain.ts');
+const SCHEMA_PRISMA = resolve(__dirname, '../../prisma/schema.prisma');
 
 function readTypesFile(path: string): string {
   if (!existsSync(path)) {
@@ -54,6 +55,25 @@ function extractConstArray(source: string, constName: string): string[] {
   return [...body.matchAll(/'([^']+)'/g)].map((m) => m[1] ?? '');
 }
 
+/**
+ * Extrai os valores de um `enum <Nome> { ... }` do schema.prisma, ignorando
+ * comentários `//`. Fecha o par schema Prisma ⇆ `domain/types.ts` (eixo
+ * intra-repo distinto do cross-repo acima): sem isso, um valor novo no enum
+ * Prisma (F4-F9, NFR-009-001) não deixaria nada vermelho aqui.
+ */
+function extractPrismaEnum(source: string, enumName: string): string[] {
+  const pattern = new RegExp(`enum ${enumName} \\{([\\s\\S]*?)\\}`);
+  const match = pattern.exec(source);
+  const body = match?.[1];
+  if (body === undefined) {
+    throw new Error(`enum ${enumName} não encontrado em schema.prisma`);
+  }
+  return body
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line !== '' && !line.startsWith('//'));
+}
+
 function extractSessionUserFields(source: string): string[] {
   const match = /export interface SessionUser \{([\s\S]*?)\}/.exec(source);
   const body = match?.[1];
@@ -66,6 +86,7 @@ function extractSessionUserFields(source: string): string[] {
 describe('paridade de tipos de domínio backend ⇆ frontend (NFR-002-007 / AC-002-025 / AC-005-030)', () => {
   const backendSource = readTypesFile(BACKEND_TYPES);
   const frontendSource = readTypesFile(FRONTEND_TYPES);
+  const schemaSource = readTypesFile(SCHEMA_PRISMA);
 
   it('expõe o mesmo conjunto de valores de USER_ROLES nos dois repositórios', () => {
     const backendRoles = extractConstArray(backendSource, 'USER_ROLES').sort();
@@ -118,26 +139,29 @@ describe('paridade de tipos de domínio backend ⇆ frontend (NFR-002-007 / AC-0
     expect([...NORMATIVE_SOURCE_TYPES].sort()).toEqual(backendTypes);
   });
 
-  it('expõe PRODUCTION_STAGE_TYPES em autoconsistência backend-only (DEC-010-006) — comparação cross-repo entra quando o frontend espelhar (F10)', () => {
+  it('expõe PRODUCTION_STAGE_TYPES em paridade com o enum ProductionStageType do schema.prisma — sem 2º lado no frontend ainda (DEC-010-006, F10 acrescenta)', () => {
     const declaredStageTypes = extractConstArray(backendSource, 'PRODUCTION_STAGE_TYPES').sort();
+    const schemaStageTypes = extractPrismaEnum(schemaSource, 'ProductionStageType').sort();
 
     expect(declaredStageTypes).toEqual(['CONTEUDO_BRUTO', 'QUEBRA_DA_REGRA']);
-    // o símbolo importado confere com a fonte que o teste leu como texto —
-    // sem 2º lado da comparação: não há PRODUCTION_STAGE_TYPES no frontend
-    // ainda (DEC-010-006)
+    // paridade real contra o schema Prisma — um valor novo em F4-F9 sem o
+    // espelho em domain/types.ts deixa esta linha vermelha
+    expect(declaredStageTypes).toEqual(schemaStageTypes);
+    // o símbolo importado confere com a fonte que o teste leu como texto
     expect([...PRODUCTION_STAGE_TYPES].sort()).toEqual(declaredStageTypes);
   });
 
-  it('expõe PRODUCTION_EVENT_TRANSITIONS em autoconsistência backend-only (DEC-010-006) — comparação cross-repo entra quando o frontend espelhar (F10)', () => {
+  it('expõe PRODUCTION_EVENT_TRANSITIONS em paridade com o enum ProductionEventTransition do schema.prisma — sem 2º lado no frontend ainda (DEC-010-006, F10 acrescenta)', () => {
     const declaredTransitions = extractConstArray(
       backendSource,
       'PRODUCTION_EVENT_TRANSITIONS',
     ).sort();
+    const schemaTransitions = extractPrismaEnum(schemaSource, 'ProductionEventTransition').sort();
 
     expect(declaredTransitions).toEqual(['ABERTURA', 'CONCLUSAO', 'RETRABALHO']);
-    // o símbolo importado confere com a fonte que o teste leu como texto —
-    // sem 2º lado da comparação: não há PRODUCTION_EVENT_TRANSITIONS no
-    // frontend ainda (DEC-010-006)
+    // paridade real contra o schema Prisma — mesma razão do bloco acima
+    expect(declaredTransitions).toEqual(schemaTransitions);
+    // o símbolo importado confere com a fonte que o teste leu como texto
     expect([...PRODUCTION_EVENT_TRANSITIONS].sort()).toEqual(declaredTransitions);
   });
 

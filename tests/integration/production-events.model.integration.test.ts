@@ -76,17 +76,27 @@ describe('ProductionStageEvent — FK Restrict de rawContentId sobrevive ao hard
       },
     });
 
-    await expect(testPrisma.rawContent.delete({ where: { id: rawContent.id } })).rejects.toThrow(
-      Prisma.PrismaClientKnownRequestError,
-    );
-
     try {
       await testPrisma.rawContent.delete({ where: { id: rawContent.id } });
       throw new Error('esperava rejeição, mas o delete resolveu');
     } catch (err) {
       expect(err).toBeInstanceOf(Prisma.PrismaClientKnownRequestError);
-      expect((err as Prisma.PrismaClientKnownRequestError).code).toBe('P2003');
+      const knownErr = err as Prisma.PrismaClientKnownRequestError;
+      // FK `Restrict` é não-adiável e viola SQLSTATE 23001, que o adapter-pg
+      // não mapeia (só 23502/23503/23505) — cai no genérico P2039, não P2003
+      // (Postgres 18 + Prisma 7.9.1). O código é travado aqui de propósito,
+      // como sinal de regressão se o mapeamento mudar; a garantia real e
+      // estável do AC é o par abaixo (rejeição + sobrevivência da linha).
+      expect(knownErr.code).toBe('P2039');
+      expect(knownErr.message).toContain('production_stage_events_rawContentId_fkey');
+      expect(knownErr.message).toContain('RESTRICT');
     }
+
+    // O RawContent nunca foi removido: a violação de RESTRICT reverte a
+    // instrução inteira, nunca um estado parcial.
+    await expect(
+      testPrisma.rawContent.findUniqueOrThrow({ where: { id: rawContent.id } }),
+    ).resolves.toBeDefined();
   });
 });
 
