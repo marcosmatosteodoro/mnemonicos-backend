@@ -69,9 +69,10 @@ enum NormativeSourceType {
 enum ProductionStageType {
   CONTEUDO_BRUTO
   QUEBRA_DA_REGRA
-  // Fatias futuras (F4 tira, F5 biblioteca visual, F6 publicação, F8
-  // versionamento, F9 QC) acrescentam valores aqui — migração aditiva, sem
-  // redesenho do mecanismo (NFR-009-001, DEC-010-001).
+  TIRA_MNEMONICA
+  // Fatias futuras (F5 biblioteca visual, F6 publicação, F8 versionamento, F9
+  // QC) acrescentam valores aqui — migração aditiva, sem redesenho do
+  // mecanismo (NFR-009-001/DEC-010-001, agora também NFR-011-004).
 }
 
 enum ProductionEventTransition {
@@ -346,7 +347,53 @@ model RuleBreakdown {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  strip MnemonicStrip?
+
   @@map("rule_breakdowns")
+}
+
+/// Tira mnemônica — 1:1 com a Quebra da regra (FK `@unique`), mesmo padrão de
+/// RuleBreakdown 1:1 RawContent (A-011-001, DEC-012-001). Sem `deletedAt`
+/// própria — herda a inalcançabilidade do `RawContent` de origem pela cadeia
+/// Strip → RuleBreakdown → RawContent (NFR-011-006).
+model MnemonicStrip {
+  id String @id @default(uuid(7))
+
+  ruleBreakdownId String        @unique
+  ruleBreakdown   RuleBreakdown @relation(fields: [ruleBreakdownId], references: [id], onDelete: Cascade)
+
+  frames MnemonicFrame[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("mnemonic_strips")
+}
+
+/// Quadro — unidade atômica da Tira (N:1 com MnemonicStrip). `position`
+/// contígua e única por Tira em qualquer estado observável (NFR-011-002,
+/// DEC-012-002) — defesa em profundidade ao lado da transação que a escreve.
+model MnemonicFrame {
+  id String @id @default(uuid(7))
+
+  stripId String
+  strip   MnemonicStrip @relation(fields: [stripId], references: [id], onDelete: Cascade)
+
+  text     String
+  position Int
+
+  /// Um dos 5 nomes de campo de RuleBreakdown ('concept'|'action'|'object'|
+  /// 'condition'|'exception'), gravado só no instante da geração inicial; ou
+  /// `null` para Quadro criado manualmente pelo EDITOR (FR-011-003).
+  /// Informativo — nenhuma regra de negócio desta fatia lê este campo
+  /// (A-011-011, DEC-012-004).
+  originBlock String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([stripId, position])
+  @@map("mnemonic_frames")
 }
 
 /// Evento append-only e imutável de transição de etapa de produção (SPEC-009).
