@@ -80,7 +80,11 @@ export type NormativeSourceType = (typeof NORMATIVE_SOURCE_TYPES)[number];
  * `mnemonicos-frontend/src/types/domain.ts` nesta fatia (DEC-010-006, YAGNI:
  * sem consumidor de tela/rota até F10).
  */
-export const PRODUCTION_STAGE_TYPES = ['CONTEUDO_BRUTO', 'QUEBRA_DA_REGRA'] as const;
+export const PRODUCTION_STAGE_TYPES = [
+  'CONTEUDO_BRUTO',
+  'QUEBRA_DA_REGRA',
+  'TIRA_MNEMONICA',
+] as const;
 
 export type ProductionStageType = (typeof PRODUCTION_STAGE_TYPES)[number];
 
