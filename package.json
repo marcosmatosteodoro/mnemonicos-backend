@@ -11,7 +11,7 @@
     "dev": "npm run db:up && npm run dev:no-db",
     "dev:no-db": "tsx watch src/server.ts",
     "build": "prisma generate && tsc -p tsconfig.build.json",
-    "vercel-build": "prisma generate",
+    "vercel-build": "prisma generate && prisma migrate deploy",
     "start": "node dist/server.js",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
