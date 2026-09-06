@@ -66,6 +66,20 @@ enum NormativeSourceType {
   ATO_NORMATIVO
 }
 
+enum ProductionStageType {
+  CONTEUDO_BRUTO
+  QUEBRA_DA_REGRA
+  // Fatias futuras (F4 tira, F5 biblioteca visual, F6 publicação, F8
+  // versionamento, F9 QC) acrescentam valores aqui — migração aditiva, sem
+  // redesenho do mecanismo (NFR-009-001, DEC-010-001).
+}
+
+enum ProductionEventTransition {
+  ABERTURA
+  CONCLUSAO
+  RETRABALHO
+}
+
 model User {
   id String @id @default(uuid(7))
 
@@ -88,6 +102,8 @@ model User {
 
   rawContents       RawContent[] @relation("RawContentAuthor")
   editedRawContents RawContent[] @relation("RawContentLastEditor")
+
+  productionStageEvents ProductionStageEvent[]
 
   @@map("users")
 }
@@ -292,6 +308,8 @@ model RawContent {
 
   breakdown RuleBreakdown?
 
+  productionStageEvents ProductionStageEvent[]
+
   @@index([authorId])
   @@index([topicId])
   /// Cobre `listRawContents` (TASK-006-008) no ramo EDITOR: `where{authorId,
@@ -329,4 +347,42 @@ model RuleBreakdown {
   updatedAt DateTime @updatedAt
 
   @@map("rule_breakdowns")
+}
+
+/// Evento append-only e imutável de transição de etapa de produção (SPEC-009).
+/// Nenhum caminho do código atualiza ou apaga uma linha desta tabela
+/// (FR-009-007) — a garantia é a AUSÊNCIA de método de update/delete em
+/// production-events.service.ts, não um campo de estado aqui (por isso não há
+/// `updatedAt` nem `deletedAt`).
+model ProductionStageEvent {
+  id String @id @default(uuid(7))
+
+  rawContentId String
+  /// Restrict: mesmo padrão de `RawContent.authorId`/`RawContentAuthor` — um
+  /// RawContent com eventos não pode ser hard-deletado; hoje só existe
+  /// soft-delete (`RawContent.deletedAt`), e o evento sobrevive a ele
+  /// (FR-009-008, NFR-009-003).
+  rawContent   RawContent @relation(fields: [rawContentId], references: [id], onDelete: Restrict)
+
+  stageType      ProductionStageType
+  transitionType ProductionEventTransition
+
+  actorId String
+  /// Restrict: mesmo padrão de `RawContent.authorId` — o autor da mutação que
+  /// originou o evento não pode ser hard-deletado enquanto o evento existir.
+  actor   User   @relation(fields: [actorId], references: [id], onDelete: Restrict)
+
+  occurredAt DateTime @default(now())
+
+  /// Desempate determinístico para eventos registrados no mesmo instante
+  /// (AC-009-008 — a criação de Conteúdo bruto sempre produz 3 emissões com o
+  /// mesmo `now` injetado). Território greenfield: nenhum outro model do
+  /// projeto tem sequência monotônica hoje (DEC-010-002).
+  sequence BigInt @default(autoincrement())
+
+  /// Cobre a leitura ordenada de FR-009-010/AC-009-008 (`findMany` por
+  /// `rawContentId`, `orderBy: sequence asc`) — mesmo padrão de prova de
+  /// índice por EXPLAIN já usado em `RawContent` (schema.prisma:295-307).
+  @@index([rawContentId, sequence])
+  @@map("production_stage_events")
 }
