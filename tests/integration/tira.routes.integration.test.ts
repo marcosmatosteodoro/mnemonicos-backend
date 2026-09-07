@@ -133,6 +133,41 @@ describe('AC-011-023 (parte — faceta HTTP do 409): Quebra da regra ainda não 
   });
 });
 
+describe('Ordem de precedência das guardas (retry, Achado 2): assertRawContentReachable ANTES da checagem de Quebra da regra, faceta HTTP', () => {
+  it('GET /contents/:id/strip sobre rawContentId de OUTRO autor, SEM Quebra da regra salva → 404 "Conteúdo bruto não encontrado." (NUNCA 409 — se a Quebra fosse checada primeiro, o 409 vazaria a existência do rawContentId de A para B sem checar alcance)', async () => {
+    const editorA = await createUser('EDITOR');
+    const editorB = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const rawContent = await createRawContent(editorA.id, topicId);
+    // Sem seedRuleBreakdown: a Quebra da regra deliberadamente NÃO foi salva —
+    // se a ordem das guardas fosse invertida, a checagem de Quebra chegaria
+    // primeiro e devolveria 409 sem nunca confirmar que B alcança o :id.
+    const accessB = await seedSession(editorB.id);
+
+    const res = await request(app)
+      .get(`/api/v1/contents/${rawContent.id}/strip`)
+      .set(...withCookie(accessB));
+
+    expect(res.status).toBe(404);
+    expect(res.body.error.message).toBe('Conteúdo bruto não encontrado.');
+  });
+
+  it('POST /contents/:id/strip (geração) sobre rawContentId de OUTRO autor, SEM Quebra da regra salva → 404 (mesma faceta, agora na mutação)', async () => {
+    const editorA = await createUser('EDITOR');
+    const editorB = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const rawContent = await createRawContent(editorA.id, topicId);
+    const accessB = await seedSession(editorB.id);
+
+    const res = await request(app)
+      .post(`/api/v1/contents/${rawContent.id}/strip`)
+      .set(...withCookie(accessB));
+
+    expect(res.status).toBe(404);
+    expect(res.body.error.message).toBe('Conteúdo bruto não encontrado.');
+  });
+});
+
 describe('CSRF/DEC-012-011 (achado do security-engineer, gate 8) — GET /contents/:id/strip é leitura pura, nunca gera', () => {
   it('GET sobre uma Tira AINDA NÃO aberta (Quebra da regra salva, Strip inexistente) → 404; nenhuma MnemonicStrip/MnemonicFrame/evento de produção é criado, nem mesmo chamando duas vezes seguidas', async () => {
     const editor = await createUser('EDITOR');
@@ -159,6 +194,33 @@ describe('CSRF/DEC-012-011 (achado do security-engineer, gate 8) — GET /conten
       where: { rawContentId: rawContent.id, stageType: 'TIRA_MNEMONICA' },
     });
     expect(eventCount).toBe(0);
+  });
+});
+
+describe('GET /contents/:id/strip — ramo de SUCESSO da leitura pura (retry, achado do code-reviewer: a migração da geração para POST levou consigo as únicas 2 asserções de sucesso do GET)', () => {
+  it('POST abre a Tira (201/200, Quadros da 1ª geração); GET subsequente devolve 200 com o MESMO corpo — mesmo id de Strip, mesmos Quadros na ordem de position, mesmos textos', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const rawContent = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdown(rawContent.id);
+    const access = await seedSession(editor.id);
+
+    const opened = await request(app)
+      .post(`/api/v1/contents/${rawContent.id}/strip`)
+      .set(...withCookie(access));
+    expect(opened.status).toBe(200);
+    expect(Array.isArray(opened.body.frames)).toBe(true);
+    expect(opened.body.frames.length).toBeGreaterThan(0);
+
+    const read = await request(app)
+      .get(`/api/v1/contents/${rawContent.id}/strip`)
+      .set(...withCookie(access));
+
+    // Mutante: `return existing` → `throw NotFoundError` incondicional em
+    // `getMnemonicStrip` faz `read.status` virar 404 — este teste morre.
+    expect(read.status).toBe(200);
+    expect(read.body.id).toBe(opened.body.id);
+    expect(read.body.frames).toEqual(opened.body.frames);
   });
 });
 

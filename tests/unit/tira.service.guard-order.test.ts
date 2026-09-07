@@ -119,3 +119,58 @@ describe.each([
     });
   },
 );
+
+/**
+ * `getMnemonicStrip`/`openMnemonicStrip` (EMENDA Wave 5/DEC-012-011) não
+ * chamam `assertRawContentReachable` diretamente — delegam à guarda
+ * compartilhada `assertStripPrerequisites`, que a chama internamente. A prova
+ * de ordem, aqui, é composta em 2 saltos: (1) `assertStripPrerequisites` é a
+ * 1ª chamada dentro do corpo de CADA função (nada lido/checado antes dela);
+ * (2) `assertRawContentReachable` é a 1ª chamada dentro do corpo de
+ * `assertStripPrerequisites` (prova única, a guarda é compartilhada — não
+ * duplicada por função). As duas juntas fecham a mesma prova de ordem que as
+ * funções acima têm isoladamente; invertida qualquer ponta, uma das 2 quebra.
+ *
+ * `openMnemonicStrip` declara `let ruleBreakdownId` ANTES do `try`/
+ * `$transaction` (necessário para o `catch` do `P2002`) — o corpo da função
+ * inteira não serve para `firstExecutableLine` (a declaração não é chamada de
+ * guarda nem abridora de escopo). Por isso a extração aqui mira o corpo do
+ * callback da transação (`async (tx) => {`), não o corpo externo da função —
+ * mesmo padrão aplicado às duas, por consistência.
+ */
+describe.each([
+  ['getMnemonicStrip', 'export async function getMnemonicStrip'],
+  ['openMnemonicStrip', 'export async function openMnemonicStrip'],
+])(
+  '%s — assertStripPrerequisites (guarda compartilhada) é a 1ª chamada dentro do corpo da transação (AC-011-022/AC-011-023, estrutural)',
+  (_name, signatureAnchor) => {
+    it('a 1ª linha executável do corpo da transação contém `assertStripPrerequisites(`', () => {
+      const source = readSource(TIRA_SERVICE);
+      const outerBody = extractFunctionBody(source, signatureAnchor);
+      const transactionBody = extractFunctionBody(outerBody, 'async (tx) => {');
+      const line = firstExecutableLine(transactionBody);
+
+      // Mutante: ler `mnemonicStrip.findUnique` (ou qualquer outra coisa)
+      // ANTES de `assertStripPrerequisites` faz esta asserção reprovar — a
+      // guarda de alcance por autoria (dentro dela) deixaria de ser a 1ª
+      // barreira.
+      expect(line).toContain('assertStripPrerequisites(');
+    });
+  },
+);
+
+describe('assertStripPrerequisites — assertRawContentReachable é a 1ª chamada (guarda compartilhada por getMnemonicStrip e openMnemonicStrip, EMENDA Wave 5/DEC-012-011)', () => {
+  it('a 1ª linha executável do corpo contém `assertRawContentReachable(`', () => {
+    const source = readSource(TIRA_SERVICE);
+    const body = extractFunctionBody(source, 'async function assertStripPrerequisites');
+    const line = firstExecutableLine(body);
+
+    // Mutante: mover a checagem da Quebra da regra (`ruleBreakdown.findUnique`
+    // + `ConflictError`) para ANTES de `assertRawContentReachable` faz esta
+    // asserção reprovar — vazaria, para `getMnemonicStrip` E
+    // `openMnemonicStrip` ao mesmo tempo (guarda compartilhada), a existência
+    // do `rawContentId` de outro autor: o 409 apareceria antes de confirmar o
+    // alcance.
+    expect(line).toContain('assertRawContentReachable(');
+  });
+});
