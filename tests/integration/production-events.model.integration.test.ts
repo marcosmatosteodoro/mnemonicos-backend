@@ -107,3 +107,27 @@ describe('ProductionStageEvent — coluna sequence desempata occurredAt idêntic
     expect(ordered.map((event) => event.id)).toEqual([first.id, second.id, third.id]);
   });
 });
+
+describe('ProductionStageEvent — valor aditivo TIRA_MNEMONICA gravável na mesma sessão da migração (TRISK-012-001, PLAN-012)', () => {
+  it('grava e lê stageType: TIRA_MNEMONICA logo após a migração ter aplicado o ADD VALUE', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const rawContent = await createRawContent(editor.id, topicId);
+
+    const created = await testPrisma.productionStageEvent.create({
+      data: {
+        rawContentId: rawContent.id,
+        stageType: 'TIRA_MNEMONICA',
+        transitionType: 'ABERTURA',
+        actorId: editor.id,
+      },
+    });
+
+    const read = await testPrisma.productionStageEvent.findUniqueOrThrow({
+      where: { id: created.id },
+    });
+
+    expect(read.stageType).toBe('TIRA_MNEMONICA');
+    expect(read.transitionType).toBe('ABERTURA');
+  });
+});

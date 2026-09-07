@@ -143,7 +143,7 @@ describe('paridade de tipos de domínio backend ⇆ frontend (NFR-002-007 / AC-0
     const declaredStageTypes = extractConstArray(backendSource, 'PRODUCTION_STAGE_TYPES').sort();
     const schemaStageTypes = extractPrismaEnum(schemaSource, 'ProductionStageType').sort();
 
-    expect(declaredStageTypes).toEqual(['CONTEUDO_BRUTO', 'QUEBRA_DA_REGRA']);
+    expect(declaredStageTypes).toEqual(['CONTEUDO_BRUTO', 'QUEBRA_DA_REGRA', 'TIRA_MNEMONICA']);
     // paridade real contra o schema Prisma — um valor novo em F4-F9 sem o
     // espelho em domain/types.ts deixa esta linha vermelha
     expect(declaredStageTypes).toEqual(schemaStageTypes);

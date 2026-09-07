@@ -44,3 +44,20 @@ export async function createRawContent(authorId: string, topicId: string) {
     },
   });
 }
+
+/** Blocos da Quebra da regra (RuleBreakdown) — fonte única reusada pelos arquivos de integração da Tira mnemônica. */
+export const BREAKDOWN_FIELDS = {
+  concept: 'Vínculo jurídico entre Fisco e contribuinte.',
+  action: 'Cobrar o tributo devido.',
+  object: 'A obrigação tributária.',
+  condition: 'Quando há substituição tributária.',
+  exception: 'Salvo isenção legal expressa.',
+  essence: 'Nasce da ocorrência do fato gerador.',
+};
+
+/** Quebra da regra salva (pré-requisito de `openMnemonicStrip`/`getMnemonicStrip`, AC-011-023). */
+export async function seedRuleBreakdown(rawContentId: string) {
+  return testPrisma.ruleBreakdown.create({
+    data: { rawContentId, ...BREAKDOWN_FIELDS },
+  });
+}
