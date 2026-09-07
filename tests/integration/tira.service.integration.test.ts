@@ -19,7 +19,13 @@ import {
   reorderMnemonicFrames,
   updateMnemonicFrameText,
 } from '../../src/modules/tira/tira.service';
-import { createRawContent, createTopic, createUser } from '../support/production-events-fixtures';
+import {
+  BREAKDOWN_FIELDS,
+  createRawContent,
+  createTopic,
+  createUser,
+  seedRuleBreakdown,
+} from '../support/production-events-fixtures';
 import { closeTestDb, resetDb, testPrisma } from './db';
 import { TEST_DATABASE_URL } from './db-url';
 
@@ -34,21 +40,6 @@ import { TEST_DATABASE_URL } from './db-url';
 
 function actorOf(user: { id: string; role: 'EDITOR' | 'ADMIN' | 'STUDENT' }): ContentActor {
   return { id: user.id, role: user.role };
-}
-
-const BREAKDOWN_FIELDS = {
-  concept: 'Vínculo jurídico entre Fisco e contribuinte.',
-  action: 'Cobrar o tributo devido.',
-  object: 'A obrigação tributária.',
-  condition: 'Quando há substituição tributária.',
-  exception: 'Salvo isenção legal expressa.',
-  essence: 'Nasce da ocorrência do fato gerador.',
-};
-
-async function seedRuleBreakdown(rawContentId: string) {
-  return testPrisma.ruleBreakdown.create({
-    data: { rawContentId, ...BREAKDOWN_FIELDS },
-  });
 }
 
 /**

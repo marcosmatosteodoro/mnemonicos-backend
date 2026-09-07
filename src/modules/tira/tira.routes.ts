@@ -7,6 +7,7 @@ import { rawContentIdParamSchema } from '../contents/contents.schema';
 import type { ContentActor } from '../contents/contents.service';
 import {
   addMnemonicFrame,
+  getMnemonicStrip,
   openMnemonicStrip,
   removeMnemonicFrame,
   reorderMnemonicFrames,
@@ -37,13 +38,23 @@ import {
  * A rota estática `PUT /contents/:id/strip/frames/order` monta ao lado da
  * rota com `:frameId` (`PATCH`/`DELETE /contents/:id/strip/frames/:frameId`)
  * — topologia adversarial mínima (lição [Segurança] "topologia adversarial"):
- * cada uma das 5 chaves abaixo é uma entrada INDEPENDENTE em `ROUTE_ROLES`,
- * nenhuma herda a declaração da vizinha.
+ * cada uma das 6 chaves abaixo é uma entrada INDEPENDENTE em `ROUTE_ROLES`,
+ * nenhuma herda a declaração da vizinha — inclusive o par `GET`/`POST` no
+ * MESMO caminho (`/contents/:id/strip`), mesma topologia adversarial de "2º
+ * método no mesmo path".
  *
- * `verifyOrigin` (COMP-003-010) é o **1º handler** nas 4 mutações (`POST`,
- * `PATCH`, `DELETE`, `PUT`) — ausente na leitura (`GET /strip`, get-or-generate,
- * sem efeito colateral de escrita observável pelo cliente que precise da
- * defesa CSRF).
+ * `verifyOrigin` (COMP-003-010) é o **1º handler** nas 5 mutações (`POST
+ * /contents/:id/strip`, `POST .../frames`, `PATCH`, `DELETE`, `PUT`) —
+ * ausente na leitura (`GET /contents/:id/strip`).
+ *
+ * **EMENDA Wave 5/DEC-012-011 (achado de CSRF do security-engineer, gate
+ * 8)**: `GET /contents/:id/strip` deixou de ser get-or-generate — o cookie de
+ * sessão `sameSite: 'lax'` acompanha navegação top-level, e o projeto proíbe
+ * `verifyOrigin` em `GET`; um `GET` que escrevesse ficaria sem defesa CSRF
+ * (sonda provou forjar `actorId` da vítima no evento ABERTURA). A geração
+ * migrou para a rota nova `POST /contents/:id/strip` (com `verifyOrigin`); o
+ * `GET` agora é **leitura pura** (`getMnemonicStrip`) — 404 quando a Tira
+ * ainda não foi aberta, nunca cria.
  *
  * O ator da requisição é sempre `req.auth` (resolvido por `requireAuth` a
  * partir da sessão no servidor), nunca um id de rota/query (NFR-002-002) — é
@@ -57,7 +68,7 @@ import {
 export const tiraRoutes = Router();
 
 /**
- * `req.auth` sempre existe aqui (as 5 rotas rodam depois de `requireAuth` +
+ * `req.auth` sempre existe aqui (as 6 rotas rodam depois de `requireAuth` +
  * `requireRole`, que já recusaram sessão ausente) — a checagem é defesa em
  * profundidade, mesmo padrão de `contents.routes.ts:58-61`.
  */
@@ -67,14 +78,34 @@ function actorOf(req: Request): ContentActor {
 }
 
 /**
- * GET /contents/:id/strip — abertura get-or-generate idempotente
- * (FR-011-001/FR-011-002). Leitura: sem `verifyOrigin`. 404 quando o
- * `:id` é inalcançável (AC-011-022); 409 quando a Quebra da regra do
+ * GET /contents/:id/strip — leitura pura (EMENDA Wave 5/DEC-012-011): NUNCA
+ * gera. Sem `verifyOrigin` (leitura de verdade, sem efeito colateral de
+ * escrita). 404 quando o `:id` é inalcançável ou quando a Tira ainda não foi
+ * aberta (AC-011-022/AC-011-023); 409 quando a Quebra da regra do
  * `rawContentId` ainda não foi salva (AC-011-023).
  */
 tiraRoutes.get(
   '/contents/:id/strip',
   requireRole('GET', '/contents/:id/strip', 'EDITOR', 'ADMIN'),
+  async (req, res) => {
+    const { id } = rawContentIdParamSchema.parse(req.params);
+    const strip = await getMnemonicStrip(id, actorOf(req));
+    res.json(strip);
+  },
+);
+
+/**
+ * POST /contents/:id/strip — abertura get-or-generate idempotente
+ * (FR-011-001/FR-011-002; antiga responsabilidade do `GET`, migrada por
+ * EMENDA Wave 5/DEC-012-011). `verifyOrigin` como 1º handler (defesa CSRF: a
+ * geração é a mutação que a sonda do security-engineer explorou via `GET`).
+ * 404 quando o `:id` é inalcançável (AC-011-022); 409 quando a Quebra da
+ * regra do `rawContentId` ainda não foi salva (AC-011-023).
+ */
+tiraRoutes.post(
+  '/contents/:id/strip',
+  verifyOrigin,
+  requireRole('POST', '/contents/:id/strip', 'EDITOR', 'ADMIN'),
   async (req, res) => {
     const { id } = rawContentIdParamSchema.parse(req.params);
     const strip = await openMnemonicStrip(id, actorOf(req));
@@ -97,10 +128,8 @@ tiraRoutes.post(
 
 /**
  * PATCH /contents/:id/strip/frames/:frameId — edita o texto de um Quadro
- * (FR-011-004). O `:frameId` só é aceito se pertencer à cadeia do `:id` da
- * URL — amarração feita dentro de `tira.service.ts` (confused deputy,
- * achado herdado do security-engineer, gate 8 da Wave 1); esta rota confia
- * nela e só transporta o 404.
+ * (FR-011-004). `:frameId` só é aceito se pertencer à cadeia do `:id` da URL
+ * — a amarração vive no service, a rota só transporta o 404.
  */
 tiraRoutes.patch(
   '/contents/:id/strip/frames/:frameId',

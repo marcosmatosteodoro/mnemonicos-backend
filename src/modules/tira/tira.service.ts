@@ -104,6 +104,70 @@ const RULE_BREAKDOWN_FOR_STRIP_SELECT = {
   exception: true,
 } as const satisfies Prisma.RuleBreakdownSelect;
 
+type RuleBreakdownForStrip = Prisma.RuleBreakdownGetPayload<{
+  select: typeof RULE_BREAKDOWN_FOR_STRIP_SELECT;
+}>;
+
+/**
+ * Guardas comuns a `openMnemonicStrip` e `getMnemonicStrip` (EMENDA Wave
+ * 5/DEC-012-011): alcance por autoria (`assertRawContentReachable`, 1ª
+ * chamada, sempre — NFR-011-001/006, DEC-012-007) seguido de 409
+ * (`ConflictError`) se a Quebra da regra do `rawContentId` ainda não foi
+ * salva. Devolve a Quebra completa — só `openMnemonicStrip` usa os campos
+ * além do `id` (para `buildInitialFrames` na 1ª abertura).
+ */
+async function assertStripPrerequisites(
+  tx: MnemonicStripClient,
+  rawContentId: string,
+  actor: ContentActor,
+): Promise<RuleBreakdownForStrip> {
+  await assertRawContentReachable(rawContentId, actor, tx);
+
+  const breakdown = await tx.ruleBreakdown.findUnique({
+    where: { rawContentId },
+    select: RULE_BREAKDOWN_FOR_STRIP_SELECT,
+  });
+  if (breakdown === null) {
+    throw new ConflictError('Conclua a Quebra da regra antes de abrir a Tira mnemônica.');
+  }
+  return breakdown;
+}
+
+/**
+ * Lê a Tira mnemônica já aberta — NUNCA gera (EMENDA Wave 5/DEC-012-011,
+ * achado de CSRF do security-engineer, gate 8): o cookie de sessão
+ * `sameSite: 'lax'` acompanha navegação top-level, e o projeto proíbe
+ * `verifyOrigin` em `GET` — um `GET` que escreve ficava sem defesa CSRF
+ * (sonda provou forjar `actorId` da vítima no evento ABERTURA). A geração
+ * migrou para `openMnemonicStrip`, agora chamada só por `POST
+ * /contents/:id/strip` (`tira.routes.ts`).
+ *
+ * Mesma ordem de guardas de `openMnemonicStrip`
+ * (`assertStripPrerequisites`): alcance por autoria, depois 409 se a Quebra
+ * da regra ainda não foi salva (AC-011-023, parte). Quando a Tira ainda não
+ * existe, 404 (`NotFoundError`) em vez de criar (AC-011-022/AC-011-023,
+ * faceta HTTP da rota — mapeamento em `tira.routes.ts`).
+ */
+export async function getMnemonicStrip(
+  rawContentId: string,
+  actor: ContentActor,
+  db: MnemonicStripClient = prisma,
+): Promise<MnemonicStripDetail> {
+  return db.$transaction(async (tx) => {
+    const breakdown = await assertStripPrerequisites(tx, rawContentId, actor);
+
+    const existing: MnemonicStripRow | null = await tx.mnemonicStrip.findUnique({
+      where: { ruleBreakdownId: breakdown.id },
+      relationLoadStrategy: 'join',
+      select: MNEMONIC_STRIP_DETAIL_SELECT,
+    });
+    if (existing === null) {
+      throw new NotFoundError('Tira mnemônica ainda não foi aberta.');
+    }
+    return existing;
+  });
+}
+
 /**
  * Abre a Tira mnemônica de uma Quebra da regra — get-or-generate idempotente
  * (FR-011-001/FR-011-002): gera a Tira + 1 Quadro por Bloco não-vazio na 1ª
@@ -111,12 +175,14 @@ const RULE_BREAKDOWN_FOR_STRIP_SELECT = {
  * gerar de novo nem emitir evento novo (AC-011-003, AC-011-013, AC-011-021).
  * 409 (`ConflictError`) se a Quebra da regra do `rawContentId` ainda não foi
  * salva (AC-011-023, parte — regra recusa; o mapeamento HTTP é da TASK de
- * rotas).
+ * rotas). Chamada só por `POST /contents/:id/strip` (EMENDA Wave 5/DEC-012-011
+ * — a geração deixou de ser responsabilidade do `GET`, ver `getMnemonicStrip`
+ * acima).
  *
- * **Alcance por autoria** (NFR-011-001, NFR-011-006): `assertRawContentReachable`
- * é a 1ª chamada, sempre — herda a mesma ordem de guardas (inexistente → fora
- * do alcance → soft-deleted) e a mesma mensagem de `contents.service.ts`, sem
- * reescrevê-la (DEC-012-007).
+ * **Alcance por autoria** (NFR-011-001, NFR-011-006): `assertStripPrerequisites`
+ * chama `assertRawContentReachable` como 1ª guarda, sempre — herda a mesma
+ * ordem de guardas (inexistente → fora do alcance → soft-deleted) e a mesma
+ * mensagem de `contents.service.ts`, sem reescrevê-la (DEC-012-007).
  *
  * **Concorrência real sob 1ª abertura** (AC-011-025, DEC-012-008): depois de
  * `findUnique` confirmar que a Tira ainda não existe, o `create` pode colidir
@@ -144,15 +210,7 @@ export async function openMnemonicStrip(
 
   try {
     return await db.$transaction(async (tx) => {
-      await assertRawContentReachable(rawContentId, actor, tx);
-
-      const breakdown = await tx.ruleBreakdown.findUnique({
-        where: { rawContentId },
-        select: RULE_BREAKDOWN_FOR_STRIP_SELECT,
-      });
-      if (breakdown === null) {
-        throw new ConflictError('Conclua a Quebra da regra antes de abrir a Tira mnemônica.');
-      }
+      const breakdown = await assertStripPrerequisites(tx, rawContentId, actor);
       ruleBreakdownId = breakdown.id;
 
       const existing: MnemonicStripRow | null = await tx.mnemonicStrip.findUnique({

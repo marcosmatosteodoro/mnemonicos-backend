@@ -151,7 +151,7 @@ afterAll(async () => {
 });
 
 describe('fonte de medição da métrica §1.3 — censo das rotas montadas', () => {
-  it('a árvore montada é exatamente estes 24 pares método+caminho (tripwire: rota nova sem atualizar a suíte falha aqui)', () => {
+  it('a árvore montada é exatamente estes 25 pares método+caminho (tripwire: rota nova sem atualizar a suíte falha aqui)', () => {
     expect(ROUTES.map(key).sort()).toEqual(
       [
         'GET /health',
@@ -174,6 +174,7 @@ describe('fonte de medição da métrica §1.3 — censo das rotas montadas', ()
         'GET /contents/:id/breakdown',
         'PUT /contents/:id/breakdown',
         'GET /contents/:id/strip',
+        'POST /contents/:id/strip',
         'POST /contents/:id/strip/frames',
         'PATCH /contents/:id/strip/frames/:frameId',
         'DELETE /contents/:id/strip/frames/:frameId',
@@ -250,6 +251,7 @@ describe('AC-002-018 — nenhuma capacidade de auto-registro na superfície mont
       '/auth/change-password',
       '/auth/logout',
       '/contents',
+      '/contents/:id/strip',
       '/contents/:id/strip/frames',
     ]);
   });
@@ -415,10 +417,11 @@ describe('TASK-006-011 — as 7 rotas de /contents sob a barreira (topologia adv
   });
 
   it('STUDENT recusado (403) nas 7 rotas — (i) a rota irmã estática GET /contents não "vaza" a permissividade para GET /contents/:id, nem vice-versa; (v) todas as 7 recusam STUDENT', async () => {
-    // Chave exata (não `startsWith('/contents')`): as 5 rotas da Tira
-    // (TASK-012-008, `/contents/:id/strip...`) também começam por `/contents`
-    // e têm o próprio bloco de topologia adversarial — não duplicadas aqui.
-    const contentRoutes = NON_PUBLIC.filter((route) => CONTENT_ROUTE_KEYS.includes(key(route)));
+    // As 6 rotas da Tira (TASK-012-008) têm bloco de topologia próprio.
+    const contentRoutes = NON_PUBLIC.filter(
+      (route) =>
+        route.path.startsWith('/contents') && !route.path.startsWith('/contents/:id/strip'),
+    );
     expect(contentRoutes.map(key).sort()).toEqual([...CONTENT_ROUTE_KEYS].sort());
 
     const { access } = await seedSession('STUDENT');
@@ -433,16 +436,17 @@ describe('TASK-006-011 — as 7 rotas de /contents sob a barreira (topologia adv
   });
 });
 
-describe('TASK-012-008 — as 5 rotas da Tira sob a barreira (topologia adversarial)', () => {
+describe('TASK-012-008 — as 6 rotas da Tira sob a barreira (topologia adversarial)', () => {
   const STRIP_ROUTE_KEYS = [
     'GET /contents/:id/strip',
+    'POST /contents/:id/strip',
     'POST /contents/:id/strip/frames',
     'PATCH /contents/:id/strip/frames/:frameId',
     'DELETE /contents/:id/strip/frames/:frameId',
     'PUT /contents/:id/strip/frames/order',
   ];
 
-  it('cada uma das 5 rotas está declarada como {EDITOR, ADMIN}; a rota estática PUT .../order e a rota com :frameId (PATCH/DELETE) têm chaves PRÓPRIAS — nenhuma herda a declaração da vizinha (lição [Segurança] "topologia adversarial")', () => {
+  it('cada uma das 6 rotas está declarada como {EDITOR, ADMIN}; a rota estática PUT .../order e a rota com :frameId (PATCH/DELETE) têm chaves PRÓPRIAS, e GET/POST no MESMO caminho (/contents/:id/strip) também — nenhuma herda a declaração da vizinha (lição [Segurança] "topologia adversarial")', () => {
     for (const routeKey of STRIP_ROUTE_KEYS) {
       expect(REGISTRY.get(routeKey)).toEqual(new Set<UserRole>(['EDITOR', 'ADMIN']));
     }
@@ -452,9 +456,13 @@ describe('TASK-012-008 — as 5 rotas da Tira sob a barreira (topologia adversar
     expect(ROUTE_ROLES.has('PUT /contents/:id/strip/frames/order')).toBe(true);
     expect(ROUTE_ROLES.has('PATCH /contents/:id/strip/frames/:frameId')).toBe(true);
     expect(ROUTE_ROLES.has('DELETE /contents/:id/strip/frames/:frameId')).toBe(true);
+    // 2º método no mesmo path — a mesma topologia adversarial, aplicada a
+    // GET/POST em vez de a um :param estático.
+    expect(ROUTE_ROLES.has('GET /contents/:id/strip')).toBe(true);
+    expect(ROUTE_ROLES.has('POST /contents/:id/strip')).toBe(true);
   });
 
-  it('STUDENT recusado (403) nas 5 rotas', async () => {
+  it('STUDENT recusado (403) nas 6 rotas', async () => {
     const stripRoutes = NON_PUBLIC.filter((route) => route.path.startsWith('/contents/:id/strip'));
     expect(stripRoutes.map(key).sort()).toEqual([...STRIP_ROUTE_KEYS].sort());
 
