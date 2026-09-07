@@ -240,12 +240,12 @@ describe('openMnemonicStrip — soft-delete do RawContent de origem torna a Tira
 });
 
 /**
- * Fechamento contável (item (c) da régua de contorno): 1 método desta TASK
- * toca tabela escopada por autoria herdada (`mnemonicStrip`/`mnemonicFrame`,
- * via a cadeia `RawContent → RuleBreakdown → MnemonicStrip`) —
- * `openMnemonicStrip` — 1 prova (este caso).
+ * Fechamento contável (item (c) da régua de contorno): 2 métodos tocam
+ * tabela escopada por autoria herdada (`mnemonicStrip`/`mnemonicFrame`, via a
+ * cadeia `RawContent → RuleBreakdown → MnemonicStrip`) — `openMnemonicStrip`
+ * (este caso) e `reorderMnemonicFrames` (abaixo) — 2 provas.
  */
-describe('openMnemonicStrip — alcance por autoria (AC-011-022, NFR-011-001, gate 8, 1 método/1 prova)', () => {
+describe('openMnemonicStrip — alcance por autoria (AC-011-022, NFR-011-001, gate 8)', () => {
   it('EDITOR B não alcança a Tira de Conteúdo bruto de EDITOR A — mesma mensagem literal de um id inexistente', async () => {
     const editorA = await createUser('EDITOR');
     const editorB = await createUser('EDITOR');
@@ -325,7 +325,7 @@ describe('openMnemonicStrip — round-trips fixados para a relação de lista `f
 });
 
 /**
- * `reorderMnemonicFrames` (COMP-012-004 / TASK-012-006) — reindexação atômica
+ * `reorderMnemonicFrames` (COMP-012-004) — reindexação atômica
  * em 2 fases (`reassignPositions`, DEC-012-003) e reordenação de Quadros
  * (FR-011-006). Reusa a mesma fixture de 5 Quadros de `openMnemonicStrip`.
  */
@@ -370,6 +370,51 @@ describe('reorderMnemonicFrames — reindexação correta em qualquer permutaç�
   });
 });
 
+describe('reorderMnemonicFrames — alcance por autoria (AC-011-020, AC-011-022, gate 8, 2 métodos/2 provas)', () => {
+  it('EDITOR B não alcança a Tira de Conteúdo bruto de EDITOR A, mesmo com um order VÁLIDO (conjunto real de A) — mesma mensagem literal de um rawContentId inexistente; posições de A intocadas', async () => {
+    const editorA = await createUser('EDITOR');
+    const editorB = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const rawContentOfA = await createRawContent(editorA.id, topicId);
+    await seedRuleBreakdown(rawContentOfA.id);
+    const stripOfA = await openMnemonicStrip(rawContentOfA.id, actorOf(editorA), testPrisma);
+
+    // `order` VÁLIDO — o conjunto real de ids de Quadros de A — para que a
+    // única coisa capaz de barrar B seja o guard de alcance por autoria
+    // (`assertRawContentReachable`), nunca `isExactFrameSet` (que aceitaria
+    // este `order` sem reclamar, já que ele bate 1:1 com os ids de A).
+    const validOrderOfA = [...stripOfA.frames].reverse().map((frame) => frame.id);
+
+    const messageForOtherAuthor = await captureMessage(() =>
+      reorderMnemonicFrames(
+        rawContentOfA.id,
+        { order: validOrderOfA },
+        actorOf(editorB),
+        testPrisma,
+      ),
+    );
+    const messageForRandomId = await captureMessage(() =>
+      reorderMnemonicFrames(randomUUID(), { order: validOrderOfA }, actorOf(editorB), testPrisma),
+    );
+
+    // Mesmo corolário de A01 do bloco `openMnemonicStrip` acima: os dois
+    // casos são indistinguíveis pelo oráculo — nunca um "409 conjunto errado"
+    // que revelaria a B que a Tira de A existe e que o conjunto de ids que
+    // ele tentou está estruturalmente correto para ALGUMA Tira.
+    expect(messageForOtherAuthor).toBe(messageForRandomId);
+    expect(messageForOtherAuthor).toBe('Conteúdo bruto não encontrado.');
+
+    const framesOfA = await testPrisma.mnemonicFrame.findMany({
+      where: { stripId: stripOfA.id },
+      orderBy: { position: 'asc' },
+      select: { position: true },
+    });
+    expect(framesOfA.map((frame) => frame.position)).toEqual(
+      stripOfA.frames.map((frame) => frame.position),
+    );
+  });
+});
+
 /**
  * Prova de atomicidade REAL (RISK-011-003, AC-011-011) — a garantia que
  * `@@unique([stripId, position])` só reprova (DEC-012-002) porque a
@@ -381,9 +426,8 @@ describe('reorderMnemonicFrames — reindexação correta em qualquer permutaç�
  * via `tx.mnemonicFrame.updateMany` — o objeto `tx` que `$transaction` entrega
  * ao callback é uma instância NOVA por transação (delegate próprio, sem
  * identidade compartilhada com `testPrisma.mnemonicFrame`); espiar o
- * delegate de `testPrisma` não intercepta nada dentro do `tx` (confirmado
- * empiricamente antes de escrever este teste — um spy nesse ponto conta 0
- * chamadas). A interceptação que alcança a query REAL dentro da transação é
+ * delegate de `testPrisma` não intercepta nada dentro do `tx` (um spy nesse
+ * ponto conta 0 chamadas). A interceptação que alcança a query REAL dentro da transação é
  * `$extends({ query: {...} })`: a extensão de client compõe no pipeline de
  * execução da query em si, e o `tx` herdado de um client estendido carrega a
  * MESMA composição — por isso o `db` injetado aqui é `testPrisma.$extends(...)`,
@@ -562,6 +606,39 @@ describe('reorderMnemonicFrames — rejeita order que não é exatamente o conju
       opened.frames.map((frame) => frame.position),
     );
   });
+
+  it('order como SUBCONJUNTO ESTRITO dos ids existentes (falta 1 id, sem duplicata) é rejeitado; posições intocadas', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const rawContent = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdown(rawContent.id);
+    const opened = await openMnemonicStrip(rawContent.id, actorOf(editor), testPrisma);
+    expect(opened.frames).toHaveLength(5);
+
+    // 4 dos 5 ids existentes, cada um aparecendo exatamente 1 vez — eixo de
+    // CARDINALIDADE isolado (nem duplicata, nem id de outra Tira): só a
+    // condição `order.length === existingIds.size` de `isExactFrameSet`
+    // reprova este `order`; as outras 2 condições (duplicidade, pertencimento)
+    // o aceitariam.
+    const shortOrder = opened.frames.slice(0, 4).map((frame) => frame.id);
+    expect(new Set(shortOrder).size).toBe(shortOrder.length);
+
+    const message = await captureMessage(() =>
+      reorderMnemonicFrames(rawContent.id, { order: shortOrder }, actorOf(editor), testPrisma),
+    );
+    expect(message).toBe(
+      'A lista de quadros informada não corresponde aos quadros existentes na Tira.',
+    );
+
+    const frames = await testPrisma.mnemonicFrame.findMany({
+      where: { stripId: opened.id },
+      orderBy: { position: 'asc' },
+      select: { position: true },
+    });
+    expect(frames.map((frame) => frame.position)).toEqual(
+      opened.frames.map((frame) => frame.position),
+    );
+  });
 });
 
 describe('reorderMnemonicFrames — fail-secure: falha na emissão do evento reverte a reindexação inteira (AC-011-015, NFR-011-003)', () => {
@@ -603,8 +680,7 @@ describe('reorderMnemonicFrames — fail-secure: falha na emissão do evento rev
  * NFR-011-002 + lição [Performance] ("`include`/`select` aninhado de relação
  * não é 1 statement por padrão"), medido contra o Postgres real.
  *
- * Adaptação declarada (fatia sensível — ver report da TASK-012-006): o custo
- * TOTAL de `reorderMnemonicFrames` ESCALA com o nº de Quadros — cada
+ * O custo TOTAL de `reorderMnemonicFrames` ESCALA com o nº de Quadros — cada
  * reindexação custa 2×N `UPDATE`s (DEC-012-003/TRISK-012-002), e a Fase 2
  * PRECISA ser um laço de N invocações SEPARADAS (não 1 statement em lote)
  * para a prova de atomicidade real (AC-011-011) poder injetar falha numa

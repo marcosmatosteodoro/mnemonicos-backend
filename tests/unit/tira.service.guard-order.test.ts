@@ -6,10 +6,10 @@ import { resolve } from 'node:path';
  * `extractInterfaceFields` de `contents-frontend-contract.test.ts`,
  * generalizado para corpo de FUNÇÃO em vez de interface) de que
  * `assertRawContentReachable` é a 1ª chamada dentro do corpo de
- * `reorderMnemonicFrames` (AC-011-020, AC-011-022, parte estrutural,
- * TASK-012-006). A prova COMPORTAMENTAL completa de alcance (EDITOR não
- * alcança Tira de outro EDITOR; soft-delete torna inalcançável) já foi feita
- * em TASK-012-005 sobre `openMnemonicStrip` — não duplicada aqui.
+ * `reorderMnemonicFrames` (AC-011-020, AC-011-022, parte estrutural).
+ * A prova COMPORTAMENTAL completa de alcance (EDITOR não alcança Tira de
+ * outro EDITOR; soft-delete torna inalcançável) vive em
+ * `tira.service.integration.test.ts` — não duplicada aqui.
  */
 const TIRA_SERVICE = resolve(__dirname, '../../src/modules/tira/tira.service.ts');
 
@@ -53,7 +53,7 @@ function extractFunctionBody(source: string, signatureAnchor: string): string {
  * linha que só ABRE um escopo aninhado (`return db.$transaction(async (tx) =>
  * {`) — essa linha não é, ela mesma, uma chamada de guarda, é o envelope da
  * transação em que a guarda roda (mesmo padrão de `saveRuleBreakdown`/
- * `openMnemonicStrip`, já mergeados).
+ * `openMnemonicStrip`).
  */
 function firstExecutableLine(body: string): string {
   const lines = body

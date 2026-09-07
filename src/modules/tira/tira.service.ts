@@ -12,10 +12,10 @@ import type { ReorderMnemonicFramesInput } from './tira.schema';
 /**
  * Núcleo do módulo Tira mnemônica (COMP-012-004): geração inicial (regra
  * pura, `buildInitialFrames`), abertura get-or-generate idempotente
- * (`openMnemonicStrip`), reindexação atômica em 2 fases (`reassignPositions`,
- * TASK-012-006) e reordenação de Quadros (`reorderMnemonicFrames`,
- * TASK-012-006). CRUD de Quadro (adicionar/editar/remover) fica fora desta
- * TASK (TASK-012-007, que reusa `reassignPositions` sem recriá-la).
+ * (`openMnemonicStrip`), reindexação atômica em 2 fases (`reassignPositions`)
+ * e reordenação de Quadros (`reorderMnemonicFrames`). CRUD de Quadro
+ * (adicionar/editar/remover) fica fora desta TASK (TASK-012-007, que reusa
+ * `reassignPositions` sem recriá-la).
  */
 
 export interface MnemonicFrameDetail {
@@ -85,7 +85,7 @@ type MnemonicStripRow = Prisma.MnemonicStripGetPayload<{
  * `RuleBreakdownClient` de `contents.service.ts`): cobre `rawContent`
  * (para `assertRawContentReachable`), `ruleBreakdown` (localizar a Quebra do
  * `rawContentId`), `mnemonicStrip` (a própria Tira), `mnemonicFrame`
- * (validar/reindexar Quadros, TASK-012-006) e `$transaction`.
+ * (validar/reindexar Quadros) e `$transaction`.
  */
 type MnemonicStripClient = Pick<
   typeof prisma,
@@ -210,6 +210,14 @@ type MnemonicFrameWriteClient = Pick<typeof prisma, 'mnemonicFrame'>;
  * `stripId` (defesa em profundidade contra substituição de id — mesma cautela
  * de A01 já aplicada por `assertRawContentReachable`/COMP-012-005, mesmo que o
  * chamador já tenha validado o conjunto de ids antes de chegar aqui).
+ *
+ * Confere o `count` devolvido por cada `updateMany`: se o `frameId` deixar de
+ * casar o WHERE (`id` + `stripId`) entre a leitura do conjunto e esta escrita
+ * — corrida concorrente, ex.: remoção do Quadro no meio do caminho —, o
+ * `updateMany` do Prisma não lança, só devolve `count: 0`, o que persistiria
+ * posições lacunosas em silêncio. Lançar aqui propaga para dentro da
+ * `$transaction` do chamador e reverte a operação inteira (fail-secure),
+ * nunca um commit parcial.
  */
 async function applyPositions(
   tx: MnemonicFrameWriteClient,
@@ -217,15 +225,20 @@ async function applyPositions(
   assignments: ReadonlyArray<{ frameId: string; position: number }>,
 ): Promise<void> {
   for (const { frameId, position } of assignments) {
-    await tx.mnemonicFrame.updateMany({
+    const result = await tx.mnemonicFrame.updateMany({
       where: { id: frameId, stripId },
       data: { position },
     });
+    if (result.count !== 1) {
+      throw new Error(
+        `reindexação falhou: Quadro ${frameId} não casou stripId ${stripId} (count=${result.count}).`,
+      );
+    }
   }
 }
 
 /**
- * Reindexação atômica em 2 fases (DEC-012-003, COMP-012-004/TASK-012-006) —
+ * Reindexação atômica em 2 fases (DEC-012-003) —
  * primitiva reusada por `reorderMnemonicFrames` (F-5) e, fora desta TASK, por
  * `addMnemonicFrame`/`removeMnemonicFrame` (TASK-012-007, F-2/F-4). Nunca abre
  * transação própria — o `tx` já vem aberto pelo chamador (mesmo padrão de
