@@ -12,7 +12,13 @@ import type { ContentActor } from '../../src/modules/contents/contents.service';
 // spy intercepta porque o emit deste projeto é CommonJS (perfil §11) — o named
 // import vira acesso de propriedade a cada chamada, não um binding capturado.
 import * as productionEventsService from '../../src/modules/production-events/production-events.service';
-import { openMnemonicStrip, reorderMnemonicFrames } from '../../src/modules/tira/tira.service';
+import {
+  addMnemonicFrame,
+  openMnemonicStrip,
+  removeMnemonicFrame,
+  reorderMnemonicFrames,
+  updateMnemonicFrameText,
+} from '../../src/modules/tira/tira.service';
 import { createRawContent, createTopic, createUser } from '../support/production-events-fixtures';
 import { closeTestDb, resetDb, testPrisma } from './db';
 import { TEST_DATABASE_URL } from './db-url';
@@ -42,6 +48,26 @@ const BREAKDOWN_FIELDS = {
 async function seedRuleBreakdown(rawContentId: string) {
   return testPrisma.ruleBreakdown.create({
     data: { rawContentId, ...BREAKDOWN_FIELDS },
+  });
+}
+
+/**
+ * Blocos opcionais (`condition`/`exception`) em branco — gera só 3 Quadros
+ * (`concept`/`action`/`object`, os 3 únicos campos NOT NULL de
+ * `RuleBreakdown`). Usada pelos testes que precisam esvaziar a Tira por
+ * completo (AC-011-024): não há como gerar menos de 3 Quadros na abertura.
+ */
+async function seedRuleBreakdownWithoutOptionalBlocks(rawContentId: string) {
+  return testPrisma.ruleBreakdown.create({
+    data: {
+      rawContentId,
+      concept: BREAKDOWN_FIELDS.concept,
+      action: BREAKDOWN_FIELDS.action,
+      object: BREAKDOWN_FIELDS.object,
+      condition: null,
+      exception: null,
+      essence: BREAKDOWN_FIELDS.essence,
+    },
   });
 }
 
@@ -733,5 +759,673 @@ describe('reorderMnemonicFrames — custo de reindexação cresce EXATAMENTE 2 q
     expect(queriesForThree).toHaveLength(14);
     expect(queriesForFive).toHaveLength(18);
     expect(queriesForFive.length - queriesForThree.length).toBe(2 * (5 - 3));
+  });
+});
+
+/**
+ * `addMnemonicFrame`/`updateMnemonicFrameText`/`removeMnemonicFrame`
+ * (COMP-012-004 / TASK-012-007) — CRUD de Quadro, reusando `reassignPositions`
+ * (TASK-012-006) sem recriá-la. Reusa a mesma fixture de 5 Quadros de
+ * `openMnemonicStrip`.
+ */
+describe('addMnemonicFrame — inserção desloca os Quadros seguintes sem lacuna nem duplicidade (AC-011-004, AC-011-005)', () => {
+  it('adiciona no meio da sequência (posição 3 de 5): os 6 Quadros ficam com posições 1..6 contíguas, o novo entra exatamente na posição pedida', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const rawContent = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdown(rawContent.id);
+    const opened = await openMnemonicStrip(rawContent.id, actorOf(editor), testPrisma);
+    expect(opened.frames).toHaveLength(5);
+
+    const added = await addMnemonicFrame(
+      rawContent.id,
+      { text: 'Quadro novo inserido no meio', position: 3 },
+      actorOf(editor),
+      testPrisma,
+    );
+
+    expect(added.frames).toHaveLength(6);
+    expect(added.frames.map((frame) => frame.position)).toEqual([1, 2, 3, 4, 5, 6]);
+
+    const newFrame = added.frames.find((frame) => frame.text === 'Quadro novo inserido no meio');
+    expect(newFrame?.position).toBe(3);
+    expect(newFrame?.originBlock).toBeNull();
+
+    // Os 2 Quadros originais que ocupavam a posição 3 em diante foram
+    // deslocados 1 posição adiante, sem perder identidade nem texto.
+    const originalAtThree = opened.frames[2]!;
+    const originalAtFour = opened.frames[3]!;
+    expect(added.frames.find((frame) => frame.id === originalAtThree.id)?.position).toBe(4);
+    expect(added.frames.find((frame) => frame.id === originalAtFour.id)?.position).toBe(5);
+
+    const persisted = await testPrisma.mnemonicFrame.findMany({
+      where: { stripId: opened.id },
+      orderBy: { position: 'asc' },
+      select: { position: true },
+    });
+    expect(persisted.map((frame) => frame.position)).toEqual([1, 2, 3, 4, 5, 6]);
+  });
+
+  it('adiciona na 1ª posição (clamped a 0): o novo Quadro assume a posição 1, todos os demais deslocam 1 adiante', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const rawContent = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdown(rawContent.id);
+    const opened = await openMnemonicStrip(rawContent.id, actorOf(editor), testPrisma);
+
+    const added = await addMnemonicFrame(
+      rawContent.id,
+      { text: 'Quadro novo no início', position: 1 },
+      actorOf(editor),
+      testPrisma,
+    );
+
+    expect(added.frames).toHaveLength(6);
+    expect(added.frames[0]?.text).toBe('Quadro novo no início');
+    expect(added.frames.map((frame) => frame.position)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(added.frames.slice(1).map((frame) => frame.id)).toEqual(
+      opened.frames.map((frame) => frame.id),
+    );
+  });
+
+  it('adiciona com posição 0 (fora do domínio validado pelo schema Zod na rota, mas o SERVICE não repete essa validação — chamado direto aqui) — clamped ao índice 0, MESMO resultado de position: 1', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const rawContent = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdown(rawContent.id);
+    const opened = await openMnemonicStrip(rawContent.id, actorOf(editor), testPrisma);
+
+    const added = await addMnemonicFrame(
+      rawContent.id,
+      { text: 'Quadro com posição 0', position: 0 },
+      actorOf(editor),
+      testPrisma,
+    );
+
+    // Mutante-alvo: remover `Math.max(..., 0)` do clamp de `insertionIndex`
+    // faz `input.position - 1` (aqui, -1) chegar cru a `existingIds.slice`,
+    // que interpreta índice NEGATIVO contando do FIM do array — o novo
+    // Quadro apareceria perto do FIM (posição 5), não no INÍCIO (posição 1)
+    // como o clamp exige. Índice negativo é alcançável aqui porque o SERVICE
+    // é chamado direto (sem o schema Zod da rota na frente).
+    expect(added.frames).toHaveLength(6);
+    expect(added.frames[0]?.text).toBe('Quadro com posição 0');
+    expect(added.frames.map((frame) => frame.position)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(added.frames.slice(1).map((frame) => frame.id)).toEqual(
+      opened.frames.map((frame) => frame.id),
+    );
+  });
+
+  it('adiciona além do fim da lista (posição maior que N+1, clamped ao final): o novo Quadro assume a última posição', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const rawContent = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdown(rawContent.id);
+    const opened = await openMnemonicStrip(rawContent.id, actorOf(editor), testPrisma);
+
+    const added = await addMnemonicFrame(
+      rawContent.id,
+      { text: 'Quadro novo no fim', position: 999 },
+      actorOf(editor),
+      testPrisma,
+    );
+
+    expect(added.frames).toHaveLength(6);
+    expect(added.frames[5]?.text).toBe('Quadro novo no fim');
+    expect(added.frames.map((frame) => frame.position)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(added.frames.map((frame) => frame.id).slice(0, 5)).toEqual(
+      opened.frames.map((frame) => frame.id),
+    );
+  });
+});
+
+describe('updateMnemonicFrameText — texto persistido, posição intocada (AC-011-006, AC-011-007)', () => {
+  it('atualiza o texto do Quadro do meio; a posição permanece a mesma e os demais Quadros não mudam', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const rawContent = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdown(rawContent.id);
+    const opened = await openMnemonicStrip(rawContent.id, actorOf(editor), testPrisma);
+
+    const target = opened.frames[2]!;
+    const updated = await updateMnemonicFrameText(
+      rawContent.id,
+      target.id,
+      { text: 'Texto editado pelo EDITOR' },
+      actorOf(editor),
+      testPrisma,
+    );
+
+    const updatedFrame = updated.frames.find((frame) => frame.id === target.id);
+    expect(updatedFrame?.text).toBe('Texto editado pelo EDITOR');
+    expect(updatedFrame?.position).toBe(target.position);
+
+    // Os demais Quadros permanecem com o texto e a posição originais.
+    const others = updated.frames.filter((frame) => frame.id !== target.id);
+    const originalOthers = opened.frames.filter((frame) => frame.id !== target.id);
+    expect(others).toEqual(originalOthers);
+  });
+});
+
+describe('removeMnemonicFrame — remoção do meio recompõe as posições sem lacuna (AC-011-008, AC-011-009)', () => {
+  it('remove o Quadro da posição 2 (de 4): os 3 restantes recompõem para as posições 1,2,3, sem lacuna nem duplicidade', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const rawContent = await createRawContent(editor.id, topicId);
+    await testPrisma.ruleBreakdown.create({
+      data: {
+        rawContentId: rawContent.id,
+        concept: BREAKDOWN_FIELDS.concept,
+        action: BREAKDOWN_FIELDS.action,
+        object: BREAKDOWN_FIELDS.object,
+        condition: BREAKDOWN_FIELDS.condition,
+        exception: null,
+        essence: BREAKDOWN_FIELDS.essence,
+      },
+    });
+    const opened = await openMnemonicStrip(rawContent.id, actorOf(editor), testPrisma);
+    expect(opened.frames).toHaveLength(4);
+
+    const removedFrame = opened.frames[1]!;
+    const remaining = await removeMnemonicFrame(
+      rawContent.id,
+      removedFrame.id,
+      actorOf(editor),
+      testPrisma,
+    );
+
+    expect(remaining.frames).toHaveLength(3);
+    expect(remaining.frames.map((frame) => frame.id)).not.toContain(removedFrame.id);
+    expect(remaining.frames.map((frame) => frame.position)).toEqual([1, 2, 3]);
+    expect(remaining.frames.map((frame) => frame.id)).toEqual(
+      [opened.frames[0]!, opened.frames[2]!, opened.frames[3]!].map((frame) => frame.id),
+    );
+
+    const persisted = await testPrisma.mnemonicFrame.findMany({
+      where: { stripId: opened.id },
+      orderBy: { position: 'asc' },
+      select: { position: true },
+    });
+    expect(persisted.map((frame) => frame.position)).toEqual([1, 2, 3]);
+  });
+});
+
+describe('removeMnemonicFrame — remover o ÚLTIMO Quadro restante esvazia a Tira, sem regeneração (AC-011-024, FR-011-002)', () => {
+  it('remove os 3 Quadros um a um até `frames: []`; reabrir a Tira (openMnemonicStrip) NÃO gera novos Quadros', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const rawContent = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdownWithoutOptionalBlocks(rawContent.id);
+    const opened = await openMnemonicStrip(rawContent.id, actorOf(editor), testPrisma);
+    expect(opened.frames).toHaveLength(3);
+
+    let current = opened;
+    for (const frame of [...opened.frames]) {
+      current = await removeMnemonicFrame(rawContent.id, frame.id, actorOf(editor), testPrisma);
+    }
+
+    expect(current.frames).toEqual([]);
+
+    const framesInDb = await testPrisma.mnemonicFrame.count({ where: { stripId: opened.id } });
+    expect(framesInDb).toBe(0);
+
+    const reopened = await openMnemonicStrip(rawContent.id, actorOf(editor), testPrisma);
+    expect(reopened.id).toBe(opened.id);
+    expect(reopened.frames).toEqual([]);
+  });
+});
+
+describe('round-trip completo: add+edit+remove+reorder sobrevivem à reabertura (AC-011-012)', () => {
+  it('sequência open→add→edit→remove→reorder sobre a MESMA Tira; reabrir devolve os Quadros restantes na ordem e texto da última mutação', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const rawContent = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdown(rawContent.id);
+
+    const opened = await openMnemonicStrip(rawContent.id, actorOf(editor), testPrisma);
+    expect(opened.frames).toHaveLength(5);
+
+    const added = await addMnemonicFrame(
+      rawContent.id,
+      { text: 'Sexto quadro adicionado', position: 6 },
+      actorOf(editor),
+      testPrisma,
+    );
+    expect(added.frames).toHaveLength(6);
+
+    const frameToEdit = added.frames[0]!;
+    const edited = await updateMnemonicFrameText(
+      rawContent.id,
+      frameToEdit.id,
+      { text: 'Primeiro quadro, texto editado' },
+      actorOf(editor),
+      testPrisma,
+    );
+
+    const frameToRemove = edited.frames[1]!;
+    const removed = await removeMnemonicFrame(
+      rawContent.id,
+      frameToRemove.id,
+      actorOf(editor),
+      testPrisma,
+    );
+    expect(removed.frames).toHaveLength(5);
+
+    const reorderedIds = [...removed.frames].reverse().map((frame) => frame.id);
+    const reordered = await reorderMnemonicFrames(
+      rawContent.id,
+      { order: reorderedIds },
+      actorOf(editor),
+      testPrisma,
+    );
+    expect(reordered.frames.map((frame) => frame.id)).toEqual(reorderedIds);
+
+    const reopened = await openMnemonicStrip(rawContent.id, actorOf(editor), testPrisma);
+
+    expect(reopened.frames).toEqual(reordered.frames);
+  });
+});
+
+/**
+ * FR-011-009 nomeia 4 sujeitos de mutação humana (add/edit/remove/reorder);
+ * reorder já provado em TASK-012-006 (bloco acima, "1ª mutação humana decide
+ * CONCLUSAO..."). Aqui, 1 caso por FUNÇÃO nova desta TASK — cada uma sobre
+ * uma Tira RECÉM-gerada (só ABERTURA emitida), confirmando que a 1ª mutação
+ * humana decide CONCLUSAO e a 2ª decide RETRABALHO (DEC-012-006).
+ */
+describe('addMnemonicFrame — 1ª mutação humana decide CONCLUSAO, 2ª decide RETRABALHO (AC-011-014)', () => {
+  it('1ª chamada de addMnemonicFrame grava CONCLUSAO; 2ª chamada grava RETRABALHO', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const rawContent = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdown(rawContent.id);
+    await openMnemonicStrip(rawContent.id, actorOf(editor), testPrisma);
+
+    await addMnemonicFrame(
+      rawContent.id,
+      { text: 'Quadro 1', position: 99 },
+      actorOf(editor),
+      testPrisma,
+    );
+    const eventsAfterFirst = (
+      await productionEventsService.listProductionStageEvents(rawContent.id, testPrisma)
+    )
+      .filter((event) => event.stageType === 'TIRA_MNEMONICA')
+      .map((event) => event.transitionType);
+    expect(eventsAfterFirst).toEqual(['ABERTURA', 'CONCLUSAO']);
+
+    await addMnemonicFrame(
+      rawContent.id,
+      { text: 'Quadro 2', position: 99 },
+      actorOf(editor),
+      testPrisma,
+    );
+    const eventsAfterSecond = (
+      await productionEventsService.listProductionStageEvents(rawContent.id, testPrisma)
+    )
+      .filter((event) => event.stageType === 'TIRA_MNEMONICA')
+      .map((event) => event.transitionType);
+    expect(eventsAfterSecond).toEqual(['ABERTURA', 'CONCLUSAO', 'RETRABALHO']);
+  });
+});
+
+describe('updateMnemonicFrameText — 1ª mutação humana decide CONCLUSAO, 2ª decide RETRABALHO (AC-011-014)', () => {
+  it('1ª chamada de updateMnemonicFrameText grava CONCLUSAO; 2ª chamada grava RETRABALHO', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const rawContent = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdown(rawContent.id);
+    const opened = await openMnemonicStrip(rawContent.id, actorOf(editor), testPrisma);
+    const target = opened.frames[0]!;
+
+    await updateMnemonicFrameText(
+      rawContent.id,
+      target.id,
+      { text: 'Texto 1' },
+      actorOf(editor),
+      testPrisma,
+    );
+    const eventsAfterFirst = (
+      await productionEventsService.listProductionStageEvents(rawContent.id, testPrisma)
+    )
+      .filter((event) => event.stageType === 'TIRA_MNEMONICA')
+      .map((event) => event.transitionType);
+    expect(eventsAfterFirst).toEqual(['ABERTURA', 'CONCLUSAO']);
+
+    await updateMnemonicFrameText(
+      rawContent.id,
+      target.id,
+      { text: 'Texto 2' },
+      actorOf(editor),
+      testPrisma,
+    );
+    const eventsAfterSecond = (
+      await productionEventsService.listProductionStageEvents(rawContent.id, testPrisma)
+    )
+      .filter((event) => event.stageType === 'TIRA_MNEMONICA')
+      .map((event) => event.transitionType);
+    expect(eventsAfterSecond).toEqual(['ABERTURA', 'CONCLUSAO', 'RETRABALHO']);
+  });
+});
+
+describe('removeMnemonicFrame — 1ª mutação humana decide CONCLUSAO, 2ª decide RETRABALHO (AC-011-014)', () => {
+  it('1ª chamada de removeMnemonicFrame grava CONCLUSAO; 2ª chamada grava RETRABALHO', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const rawContent = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdown(rawContent.id);
+    const opened = await openMnemonicStrip(rawContent.id, actorOf(editor), testPrisma);
+    expect(opened.frames.length).toBeGreaterThanOrEqual(2);
+
+    await removeMnemonicFrame(rawContent.id, opened.frames[0]!.id, actorOf(editor), testPrisma);
+    const eventsAfterFirst = (
+      await productionEventsService.listProductionStageEvents(rawContent.id, testPrisma)
+    )
+      .filter((event) => event.stageType === 'TIRA_MNEMONICA')
+      .map((event) => event.transitionType);
+    expect(eventsAfterFirst).toEqual(['ABERTURA', 'CONCLUSAO']);
+
+    await removeMnemonicFrame(rawContent.id, opened.frames[1]!.id, actorOf(editor), testPrisma);
+    const eventsAfterSecond = (
+      await productionEventsService.listProductionStageEvents(rawContent.id, testPrisma)
+    )
+      .filter((event) => event.stageType === 'TIRA_MNEMONICA')
+      .map((event) => event.transitionType);
+    expect(eventsAfterSecond).toEqual(['ABERTURA', 'CONCLUSAO', 'RETRABALHO']);
+  });
+});
+
+/**
+ * Fail-secure (AC-011-015, NFR-011-003) — 1 caso por função nova desta TASK,
+ * mesmo padrão de `openMnemonicStrip`/`reorderMnemonicFrames` acima:
+ * `recordProductionStageEvent` rejeitando dentro da transação reverte a
+ * operação inteira — nenhum estado meio-salvo.
+ */
+describe('addMnemonicFrame — fail-secure: falha na emissão do evento não deixa Quadro parcial (AC-011-015)', () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('recordProductionStageEvent rejeitando → addMnemonicFrame rejeita; nenhum Quadro novo persiste, os 5 originais intocados', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const rawContent = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdown(rawContent.id);
+    const opened = await openMnemonicStrip(rawContent.id, actorOf(editor), testPrisma);
+
+    jest
+      .spyOn(productionEventsService, 'recordProductionStageEvent')
+      .mockRejectedValueOnce(new Error('falha simulada na emissão'));
+
+    await expect(
+      addMnemonicFrame(
+        rawContent.id,
+        { text: 'Quadro que não deve persistir', position: 1 },
+        actorOf(editor),
+        testPrisma,
+      ),
+    ).rejects.toThrow('falha simulada na emissão');
+
+    const frames = await testPrisma.mnemonicFrame.findMany({
+      where: { stripId: opened.id },
+      orderBy: { position: 'asc' },
+      select: { id: true, text: true, position: true },
+    });
+    expect(frames).toEqual(
+      opened.frames
+        .map((frame) => ({ id: frame.id, text: frame.text, position: frame.position }))
+        .sort((a, b) => a.position - b.position),
+    );
+  });
+});
+
+describe('updateMnemonicFrameText — fail-secure: falha na emissão do evento preserva o texto anterior (AC-011-015)', () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('recordProductionStageEvent rejeitando → updateMnemonicFrameText rejeita; o texto do Quadro permanece o de ANTES da tentativa', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const rawContent = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdown(rawContent.id);
+    const opened = await openMnemonicStrip(rawContent.id, actorOf(editor), testPrisma);
+    const target = opened.frames[0]!;
+
+    jest
+      .spyOn(productionEventsService, 'recordProductionStageEvent')
+      .mockRejectedValueOnce(new Error('falha simulada na emissão'));
+
+    await expect(
+      updateMnemonicFrameText(
+        rawContent.id,
+        target.id,
+        { text: 'Texto que não deve persistir' },
+        actorOf(editor),
+        testPrisma,
+      ),
+    ).rejects.toThrow('falha simulada na emissão');
+
+    const persisted = await testPrisma.mnemonicFrame.findUniqueOrThrow({
+      where: { id: target.id },
+      select: { text: true, position: true },
+    });
+    expect(persisted.text).toBe(target.text);
+    expect(persisted.position).toBe(target.position);
+  });
+});
+
+describe('removeMnemonicFrame — fail-secure: falha na emissão do evento não remove nem reposiciona nenhum Quadro (AC-011-015)', () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('recordProductionStageEvent rejeitando → removeMnemonicFrame rejeita; todos os Quadros originais permanecem, nenhuma posição muda', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const rawContent = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdown(rawContent.id);
+    const opened = await openMnemonicStrip(rawContent.id, actorOf(editor), testPrisma);
+    const target = opened.frames[1]!;
+
+    jest
+      .spyOn(productionEventsService, 'recordProductionStageEvent')
+      .mockRejectedValueOnce(new Error('falha simulada na emissão'));
+
+    await expect(
+      removeMnemonicFrame(rawContent.id, target.id, actorOf(editor), testPrisma),
+    ).rejects.toThrow('falha simulada na emissão');
+
+    const frames = await testPrisma.mnemonicFrame.findMany({
+      where: { stripId: opened.id },
+      orderBy: { position: 'asc' },
+      select: { id: true, position: true },
+    });
+    expect(frames).toEqual(
+      opened.frames
+        .map((frame) => ({ id: frame.id, position: frame.position }))
+        .sort((a, b) => a.position - b.position),
+    );
+  });
+});
+
+/**
+ * Confused deputy no `:frameId` (achado herdado do security-engineer, gate 8
+ * da Wave 1, decisão 4.140) — mesmo corolário de A01 dos blocos de
+ * `openMnemonicStrip`/`reorderMnemonicFrames` acima, aqui sobre o
+ * `frameId`: o `stripId` autorizado é SEMPRE o resolvido a partir da CADEIA
+ * do `rawContentId` da URL (Frame → Strip → RuleBreakdown → RawContent),
+ * nunca aceito cru de um `frameId` de outra Tira. Guarda de pertencimento
+ * `frameId`→`stripId` (defesa contra substituição de id, A01) com mutação
+ * CONTÁVEL (decisão 4.139/4.232): 2 métodos tocam esse predicado nesta TASK
+ * (`updateMnemonicFrameText`, `removeMnemonicFrame`) — 2 provas.
+ */
+describe('updateMnemonicFrameText — guarda de pertencimento frameId→stripId (confused deputy, A01, gate 8)', () => {
+  it('rejeita frameId que não pertence à cadeia do rawContentId da URL', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+
+    const rawContentA = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdown(rawContentA.id);
+    const stripA = await openMnemonicStrip(rawContentA.id, actorOf(editor), testPrisma);
+
+    const rawContentB = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdown(rawContentB.id);
+    const stripB = await openMnemonicStrip(rawContentB.id, actorOf(editor), testPrisma);
+
+    const frameOfB = stripB.frames[0]!;
+
+    const message = await captureMessage(() =>
+      updateMnemonicFrameText(
+        rawContentA.id,
+        frameOfB.id,
+        { text: 'Não deveria persistir' },
+        actorOf(editor),
+        testPrisma,
+      ),
+    );
+    expect(message).toBe('Quadro não encontrado.');
+
+    // Nem o Quadro de A (nunca tocado) nem o de B (frameId usado, mas fora da
+    // cadeia de A) sofrem qualquer alteração.
+    const persistedFrameOfB = await testPrisma.mnemonicFrame.findUniqueOrThrow({
+      where: { id: frameOfB.id },
+      select: { text: true, position: true },
+    });
+    expect(persistedFrameOfB.text).toBe(frameOfB.text);
+    expect(persistedFrameOfB.position).toBe(frameOfB.position);
+
+    const framesOfA = await testPrisma.mnemonicFrame.findMany({
+      where: { stripId: stripA.id },
+      orderBy: { position: 'asc' },
+      select: { id: true, text: true, position: true },
+    });
+    expect(framesOfA).toEqual(
+      stripA.frames
+        .map((frame) => ({ id: frame.id, text: frame.text, position: frame.position }))
+        .sort((a, b) => a.position - b.position),
+    );
+  });
+});
+
+describe('removeMnemonicFrame — guarda de pertencimento frameId→stripId (confused deputy, A01, gate 8)', () => {
+  it('rejeita frameId que não pertence à cadeia do rawContentId da URL', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+
+    const rawContentA = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdown(rawContentA.id);
+    const stripA = await openMnemonicStrip(rawContentA.id, actorOf(editor), testPrisma);
+
+    const rawContentB = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdown(rawContentB.id);
+    const stripB = await openMnemonicStrip(rawContentB.id, actorOf(editor), testPrisma);
+
+    const frameOfB = stripB.frames[0]!;
+
+    const message = await captureMessage(() =>
+      removeMnemonicFrame(rawContentA.id, frameOfB.id, actorOf(editor), testPrisma),
+    );
+    expect(message).toBe('Quadro não encontrado.');
+
+    // Nenhum Quadro de A ou de B é removido nem reposicionado.
+    const countA = await testPrisma.mnemonicFrame.count({ where: { stripId: stripA.id } });
+    expect(countA).toBe(stripA.frames.length);
+    const framesOfB = await testPrisma.mnemonicFrame.findMany({
+      where: { stripId: stripB.id },
+      orderBy: { position: 'asc' },
+      select: { id: true, position: true },
+    });
+    expect(framesOfB).toEqual(
+      stripB.frames
+        .map((frame) => ({ id: frame.id, position: frame.position }))
+        .sort((a, b) => a.position - b.position),
+    );
+  });
+});
+
+/**
+ * NFR-011-002 (consumo da primitiva) + lição [Performance]
+ * ("`include`/`select` aninhado de relação não é 1 statement por padrão"):
+ * cada uma das 3 funções devolve `MnemonicStripDetail` inteiro com
+ * round-trips FIXADOS — a leitura final (`findUniqueOrThrow` com
+ * `relationLoadStrategy: 'join'`) é 1 SELECT único, não N+1 por Quadro.
+ * Números medidos contra o Postgres real (não presumidos).
+ */
+describe('addMnemonicFrame — round-trips fixados (NFR-011-002, lição [Performance])', () => {
+  it('adicionar 1 Quadro a uma Tira de 3 resolve com a contagem de queries FIXADA', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const rawContent = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdownWithoutOptionalBlocks(rawContent.id);
+    await openMnemonicStrip(rawContent.id, actorOf(editor), testPrisma);
+
+    const queries = await withQueryProbe((probe) =>
+      addMnemonicFrame(
+        rawContent.id,
+        { text: 'Quadro medido', position: 1 },
+        actorOf(editor),
+        probe,
+      ),
+    );
+
+    // assertRawContentReachable (1) + findStripId (ruleBreakdown 1 +
+    // mnemonicStrip 1) + existingFrames.findMany (1) + create (1) +
+    // reassignPositions (2×4 updates, lista final com 4 ids) +
+    // recordProductionStageEvent (findMany 1 + create 1) + leitura final
+    // (1) = 16, + 1 evento de query do próprio driver da transação (fixo
+    // nas 3 medições desta TASK, ver `updateMnemonicFrameText`/
+    // `removeMnemonicFrame` abaixo) = 17 — não N+1 por Quadro.
+    expect(queries).toHaveLength(17);
+  });
+});
+
+describe('updateMnemonicFrameText — round-trips fixados (NFR-011-002, lição [Performance])', () => {
+  it('editar o texto de 1 Quadro resolve com a contagem de queries FIXADA', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const rawContent = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdown(rawContent.id);
+    const opened = await openMnemonicStrip(rawContent.id, actorOf(editor), testPrisma);
+    const target = opened.frames[0]!;
+
+    const queries = await withQueryProbe((probe) =>
+      updateMnemonicFrameText(
+        rawContent.id,
+        target.id,
+        { text: 'Texto medido' },
+        actorOf(editor),
+        probe,
+      ),
+    );
+
+    // assertRawContentReachable (1) + findStripId (2) + updateMany (1) +
+    // recordProductionStageEvent (2) + leitura final (1) = 7, + 1 evento de
+    // query do próprio driver da transação = 8 (mesmo overhead fixo medido
+    // em `addMnemonicFrame`/`removeMnemonicFrame`).
+    expect(queries).toHaveLength(8);
+  });
+});
+
+describe('removeMnemonicFrame — round-trips fixados (NFR-011-002, lição [Performance])', () => {
+  it('remover 1 Quadro do meio de uma Tira de 5 resolve com a contagem de queries FIXADA', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const rawContent = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdown(rawContent.id);
+    const opened = await openMnemonicStrip(rawContent.id, actorOf(editor), testPrisma);
+    const target = opened.frames[1]!;
+
+    const queries = await withQueryProbe((probe) =>
+      removeMnemonicFrame(rawContent.id, target.id, actorOf(editor), probe),
+    );
+
+    // assertRawContentReachable (1) + findStripId (2) + deleteMany (1) +
+    // remainingFrames.findMany (1) + reassignPositions (2×4 updates,
+    // restaram 4) + recordProductionStageEvent (2) + leitura final (1) = 16,
+    // + 1 evento de query do próprio driver da transação (mesmo overhead
+    // fixo medido em `addMnemonicFrame`/`updateMnemonicFrameText` acima)
+    // = 17.
+    expect(queries).toHaveLength(17);
   });
 });

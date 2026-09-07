@@ -6,7 +6,9 @@ import { resolve } from 'node:path';
  * `extractInterfaceFields` de `contents-frontend-contract.test.ts`,
  * generalizado para corpo de FUNÇÃO em vez de interface) de que
  * `assertRawContentReachable` é a 1ª chamada dentro do corpo de
- * `reorderMnemonicFrames` (AC-011-020, AC-011-022, parte estrutural).
+ * `reorderMnemonicFrames` (AC-011-020, AC-011-022, parte estrutural) e,
+ * estendido por TASK-012-007, das 3 funções de CRUD de Quadro
+ * (`addMnemonicFrame`/`updateMnemonicFrameText`/`removeMnemonicFrame`).
  * A prova COMPORTAMENTAL completa de alcance (EDITOR não alcança Tira de
  * outro EDITOR; soft-delete torna inalcançável) vive em
  * `tira.service.integration.test.ts` — não duplicada aqui.
@@ -88,3 +90,32 @@ describe('reorderMnemonicFrames — assertRawContentReachable é a 1ª chamada (
     expect(line).toContain('assertRawContentReachable(');
   });
 });
+
+/**
+ * TASK-012-007 (AC-011-020, AC-011-022, estrutural): as 3 funções de CRUD de
+ * Quadro são NOVOS pontos de entrada de escrita sobre tabela escopada por
+ * autoria herdada — cada uma exige a MESMA prova estrutural de
+ * `reorderMnemonicFrames` acima (mesma régua, "[Segurança] Guarda reusada
+ * continua exigindo prova comportamental própria por novo método de
+ * escrita" — a prova COMPORTAMENTAL vive em
+ * `tira.service.integration.test.ts`; esta é só a prova de ORDEM).
+ */
+describe.each([
+  ['addMnemonicFrame', 'export async function addMnemonicFrame'],
+  ['updateMnemonicFrameText', 'export async function updateMnemonicFrameText'],
+  ['removeMnemonicFrame', 'export async function removeMnemonicFrame'],
+])(
+  '%s — assertRawContentReachable é a 1ª chamada (AC-011-020, AC-011-022, estrutural)',
+  (_name, signatureAnchor) => {
+    it('a 1ª linha executável do corpo (ignorando comentário e a abertura de `$transaction`) contém `assertRawContentReachable(`', () => {
+      const source = readSource(TIRA_SERVICE);
+      const body = extractFunctionBody(source, signatureAnchor);
+      const line = firstExecutableLine(body);
+
+      // Mutante: mover `findStripId`/a guarda de pertencimento para ANTES de
+      // `assertRawContentReachable` faz esta asserção reprovar — a guarda de
+      // alcance por autoria deixaria de ser a 1ª barreira.
+      expect(line).toContain('assertRawContentReachable(');
+    });
+  },
+);

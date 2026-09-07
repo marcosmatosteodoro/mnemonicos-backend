@@ -1,5 +1,5 @@
 import { Prisma } from '../../generated/prisma/client';
-import { ConflictError } from '../../http/errors';
+import { ConflictError, NotFoundError } from '../../http/errors';
 import { prisma } from '../../lib/prisma';
 import {
   assertRawContentReachable,
@@ -7,15 +7,18 @@ import {
   type RuleBreakdownDetail,
 } from '../contents/contents.service';
 import { recordProductionStageEvent } from '../production-events/production-events.service';
-import type { ReorderMnemonicFramesInput } from './tira.schema';
+import type {
+  AddMnemonicFrameInput,
+  ReorderMnemonicFramesInput,
+  UpdateMnemonicFrameInput,
+} from './tira.schema';
 
 /**
  * Núcleo do módulo Tira mnemônica (COMP-012-004): geração inicial (regra
  * pura, `buildInitialFrames`), abertura get-or-generate idempotente
- * (`openMnemonicStrip`), reindexação atômica em 2 fases (`reassignPositions`)
- * e reordenação de Quadros (`reorderMnemonicFrames`). CRUD de Quadro
- * (adicionar/editar/remover) fica fora desta TASK (TASK-012-007, que reusa
- * `reassignPositions` sem recriá-la).
+ * (`openMnemonicStrip`), reindexação atômica em 2 fases (`reassignPositions`),
+ * CRUD de Quadro (`addMnemonicFrame`/`updateMnemonicFrameText`/
+ * `removeMnemonicFrame`, TASK-012-007) e reordenação (`reorderMnemonicFrames`).
  */
 
 export interface MnemonicFrameDetail {
@@ -276,6 +279,260 @@ export async function reassignPositions(
   );
 }
 
+/** Cliente Prisma injetável exigido só pela LOCALIZAÇÃO do `stripId` (`findStripId`). */
+type StripLookupClient = Pick<typeof prisma, 'ruleBreakdown' | 'mnemonicStrip'>;
+
+/**
+ * Localiza o `stripId` a partir do `rawContentId` (`ruleBreakdown` →
+ * `mnemonicStrip`), fonte única reusada por TODA mutação de Quadro
+ * (`addMnemonicFrame`/`updateMnemonicFrameText`/`removeMnemonicFrame`,
+ * TASK-012-007) e por `reorderMnemonicFrames` (TASK-012-006) — extraído para
+ * não duplicar o mesmo par de guardas 4 vezes no arquivo (Charter Art. 3).
+ * 409 (`ConflictError`) se a Quebra da regra ou a própria Tira ainda não
+ * existem (pré-condições de domínio); `missingStripMessage` é a única parte
+ * que varia por chamador, para a mensagem continuar nomeando a ação certa.
+ */
+async function findStripId(
+  tx: StripLookupClient,
+  rawContentId: string,
+  missingStripMessage: string,
+): Promise<string> {
+  const breakdown = await tx.ruleBreakdown.findUnique({
+    where: { rawContentId },
+    select: { id: true },
+  });
+  if (breakdown === null) {
+    throw new ConflictError('Conclua a Quebra da regra antes de abrir a Tira mnemônica.');
+  }
+
+  const strip = await tx.mnemonicStrip.findUnique({
+    where: { ruleBreakdownId: breakdown.id },
+    select: { id: true },
+  });
+  if (strip === null) {
+    throw new ConflictError(missingStripMessage);
+  }
+
+  return strip.id;
+}
+
+/**
+ * Adiciona um Quadro à Tira (FR-011-003), dentro de `$transaction`:
+ * 1. `assertRawContentReachable` — 1ª chamada, sempre (NFR-011-001/006,
+ *    DEC-012-007, achado herdado do security-engineer — confused deputy).
+ * 2. `findStripId` — localiza o `stripId` a partir do `rawContentId` (nunca
+ *    aceito cru de outro lugar).
+ * 3. Lê os ids de Quadros existentes ordenados por `position asc`.
+ * 4. Cria o novo Quadro com posição TEMPORÁRIA — `originBlock: null`, sempre
+ *    (Quadro criado manualmente, nunca herda proveniência de Bloco,
+ *    DEC-012-004). A posição temporária precisa ficar MAIS negativa que TODO
+ *    o intervalo que a Fase 1 de `reassignPositions` vai usar para a lista
+ *    final (`existingIds.length + 1` Quadros, alvo `-1..-(existingIds.length
+ *    + 1)`): se caísse DENTRO desse intervalo, a Fase 1 poderia tentar gravar,
+ *    num Quadro JÁ existente, o MESMO valor que este Quadro recém-criado
+ *    ainda ocupa (a ordem de escrita da Fase 1 segue a lista final, não a
+ *    ordem de criação) — colisão com `@@unique([stripId, position])` antes
+ *    deste próprio Quadro ser realocado. `-(existingIds.length + 2)` está
+ *    sempre 1 posição além do limite mais negativo desse intervalo.
+ * 5. Monta a lista completa de ids na ordem final desejada (existentes + o
+ *    novo, no índice de `input.position`, 1-based, clamped a `[0, N]`) e
+ *    chama `reassignPositions` (primitiva de TASK-012-006, reusada sem
+ *    recriação) — desloca os Quadros seguintes sem lacuna nem duplicidade
+ *    (AC-011-004).
+ * 6. `recordProductionStageEvent` — decide CONCLUSAO (1ª mutação humana) ou
+ *    RETRABALHO (demais), puramente pelo histórico já registrado
+ *    (DEC-012-006).
+ *
+ * Fail-secure (NFR-011-003, AC-011-015/005): toda a criação, a reindexação e
+ * a emissão do evento rodam na MESMA `$transaction` interativa — falha em
+ * qualquer passo reverte a operação inteira, nenhum Quadro parcial persiste.
+ */
+export async function addMnemonicFrame(
+  rawContentId: string,
+  input: AddMnemonicFrameInput,
+  actor: ContentActor,
+  db: MnemonicStripClient = prisma,
+): Promise<MnemonicStripDetail> {
+  return db.$transaction(async (tx) => {
+    await assertRawContentReachable(rawContentId, actor, tx);
+
+    const stripId = await findStripId(
+      tx,
+      rawContentId,
+      'Abra a Tira mnemônica antes de adicionar quadros.',
+    );
+
+    const existingFrames = await tx.mnemonicFrame.findMany({
+      where: { stripId },
+      orderBy: { position: 'asc' },
+      select: { id: true },
+    });
+    const existingIds = existingFrames.map((frame) => frame.id);
+
+    const temporaryPosition = -(existingIds.length + 2);
+    const createdFrame = await tx.mnemonicFrame.create({
+      data: {
+        stripId,
+        text: input.text,
+        position: temporaryPosition,
+        originBlock: null,
+      },
+      select: { id: true },
+    });
+
+    const insertionIndex = Math.min(Math.max(input.position - 1, 0), existingIds.length);
+    const finalOrder = [
+      ...existingIds.slice(0, insertionIndex),
+      createdFrame.id,
+      ...existingIds.slice(insertionIndex),
+    ];
+
+    await reassignPositions(tx, stripId, finalOrder);
+
+    await recordProductionStageEvent(tx, {
+      rawContentId,
+      stageType: 'TIRA_MNEMONICA',
+      actorId: actor.id,
+      now: new Date(),
+    });
+
+    return tx.mnemonicStrip.findUniqueOrThrow({
+      where: { id: stripId },
+      relationLoadStrategy: 'join',
+      select: MNEMONIC_STRIP_DETAIL_SELECT,
+    });
+  });
+}
+
+/**
+ * Edita o texto de um Quadro existente (FR-011-004), dentro de
+ * `$transaction`:
+ * 1. `assertRawContentReachable` — 1ª chamada, sempre.
+ * 2. `findStripId` — localiza o `stripId` a partir do `rawContentId`.
+ * 3. Guarda de pertencimento **e** escrita no MESMO `updateMany` (mesmo
+ *    padrão de `updateRawContent`/`softDeleteRawContent` em
+ *    `contents.service.ts` — nunca um `findFirst` de guarda seguido de
+ *    `update` por id isolado, que abriria uma janela de corrida): o `where`
+ *    exige `id: frameId` **e** `stripId` — o `stripId` é sempre o resolvido a
+ *    partir da CADEIA do próprio `rawContentId` da URL (Frame → Strip →
+ *    RuleBreakdown → RawContent), nunca aceito cru de um `frameId` de outra
+ *    Tira (achado herdado do security-engineer — confused deputy, gate 8 da
+ *    Wave 1). `count === 0` → `NotFoundError('Quadro não encontrado.')` —
+ *    mesma mensagem única para "id inexistente" e "frameId de outra Tira",
+ *    nunca distinguir os dois (mesma razão de `assertRawContentReachable`).
+ *    Posição intocada.
+ * 4. `recordProductionStageEvent` — decide CONCLUSAO/RETRABALHO, como acima.
+ *
+ * Fail-secure: escrita e emissão de evento na MESMA `$transaction` — falha
+ * reverte a edição inteira, o texto anterior permanece (AC-011-007).
+ */
+export async function updateMnemonicFrameText(
+  rawContentId: string,
+  frameId: string,
+  input: UpdateMnemonicFrameInput,
+  actor: ContentActor,
+  db: MnemonicStripClient = prisma,
+): Promise<MnemonicStripDetail> {
+  return db.$transaction(async (tx) => {
+    await assertRawContentReachable(rawContentId, actor, tx);
+
+    const stripId = await findStripId(
+      tx,
+      rawContentId,
+      'Abra a Tira mnemônica antes de editar quadros.',
+    );
+
+    const result = await tx.mnemonicFrame.updateMany({
+      where: { id: frameId, stripId },
+      data: { text: input.text },
+    });
+    if (result.count === 0) {
+      throw new NotFoundError('Quadro não encontrado.');
+    }
+
+    await recordProductionStageEvent(tx, {
+      rawContentId,
+      stageType: 'TIRA_MNEMONICA',
+      actorId: actor.id,
+      now: new Date(),
+    });
+
+    return tx.mnemonicStrip.findUniqueOrThrow({
+      where: { id: stripId },
+      relationLoadStrategy: 'join',
+      select: MNEMONIC_STRIP_DETAIL_SELECT,
+    });
+  });
+}
+
+/**
+ * Remove um Quadro da Tira (FR-011-005), dentro de `$transaction`:
+ * 1. `assertRawContentReachable` — 1ª chamada, sempre.
+ * 2. `findStripId` — localiza o `stripId` a partir do `rawContentId`.
+ * 3. Guarda de pertencimento **e** exclusão no MESMO `deleteMany` (mesmo
+ *    raciocínio de `updateMnemonicFrameText` acima — `stripId` sempre da
+ *    CADEIA do `rawContentId` da URL, nunca do `frameId` cru; achado herdado
+ *    do security-engineer — confused deputy). `count === 0` →
+ *    `NotFoundError('Quadro não encontrado.')` — mesma mensagem única.
+ * 4. Lê os Quadros restantes ordenados por `position` atual e chama
+ *    `reassignPositions` — recompõe 1..N-1 sem lacuna (AC-011-008); com lista
+ *    vazia (removeu o último Quadro restante) é no-op — a Tira fica com
+ *    `frames: []`, sem regeneração automática (AC-011-024, FR-011-002
+ *    preservado).
+ * 5. `recordProductionStageEvent` — decide CONCLUSAO/RETRABALHO, como acima.
+ *
+ * Fail-secure: exclusão, reindexação e emissão de evento na MESMA
+ * `$transaction` — falha em qualquer passo não remove nem reposiciona nenhum
+ * Quadro (AC-011-009).
+ */
+export async function removeMnemonicFrame(
+  rawContentId: string,
+  frameId: string,
+  actor: ContentActor,
+  db: MnemonicStripClient = prisma,
+): Promise<MnemonicStripDetail> {
+  return db.$transaction(async (tx) => {
+    await assertRawContentReachable(rawContentId, actor, tx);
+
+    const stripId = await findStripId(
+      tx,
+      rawContentId,
+      'Abra a Tira mnemônica antes de remover quadros.',
+    );
+
+    const result = await tx.mnemonicFrame.deleteMany({
+      where: { id: frameId, stripId },
+    });
+    if (result.count === 0) {
+      throw new NotFoundError('Quadro não encontrado.');
+    }
+
+    const remainingFrames = await tx.mnemonicFrame.findMany({
+      where: { stripId },
+      orderBy: { position: 'asc' },
+      select: { id: true },
+    });
+    await reassignPositions(
+      tx,
+      stripId,
+      remainingFrames.map((frame) => frame.id),
+    );
+
+    await recordProductionStageEvent(tx, {
+      rawContentId,
+      stageType: 'TIRA_MNEMONICA',
+      actorId: actor.id,
+      now: new Date(),
+    });
+
+    return tx.mnemonicStrip.findUniqueOrThrow({
+      where: { id: stripId },
+      relationLoadStrategy: 'join',
+      select: MNEMONIC_STRIP_DETAIL_SELECT,
+    });
+  });
+}
+
 /**
  * `true` só quando `order` é EXATAMENTE o conjunto de ids de `existingIds` —
  * mesmo tamanho, sem id duplicado, todo id pertencente ao conjunto existente.
@@ -295,8 +552,10 @@ function isExactFrameSet(order: readonly string[], existingIds: ReadonlySet<stri
  * Reordena os Quadros da Tira (FR-011-006), dentro de `$transaction`:
  * 1. `assertRawContentReachable` — 1ª chamada, sempre (NFR-011-001/006,
  *    DEC-012-007).
- * 2. Localiza o `stripId` a partir do `rawContentId` (`ruleBreakdown` →
- *    `mnemonicStrip`) — 409 (`ConflictError`) se a Quebra da regra ou a
+ * 2. `findStripId` — localiza o `stripId` a partir do `rawContentId`
+ *    (`ruleBreakdown` → `mnemonicStrip`), fonte única reusada também por
+ *    `addMnemonicFrame`/`updateMnemonicFrameText`/`removeMnemonicFrame`
+ *    (TASK-012-007) — 409 (`ConflictError`) se a Quebra da regra ou a
  *    própria Tira ainda não existem (pré-condições de domínio, mesma família
  *    de recusa de `openMnemonicStrip`).
  * 3. Valida que `input.order` é EXATAMENTE o conjunto de ids de Quadro
@@ -325,24 +584,14 @@ export async function reorderMnemonicFrames(
   return db.$transaction(async (tx) => {
     await assertRawContentReachable(rawContentId, actor, tx);
 
-    const breakdown = await tx.ruleBreakdown.findUnique({
-      where: { rawContentId },
-      select: { id: true },
-    });
-    if (breakdown === null) {
-      throw new ConflictError('Conclua a Quebra da regra antes de abrir a Tira mnemônica.');
-    }
-
-    const strip = await tx.mnemonicStrip.findUnique({
-      where: { ruleBreakdownId: breakdown.id },
-      select: { id: true },
-    });
-    if (strip === null) {
-      throw new ConflictError('Abra a Tira mnemônica antes de reordenar os quadros.');
-    }
+    const stripId = await findStripId(
+      tx,
+      rawContentId,
+      'Abra a Tira mnemônica antes de reordenar os quadros.',
+    );
 
     const existingFrames = await tx.mnemonicFrame.findMany({
-      where: { stripId: strip.id },
+      where: { stripId },
       select: { id: true },
     });
     const existingIds = new Set(existingFrames.map((frame) => frame.id));
@@ -353,7 +602,7 @@ export async function reorderMnemonicFrames(
       );
     }
 
-    await reassignPositions(tx, strip.id, input.order);
+    await reassignPositions(tx, stripId, input.order);
 
     await recordProductionStageEvent(tx, {
       rawContentId,
@@ -363,7 +612,7 @@ export async function reorderMnemonicFrames(
     });
 
     return tx.mnemonicStrip.findUniqueOrThrow({
-      where: { id: strip.id },
+      where: { id: stripId },
       relationLoadStrategy: 'join',
       select: MNEMONIC_STRIP_DETAIL_SELECT,
     });
