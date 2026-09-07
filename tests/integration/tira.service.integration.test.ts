@@ -12,7 +12,7 @@ import type { ContentActor } from '../../src/modules/contents/contents.service';
 // spy intercepta porque o emit deste projeto é CommonJS (perfil §11) — o named
 // import vira acesso de propriedade a cada chamada, não um binding capturado.
 import * as productionEventsService from '../../src/modules/production-events/production-events.service';
-import { openMnemonicStrip } from '../../src/modules/tira/tira.service';
+import { openMnemonicStrip, reorderMnemonicFrames } from '../../src/modules/tira/tira.service';
 import { createRawContent, createTopic, createUser } from '../support/production-events-fixtures';
 import { closeTestDb, resetDb, testPrisma } from './db';
 import { TEST_DATABASE_URL } from './db-url';
@@ -321,5 +321,341 @@ describe('openMnemonicStrip — round-trips fixados para a relação de lista `f
     // N+1 pelos 5 Quadros) + o COMMIT da `$transaction` — 4 eventos de query, não
     // 5 (que uma consulta N+1 por Quadro produziria).
     expect(queries).toHaveLength(4);
+  });
+});
+
+/**
+ * `reorderMnemonicFrames` (COMP-012-004 / TASK-012-006) — reindexação atômica
+ * em 2 fases (`reassignPositions`, DEC-012-003) e reordenação de Quadros
+ * (FR-011-006). Reusa a mesma fixture de 5 Quadros de `openMnemonicStrip`.
+ */
+describe('reorderMnemonicFrames — reindexação correta em qualquer permutação, inclusive troca genuína de posição (AC-011-010)', () => {
+  it('reorder inverte a sequência completa: posições finais 1..5 sem lacuna nem duplicidade, inclusive com swap genuíno', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const rawContent = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdown(rawContent.id);
+    const opened = await openMnemonicStrip(rawContent.id, actorOf(editor), testPrisma);
+    expect(opened.frames).toHaveLength(5);
+
+    const reversedOrder = [...opened.frames].reverse().map((frame) => frame.id);
+
+    const reordered = await reorderMnemonicFrames(
+      rawContent.id,
+      { order: reversedOrder },
+      actorOf(editor),
+      testPrisma,
+    );
+
+    expect(reordered.frames.map((frame) => frame.id)).toEqual(reversedOrder);
+    expect(reordered.frames.map((frame) => frame.position)).toEqual([1, 2, 3, 4, 5]);
+
+    // Prova de SWAP genuíno (não um deslocamento sequencial): a posição
+    // ANTIGA do 1º Quadro original (1) agora é a do ÚLTIMO original, e
+    // vice-versa — exatamente o par que um "shift direto" sem 2 fases
+    // colidiria contra `@@unique([stripId, position])` a meio caminho.
+    const firstOriginal = opened.frames[0]!;
+    const lastOriginal = opened.frames[opened.frames.length - 1]!;
+    const firstAfter = reordered.frames.find((frame) => frame.id === firstOriginal.id);
+    const lastAfter = reordered.frames.find((frame) => frame.id === lastOriginal.id);
+    expect(firstAfter?.position).toBe(5);
+    expect(lastAfter?.position).toBe(1);
+
+    const persisted = await testPrisma.mnemonicFrame.findMany({
+      where: { stripId: opened.id },
+      orderBy: { position: 'asc' },
+      select: { position: true },
+    });
+    expect(persisted.map((frame) => frame.position)).toEqual([1, 2, 3, 4, 5]);
+  });
+});
+
+/**
+ * Prova de atomicidade REAL (RISK-011-003, AC-011-011) — a garantia que
+ * `@@unique([stripId, position])` só reprova (DEC-012-002) porque a
+ * reindexação atravessa um estado transitório inválido: sem esta prova, o
+ * gate de revisão teria só a DECLARAÇÃO de atomicidade (DEC-012-003), não a
+ * demonstração.
+ *
+ * Mecanismo de interceptação: `jest.spyOn` NÃO alcança a chamada real feita
+ * via `tx.mnemonicFrame.updateMany` — o objeto `tx` que `$transaction` entrega
+ * ao callback é uma instância NOVA por transação (delegate próprio, sem
+ * identidade compartilhada com `testPrisma.mnemonicFrame`); espiar o
+ * delegate de `testPrisma` não intercepta nada dentro do `tx` (confirmado
+ * empiricamente antes de escrever este teste — um spy nesse ponto conta 0
+ * chamadas). A interceptação que alcança a query REAL dentro da transação é
+ * `$extends({ query: {...} })`: a extensão de client compõe no pipeline de
+ * execução da query em si, e o `tx` herdado de um client estendido carrega a
+ * MESMA composição — por isso o `db` injetado aqui é `testPrisma.$extends(...)`,
+ * não `testPrisma` puro.
+ */
+describe('reorderMnemonicFrames — atomicidade REAL da reindexação em 2 fases (AC-011-011, RISK-011-003)', () => {
+  it('falha real entre Fase 1 e Fase 2 não deixa nenhuma posição parcial persistida (AC-011-011)', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const rawContent = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdown(rawContent.id);
+    const opened = await openMnemonicStrip(rawContent.id, actorOf(editor), testPrisma);
+    expect(opened.frames).toHaveLength(5);
+
+    const originalPositions = opened.frames
+      .map((frame) => ({ id: frame.id, position: frame.position }))
+      .sort((a, b) => a.id.localeCompare(b.id));
+
+    const reversedOrder = [...opened.frames].reverse().map((frame) => frame.id);
+
+    let updateManyCallCount = 0;
+    // `reassignPositions` chama `mnemonicFrame.updateMany` num laço de N
+    // invocações por fase: com 5 Quadros, chamadas 1-5 são a Fase 1 (offset) e
+    // 6-10 são a Fase 2 (final). Falhar na 8ª (3ª da Fase 2) garante que TODA
+    // a Fase 1 e PARTE da Fase 2 já rodaram quando a falha ocorre — nem a 1ª
+    // (6) nem a última (10) do laço da Fase 2.
+    const FAILING_CALL_INDEX = 8;
+    const extendedClient = testPrisma.$extends({
+      query: {
+        mnemonicFrame: {
+          async updateMany({ args, query }) {
+            updateManyCallCount += 1;
+            if (updateManyCallCount === FAILING_CALL_INDEX) {
+              throw new Error('falha injetada na Fase 2 (AC-011-011)');
+            }
+            return query(args);
+          },
+        },
+      },
+    });
+
+    // `db` injetável de `reorderMnemonicFrames` é um tipo privado do módulo
+    // (mesmo padrão de `MnemonicStripClient` — não exportado); o cliente
+    // estendido por `$extends` carrega um generic de extensão que o TS não
+    // infere como o mesmo tipo estrutural, embora implemente exatamente a
+    // mesma superfície em runtime (prova empírica acima). Cast local,
+    // restrito a este teste.
+    await expect(
+      reorderMnemonicFrames(
+        rawContent.id,
+        { order: reversedOrder },
+        actorOf(editor),
+        extendedClient as unknown as Parameters<typeof reorderMnemonicFrames>[3],
+      ),
+    ).rejects.toThrow('falha injetada na Fase 2 (AC-011-011)');
+
+    // Prova de que a interceptação de fato alcançou a chamada REAL dentro da
+    // transação (nunca simulação fora dela): a falha só dispara exatamente na
+    // 8ª chamada — se o `db` injetado não fosse o cliente realmente usado
+    // pela transação, `updateManyCallCount` teria ficado em 0.
+    expect(updateManyCallCount).toBe(FAILING_CALL_INDEX);
+
+    const afterFailure = await testPrisma.mnemonicFrame.findMany({
+      where: { stripId: opened.id },
+      select: { id: true, position: true },
+    });
+    const afterPositions = afterFailure
+      .map((frame) => ({ id: frame.id, position: frame.position }))
+      .sort((a, b) => a.id.localeCompare(b.id));
+
+    // Nem a posição TEMPORÁRIA da Fase 1 (negativa) nem a posição FINAL
+    // parcial da Fase 2 sobrevive — as posições voltam a ser IDÊNTICAS às de
+    // antes da chamada, prova de que o ROLLBACK desfez a transação inteira.
+    expect(afterPositions).toEqual(originalPositions);
+  });
+});
+
+describe('reorderMnemonicFrames — 1ª mutação humana decide CONCLUSAO, demais decidem RETRABALHO (AC-011-014, DEC-012-006)', () => {
+  it('1ª chamada de reorder bem-sucedida grava CONCLUSAO; 2ª chamada grava RETRABALHO, nunca uma 2ª CONCLUSAO', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const rawContent = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdown(rawContent.id);
+    const opened = await openMnemonicStrip(rawContent.id, actorOf(editor), testPrisma);
+
+    const firstOrder = [...opened.frames].reverse().map((frame) => frame.id);
+    await reorderMnemonicFrames(rawContent.id, { order: firstOrder }, actorOf(editor), testPrisma);
+
+    const eventsAfterFirst = await productionEventsService.listProductionStageEvents(
+      rawContent.id,
+      testPrisma,
+    );
+    const tiraEventsAfterFirst = eventsAfterFirst
+      .filter((event) => event.stageType === 'TIRA_MNEMONICA')
+      .map((event) => event.transitionType);
+    expect(tiraEventsAfterFirst).toEqual(['ABERTURA', 'CONCLUSAO']);
+
+    const secondOrder = [...firstOrder].reverse();
+    await reorderMnemonicFrames(rawContent.id, { order: secondOrder }, actorOf(editor), testPrisma);
+
+    const eventsAfterSecond = await productionEventsService.listProductionStageEvents(
+      rawContent.id,
+      testPrisma,
+    );
+    const tiraEventsAfterSecond = eventsAfterSecond
+      .filter((event) => event.stageType === 'TIRA_MNEMONICA')
+      .map((event) => event.transitionType);
+    expect(tiraEventsAfterSecond).toEqual(['ABERTURA', 'CONCLUSAO', 'RETRABALHO']);
+  });
+});
+
+describe('reorderMnemonicFrames — rejeita order que não é exatamente o conjunto de ids da Tira (FR-011-006, contrato)', () => {
+  it('order de A contendo 1 id de B (Tira distinta) é rejeitado; posições de A e de B permanecem intocadas', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+
+    const rawContentA = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdown(rawContentA.id);
+    const stripA = await openMnemonicStrip(rawContentA.id, actorOf(editor), testPrisma);
+
+    const rawContentB = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdown(rawContentB.id);
+    const stripB = await openMnemonicStrip(rawContentB.id, actorOf(editor), testPrisma);
+
+    // Mesmo tamanho do conjunto real de A (5) — 4 ids de A + 1 id de B, no
+    // lugar de um 5º id de A (que fica ausente).
+    const invalidOrder = [
+      ...stripA.frames.slice(0, 4).map((frame) => frame.id),
+      stripB.frames[0]!.id,
+    ];
+
+    await expect(
+      reorderMnemonicFrames(rawContentA.id, { order: invalidOrder }, actorOf(editor), testPrisma),
+    ).rejects.toThrow(ConflictError);
+
+    const framesA = await testPrisma.mnemonicFrame.findMany({
+      where: { stripId: stripA.id },
+      orderBy: { position: 'asc' },
+      select: { position: true },
+    });
+    const framesB = await testPrisma.mnemonicFrame.findMany({
+      where: { stripId: stripB.id },
+      orderBy: { position: 'asc' },
+      select: { position: true },
+    });
+    expect(framesA.map((frame) => frame.position)).toEqual(
+      stripA.frames.map((frame) => frame.position),
+    );
+    expect(framesB.map((frame) => frame.position)).toEqual(
+      stripB.frames.map((frame) => frame.position),
+    );
+  });
+
+  it('order com 1 id duplicado e outro id existente ausente (mesmo tamanho do conjunto real, conjunto errado) é rejeitado; posições intocadas', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const rawContent = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdown(rawContent.id);
+    const opened = await openMnemonicStrip(rawContent.id, actorOf(editor), testPrisma);
+
+    const ids = opened.frames.map((frame) => frame.id);
+    // Mesmo tamanho (5): o 1º id aparece duplicado, o último fica ausente.
+    const invalidOrder = [ids[0]!, ids[0]!, ids[1]!, ids[2]!, ids[3]!];
+    expect(invalidOrder).toHaveLength(ids.length);
+
+    await expect(
+      reorderMnemonicFrames(rawContent.id, { order: invalidOrder }, actorOf(editor), testPrisma),
+    ).rejects.toThrow(ConflictError);
+
+    const frames = await testPrisma.mnemonicFrame.findMany({
+      where: { stripId: opened.id },
+      orderBy: { position: 'asc' },
+      select: { position: true },
+    });
+    expect(frames.map((frame) => frame.position)).toEqual(
+      opened.frames.map((frame) => frame.position),
+    );
+  });
+});
+
+describe('reorderMnemonicFrames — fail-secure: falha na emissão do evento reverte a reindexação inteira (AC-011-015, NFR-011-003)', () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('recordProductionStageEvent rejeitando dentro da transação → reorderMnemonicFrames rejeita; nenhuma posição nova persiste, nem sequer as temporárias da Fase 1', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const rawContent = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdown(rawContent.id);
+    const opened = await openMnemonicStrip(rawContent.id, actorOf(editor), testPrisma);
+
+    const reversedOrder = [...opened.frames].reverse().map((frame) => frame.id);
+
+    jest
+      .spyOn(productionEventsService, 'recordProductionStageEvent')
+      .mockRejectedValueOnce(new Error('falha simulada na emissão'));
+
+    await expect(
+      reorderMnemonicFrames(rawContent.id, { order: reversedOrder }, actorOf(editor), testPrisma),
+    ).rejects.toThrow('falha simulada na emissão');
+
+    const frames = await testPrisma.mnemonicFrame.findMany({
+      where: { stripId: opened.id },
+      orderBy: { position: 'asc' },
+      select: { id: true, position: true },
+    });
+    expect(frames).toEqual(
+      opened.frames
+        .map((frame) => ({ id: frame.id, position: frame.position }))
+        .sort((a, b) => a.position - b.position),
+    );
+  });
+});
+
+/**
+ * NFR-011-002 + lição [Performance] ("`include`/`select` aninhado de relação
+ * não é 1 statement por padrão"), medido contra o Postgres real.
+ *
+ * Adaptação declarada (fatia sensível — ver report da TASK-012-006): o custo
+ * TOTAL de `reorderMnemonicFrames` ESCALA com o nº de Quadros — cada
+ * reindexação custa 2×N `UPDATE`s (DEC-012-003/TRISK-012-002), e a Fase 2
+ * PRECISA ser um laço de N invocações SEPARADAS (não 1 statement em lote)
+ * para a prova de atomicidade real (AC-011-011) poder injetar falha numa
+ * invocação intermediária. Por isso a asserção falsificável aqui não é
+ * "contagem igual entre 3 e 5 Quadros" — é o DELTA marginal EXATO entre os
+ * dois cenários: 2×(5-3) = 4. Esse delta prova duas coisas ao mesmo tempo:
+ * (a) o custo de reindexação é EXATAMENTE 2 por Quadro adicional, nunca mais
+ * (regressão do laço faria o delta crescer); (b) a leitura final de
+ * `MnemonicStripDetail` (relationLoadStrategy: 'join') não contribui nenhuma
+ * query extra por Quadro — se contribuísse, o delta seria maior que 4.
+ * Números medidos contra o Postgres real (não presumidos): 14 queries para
+ * N=3, 18 para N=5.
+ */
+describe('reorderMnemonicFrames — custo de reindexação cresce EXATAMENTE 2 queries por Quadro adicional (NFR-011-002, lição [Performance])', () => {
+  it('reorder com 3 Quadros (14 queries) vs reorder com 5 Quadros (18 queries): delta EXATO de 4 — a leitura da relação `frames` não cresce com N', async () => {
+    const editorA = await createUser('EDITOR');
+    const topicIdA = await createTopic();
+    const rawContentA = await createRawContent(editorA.id, topicIdA);
+    await testPrisma.ruleBreakdown.create({
+      data: {
+        rawContentId: rawContentA.id,
+        concept: BREAKDOWN_FIELDS.concept,
+        action: BREAKDOWN_FIELDS.action,
+        object: BREAKDOWN_FIELDS.object,
+        condition: null,
+        exception: null,
+        essence: BREAKDOWN_FIELDS.essence,
+      },
+    });
+    const openedA = await openMnemonicStrip(rawContentA.id, actorOf(editorA), testPrisma);
+    expect(openedA.frames).toHaveLength(3);
+
+    const editorB = await createUser('EDITOR');
+    const topicIdB = await createTopic();
+    const rawContentB = await createRawContent(editorB.id, topicIdB);
+    await seedRuleBreakdown(rawContentB.id);
+    const openedB = await openMnemonicStrip(rawContentB.id, actorOf(editorB), testPrisma);
+    expect(openedB.frames).toHaveLength(5);
+
+    const reversedA = [...openedA.frames].reverse().map((frame) => frame.id);
+    const reversedB = [...openedB.frames].reverse().map((frame) => frame.id);
+
+    const queriesForThree = await withQueryProbe((probe) =>
+      reorderMnemonicFrames(rawContentA.id, { order: reversedA }, actorOf(editorA), probe),
+    );
+    const queriesForFive = await withQueryProbe((probe) =>
+      reorderMnemonicFrames(rawContentB.id, { order: reversedB }, actorOf(editorB), probe),
+    );
+
+    expect(queriesForThree).toHaveLength(14);
+    expect(queriesForFive).toHaveLength(18);
+    expect(queriesForFive.length - queriesForThree.length).toBe(2 * (5 - 3));
   });
 });

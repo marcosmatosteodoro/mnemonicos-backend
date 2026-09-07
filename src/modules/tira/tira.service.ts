@@ -7,12 +7,15 @@ import {
   type RuleBreakdownDetail,
 } from '../contents/contents.service';
 import { recordProductionStageEvent } from '../production-events/production-events.service';
+import type { ReorderMnemonicFramesInput } from './tira.schema';
 
 /**
- * Núcleo do módulo Tira mnemônica (COMP-012-004 / TASK-012-005): geração
- * inicial (regra pura, `buildInitialFrames`) e abertura get-or-generate
- * idempotente (`openMnemonicStrip`). CRUD/reordenação de Quadro ficam fora
- * desta TASK (TASK-012-007 a TASK-012-010, fora desta lista).
+ * Núcleo do módulo Tira mnemônica (COMP-012-004): geração inicial (regra
+ * pura, `buildInitialFrames`), abertura get-or-generate idempotente
+ * (`openMnemonicStrip`), reindexação atômica em 2 fases (`reassignPositions`,
+ * TASK-012-006) e reordenação de Quadros (`reorderMnemonicFrames`,
+ * TASK-012-006). CRUD de Quadro (adicionar/editar/remover) fica fora desta
+ * TASK (TASK-012-007, que reusa `reassignPositions` sem recriá-la).
  */
 
 export interface MnemonicFrameDetail {
@@ -81,11 +84,12 @@ type MnemonicStripRow = Prisma.MnemonicStripGetPayload<{
  * Cliente Prisma injetável (mesmo padrão de `RawContentClient`/
  * `RuleBreakdownClient` de `contents.service.ts`): cobre `rawContent`
  * (para `assertRawContentReachable`), `ruleBreakdown` (localizar a Quebra do
- * `rawContentId`), `mnemonicStrip` (a própria Tira) e `$transaction`.
+ * `rawContentId`), `mnemonicStrip` (a própria Tira), `mnemonicFrame`
+ * (validar/reindexar Quadros, TASK-012-006) e `$transaction`.
  */
 type MnemonicStripClient = Pick<
   typeof prisma,
-  'rawContent' | 'ruleBreakdown' | 'mnemonicStrip' | '$transaction'
+  'rawContent' | 'ruleBreakdown' | 'mnemonicStrip' | 'mnemonicFrame' | '$transaction'
 >;
 
 const RULE_BREAKDOWN_FOR_STRIP_SELECT = {
@@ -196,4 +200,159 @@ export async function openMnemonicStrip(
     }
     throw error;
   }
+}
+
+/** Cliente Prisma injetável exigido só pelas ESCRITAS de posição (`reassignPositions`). */
+type MnemonicFrameWriteClient = Pick<typeof prisma, 'mnemonicFrame'>;
+
+/**
+ * Grava, em sequência, a posição de cada Quadro listado — sempre escopado por
+ * `stripId` (defesa em profundidade contra substituição de id — mesma cautela
+ * de A01 já aplicada por `assertRawContentReachable`/COMP-012-005, mesmo que o
+ * chamador já tenha validado o conjunto de ids antes de chegar aqui).
+ */
+async function applyPositions(
+  tx: MnemonicFrameWriteClient,
+  stripId: string,
+  assignments: ReadonlyArray<{ frameId: string; position: number }>,
+): Promise<void> {
+  for (const { frameId, position } of assignments) {
+    await tx.mnemonicFrame.updateMany({
+      where: { id: frameId, stripId },
+      data: { position },
+    });
+  }
+}
+
+/**
+ * Reindexação atômica em 2 fases (DEC-012-003, COMP-012-004/TASK-012-006) —
+ * primitiva reusada por `reorderMnemonicFrames` (F-5) e, fora desta TASK, por
+ * `addMnemonicFrame`/`removeMnemonicFrame` (TASK-012-007, F-2/F-4). Nunca abre
+ * transação própria — o `tx` já vem aberto pelo chamador (mesmo padrão de
+ * `recordProductionStageEvent`, DEC-010-003).
+ *
+ * **Fase 1 (offset)**: desloca a posição atual de TODOS os ids de
+ * `orderedFrameIds` para um intervalo temporário fora de 1..N (negativo) —
+ * inclusive os que já estão na posição final correta. Pular um id "porque já
+ * está certo" é exatamente o bug que RISK-011-003 nomeia: se esse id não for
+ * deslocado, a Fase 2 pode tentar gravar em outro Quadro (ainda não deslocado)
+ * a MESMA posição que esse id já ocupa, colidindo com
+ * `@@unique([stripId, position])` a meio caminho.
+ *
+ * **Fase 2 (final)**: grava, para cada id de `orderedFrameIds` NA ORDEM DADA,
+ * `position = índice + 1` — sem lacuna, sem duplicidade, mesmo quando a
+ * operação troca a posição relativa de 2 ou mais Quadros (AC-011-010).
+ *
+ * Lista vazia é no-op (F-4, remover o último Quadro restante).
+ */
+export async function reassignPositions(
+  tx: MnemonicFrameWriteClient,
+  stripId: string,
+  orderedFrameIds: readonly string[],
+): Promise<void> {
+  await applyPositions(
+    tx,
+    stripId,
+    orderedFrameIds.map((frameId, index) => ({ frameId, position: -(index + 1) })),
+  );
+
+  await applyPositions(
+    tx,
+    stripId,
+    orderedFrameIds.map((frameId, index) => ({ frameId, position: index + 1 })),
+  );
+}
+
+/**
+ * `true` só quando `order` é EXATAMENTE o conjunto de ids de `existingIds` —
+ * mesmo tamanho, sem id duplicado, todo id pertencente ao conjunto existente.
+ * As 3 condições separadas cobrem 3 mutantes distintos: array maior/menor
+ * (tamanho), id repetido substituindo um id ausente (duplicidade sob mesmo
+ * tamanho) e id de outra Tira (pertencimento).
+ */
+function isExactFrameSet(order: readonly string[], existingIds: ReadonlySet<string>): boolean {
+  return (
+    order.length === existingIds.size &&
+    new Set(order).size === order.length &&
+    order.every((id) => existingIds.has(id))
+  );
+}
+
+/**
+ * Reordena os Quadros da Tira (FR-011-006), dentro de `$transaction`:
+ * 1. `assertRawContentReachable` — 1ª chamada, sempre (NFR-011-001/006,
+ *    DEC-012-007).
+ * 2. Localiza o `stripId` a partir do `rawContentId` (`ruleBreakdown` →
+ *    `mnemonicStrip`) — 409 (`ConflictError`) se a Quebra da regra ou a
+ *    própria Tira ainda não existem (pré-condições de domínio, mesma família
+ *    de recusa de `openMnemonicStrip`).
+ * 3. Valida que `input.order` é EXATAMENTE o conjunto de ids de Quadro
+ *    existentes da Tira (nem falta, nem sobra, nem duplicidade) — 409 caso
+ *    contrário; nenhuma escrita acontece antes desta validação (defesa contra
+ *    vazamento de escrita cross-tenant, A01).
+ * 4. `reassignPositions` — reindexação atômica em 2 fases (DEC-012-003); a
+ *    prova de atomicidade REAL contra falha no meio do caminho é
+ *    `tira.service.integration.test.ts`, AC-011-011/RISK-011-003.
+ * 5. `recordProductionStageEvent` — decide CONCLUSAO (1ª mutação humana) ou
+ *    RETRABALHO (demais), puramente pelo histórico já registrado
+ *    (DEC-012-006); este código não precisa saber qual é qual.
+ * 6. Devolve `MnemonicStripDetail` com os Quadros ordenados por `position`.
+ *
+ * Fail-secure (NFR-011-003, AC-011-015): toda a validação, a reindexação e a
+ * emissão do evento rodam na MESMA `$transaction` interativa — falha em
+ * qualquer passo reverte a operação inteira, nenhuma posição parcial
+ * persiste.
+ */
+export async function reorderMnemonicFrames(
+  rawContentId: string,
+  input: ReorderMnemonicFramesInput,
+  actor: ContentActor,
+  db: MnemonicStripClient = prisma,
+): Promise<MnemonicStripDetail> {
+  return db.$transaction(async (tx) => {
+    await assertRawContentReachable(rawContentId, actor, tx);
+
+    const breakdown = await tx.ruleBreakdown.findUnique({
+      where: { rawContentId },
+      select: { id: true },
+    });
+    if (breakdown === null) {
+      throw new ConflictError('Conclua a Quebra da regra antes de abrir a Tira mnemônica.');
+    }
+
+    const strip = await tx.mnemonicStrip.findUnique({
+      where: { ruleBreakdownId: breakdown.id },
+      select: { id: true },
+    });
+    if (strip === null) {
+      throw new ConflictError('Abra a Tira mnemônica antes de reordenar os quadros.');
+    }
+
+    const existingFrames = await tx.mnemonicFrame.findMany({
+      where: { stripId: strip.id },
+      select: { id: true },
+    });
+    const existingIds = new Set(existingFrames.map((frame) => frame.id));
+
+    if (!isExactFrameSet(input.order, existingIds)) {
+      throw new ConflictError(
+        'A lista de quadros informada não corresponde aos quadros existentes na Tira.',
+      );
+    }
+
+    await reassignPositions(tx, strip.id, input.order);
+
+    await recordProductionStageEvent(tx, {
+      rawContentId,
+      stageType: 'TIRA_MNEMONICA',
+      actorId: actor.id,
+      now: new Date(),
+    });
+
+    return tx.mnemonicStrip.findUniqueOrThrow({
+      where: { id: strip.id },
+      relationLoadStrategy: 'join',
+      select: MNEMONIC_STRIP_DETAIL_SELECT,
+    });
+  });
 }
