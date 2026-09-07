@@ -200,8 +200,11 @@ describe.each([
       // ruleBreakdownId } }); if (cached) return cached;` devolveria a Strip
       // existente sem nunca passar por `assertStripPrerequisites` (que só
       // roda dentro do callback) — esta asserção reprova, pois o preâmbulo
-      // passaria a conter `db.mnemonicStrip.findFirst(`.
-      expect(preamble).not.toMatch(/\b(tx|db)\.\w+\.\w+\(/);
+      // passaria a conter `db.mnemonicStrip.findFirst(`. O padrão cobre
+      // também o cliente de módulo (`prisma`, importado no topo do arquivo e
+      // default do próprio parâmetro `db`) — não só o parâmetro injetado —
+      // para que o mesmo bypass escrito via `prisma.` não escape do universo.
+      expect(preamble).not.toMatch(/\b(tx|db|prisma)\.\w+\.\w+\(/);
     });
   },
 );
