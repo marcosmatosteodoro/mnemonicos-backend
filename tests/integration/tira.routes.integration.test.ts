@@ -101,6 +101,46 @@ describe('AC-011-022 (parte — faceta de transporte do ator): alcance por autor
     expect(res.status).toBe(404);
     expect(res.body.error.message).toBe('Conteúdo bruto não encontrado.');
   });
+
+  it('GET /contents/:id/strip sobre rawContentId de outro EDITOR, Tira JÁ ABERTA pelo autor (fixture discriminante — retry, achado do code-reviewer na 3ª rodada) → 404 "Conteúdo bruto não encontrado."; corpo não vaza nem o id da Strip nem os textos dos Quadros de A', async () => {
+    const editorA = await createUser('EDITOR');
+    const editorB = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const rawContent = await createRawContent(editorA.id, topicId);
+    await seedRuleBreakdown(rawContent.id);
+    const accessA = await seedSession(editorA.id);
+    const accessB = await seedSession(editorB.id);
+
+    // A Tira de A precisa EXISTIR de verdade (POST antes do GET de B) — no
+    // fixture anterior (Strip inexistente), o 404 vem do ramo genérico "Tira
+    // ainda não foi aberta" tanto COM quanto SEM a guarda de alcance por
+    // autoria, e um mutante que remove `assertRawContentReachable` de
+    // `getMnemonicStrip` sobrevive sem que nenhum teste acuse. Aqui, sem a
+    // guarda, B leria a Strip de A com sucesso (200) em vez do 404 correto.
+    const opened = await request(app)
+      .post(`/api/v1/contents/${rawContent.id}/strip`)
+      .set(...withCookie(accessA));
+    expect(opened.status).toBe(200);
+    const stripIdOfA: string = opened.body.id;
+    const framesOfA = opened.body.frames as { text: string }[];
+    const frameTextsOfA: string[] = framesOfA.map((frame) => frame.text);
+    expect(frameTextsOfA.length).toBeGreaterThan(0);
+
+    const res = await request(app)
+      .get(`/api/v1/contents/${rawContent.id}/strip`)
+      .set(...withCookie(accessB));
+
+    expect(res.status).toBe(404);
+    expect(res.body.error.message).toBe('Conteúdo bruto não encontrado.');
+
+    // Prova negativa: nenhum vazamento parcial — nem o id da Strip de A, nem
+    // nenhum dos textos dos Quadros de A aparece em algum lugar do corpo.
+    const serializedBody = JSON.stringify(res.body);
+    expect(serializedBody).not.toContain(stripIdOfA);
+    for (const text of frameTextsOfA) {
+      expect(serializedBody).not.toContain(text);
+    }
+  });
 });
 
 describe('AC-011-023 (parte — faceta HTTP do 409): Quebra da regra ainda não salva', () => {

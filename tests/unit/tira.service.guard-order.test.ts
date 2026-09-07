@@ -159,6 +159,53 @@ describe.each([
   },
 );
 
+/**
+ * Extrai o trecho do corpo EXTERNO da função que vem ANTES da entrada em
+ * `$transaction` — universo que `firstExecutableLine`/`transactionBody` acima
+ * NÃO cobre (aquele mira só o corpo do CALLBACK). Corta em `.$transaction(`:
+ * o texto devolvido não inclui essa chamada em si (só o que vem antes dela),
+ * e para `openMnemonicStrip` também não inclui o `catch` (que vem DEPOIS,
+ * mais adiante no corpo).
+ */
+function extractPreamble(outerBody: string): string {
+  const transactionCallIndex = outerBody.indexOf('.$transaction(');
+  if (transactionCallIndex === -1) {
+    throw new Error('chamada de $transaction não encontrada no corpo da função');
+  }
+  return outerBody.slice(0, transactionCallIndex);
+}
+
+/**
+ * Achado correlato (retry): a prova acima (`transactionBody`) só enxerga o
+ * corpo do CALLBACK da transação — um bypass poderia ser plantado no corpo
+ * EXTERNO da função, ANTES de `db.$transaction(`, fora desse universo, sem
+ * que nenhuma das duas provas de ordem acima acusasse. Esta prova
+ * complementar fecha a lacuna: nenhuma chamada Prisma no formato
+ * `<cliente>.<model>.<método>(` aparece no preâmbulo — nenhum fast-path de
+ * leitura pode escapar por fora da transação.
+ */
+describe.each([
+  ['getMnemonicStrip', 'export async function getMnemonicStrip'],
+  ['openMnemonicStrip', 'export async function openMnemonicStrip'],
+])(
+  '%s — nenhuma chamada Prisma no corpo EXTERNO antes de entrar em $transaction (retry, achado correlato: universo do teste estrutural)',
+  (_name, signatureAnchor) => {
+    it('o preâmbulo (antes de `db.$transaction(`) não contém nenhuma chamada `<cliente>.<model>.<método>(`', () => {
+      const source = readSource(TIRA_SERVICE);
+      const outerBody = extractFunctionBody(source, signatureAnchor);
+      const preamble = extractPreamble(outerBody);
+
+      // Mutante: plantar, ANTES de `db.$transaction(`, algo como
+      // `const cached = await db.mnemonicStrip.findFirst({ where: {
+      // ruleBreakdownId } }); if (cached) return cached;` devolveria a Strip
+      // existente sem nunca passar por `assertStripPrerequisites` (que só
+      // roda dentro do callback) — esta asserção reprova, pois o preâmbulo
+      // passaria a conter `db.mnemonicStrip.findFirst(`.
+      expect(preamble).not.toMatch(/\b(tx|db)\.\w+\.\w+\(/);
+    });
+  },
+);
+
 describe('assertStripPrerequisites — assertRawContentReachable é a 1ª chamada (guarda compartilhada por getMnemonicStrip e openMnemonicStrip, EMENDA Wave 5/DEC-012-011)', () => {
   it('a 1ª linha executável do corpo contém `assertRawContentReachable(`', () => {
     const source = readSource(TIRA_SERVICE);
