@@ -178,7 +178,8 @@ export async function openMnemonicStrip(
       // 0 eventos existentes para o par (rawContentId, 'TIRA_MNEMONICA') →
       // decide ABERTURA (FR-011-008/AC-011-013) — nunca conclusão no mesmo
       // instante (correção do PO, DEC-012-006): a conclusão só ocorre na 1ª
-      // mutação humana de Quadro, fora desta TASK.
+      // mutação humana de Quadro (`addMnemonicFrame`/`updateMnemonicFrameText`/
+      // `removeMnemonicFrame`, TASK-012-007).
       await recordProductionStageEvent(tx, {
         rawContentId,
         stageType: 'TIRA_MNEMONICA',
@@ -242,7 +243,7 @@ async function applyPositions(
 
 /**
  * Reindexação atômica em 2 fases (DEC-012-003) —
- * primitiva reusada por `reorderMnemonicFrames` (F-5) e, fora desta TASK, por
+ * primitiva reusada por `reorderMnemonicFrames` (F-5) e por
  * `addMnemonicFrame`/`removeMnemonicFrame` (TASK-012-007, F-2/F-4). Nunca abre
  * transação própria — o `tx` já vem aberto pelo chamador (mesmo padrão de
  * `recordProductionStageEvent`, DEC-010-003).
@@ -286,8 +287,7 @@ type StripLookupClient = Pick<typeof prisma, 'ruleBreakdown' | 'mnemonicStrip'>;
  * Localiza o `stripId` a partir do `rawContentId` (`ruleBreakdown` →
  * `mnemonicStrip`), fonte única reusada por TODA mutação de Quadro
  * (`addMnemonicFrame`/`updateMnemonicFrameText`/`removeMnemonicFrame`,
- * TASK-012-007) e por `reorderMnemonicFrames` (TASK-012-006) — extraído para
- * não duplicar o mesmo par de guardas 4 vezes no arquivo (Charter Art. 3).
+ * TASK-012-007) e por `reorderMnemonicFrames` (TASK-012-006).
  * 409 (`ConflictError`) se a Quebra da regra ou a própria Tira ainda não
  * existem (pré-condições de domínio); `missingStripMessage` é a única parte
  * que varia por chamador, para a mensagem continuar nomeando a ação certa.
@@ -553,9 +553,8 @@ function isExactFrameSet(order: readonly string[], existingIds: ReadonlySet<stri
  * 1. `assertRawContentReachable` — 1ª chamada, sempre (NFR-011-001/006,
  *    DEC-012-007).
  * 2. `findStripId` — localiza o `stripId` a partir do `rawContentId`
- *    (`ruleBreakdown` → `mnemonicStrip`), fonte única reusada também por
- *    `addMnemonicFrame`/`updateMnemonicFrameText`/`removeMnemonicFrame`
- *    (TASK-012-007) — 409 (`ConflictError`) se a Quebra da regra ou a
+ *    (`ruleBreakdown` → `mnemonicStrip`), fonte única reusada por toda
+ *    mutação de Quadro — 409 (`ConflictError`) se a Quebra da regra ou a
  *    própria Tira ainda não existem (pré-condições de domínio, mesma família
  *    de recusa de `openMnemonicStrip`).
  * 3. Valida que `input.order` é EXATAMENTE o conjunto de ids de Quadro

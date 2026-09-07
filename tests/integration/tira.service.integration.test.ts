@@ -1345,6 +1345,198 @@ describe('removeMnemonicFrame — guarda de pertencimento frameId→stripId (con
 });
 
 /**
+ * Alcance por autoria nas 3 funções NOVAS desta TASK (NFR-011-001,
+ * NFR-011-006, gate 8) — 2ª ocorrência da lição [Segurança] "Guarda reusada
+ * continua exigindo prova comportamental própria por novo método de escrita":
+ * a prova ESTRUTURAL de `tira.service.guard-order.test.ts` (ordem de
+ * execução da guarda) não é capaz de acusar um mutante no VALOR do `actor`
+ * passado a `assertRawContentReachable` (`{ ...actor, role: 'ADMIN' }`) — só
+ * uma prova COMPORTAMENTAL, com um 2º editor real tentando alcançar Quadros
+ * de outro dono, fecha isso. Mesmo padrão dos blocos de `openMnemonicStrip`/
+ * `reorderMnemonicFrames` acima (editor A/B, mensagem literal comparada por
+ * igualdade a um id inexistente). Cada teste cobre 2 vetores: (a) cross-tenant
+ * (EDITOR B com argumentos VÁLIDOS de A) e (b) soft-delete do MESMO dono (A) —
+ * negações distintas, nenhuma delas confundível com a outra.
+ */
+describe('addMnemonicFrame — alcance por autoria (AC-011-020, AC-011-022, NFR-011-001, NFR-011-006, gate 8)', () => {
+  it('EDITOR B não alcança o Conteúdo bruto de A (cross-tenant, argumentos válidos); o mesmo Conteúdo bruto soft-deletado do PRÓPRIO dono também é recusado — Tira de A intocada nos dois casos', async () => {
+    const editorA = await createUser('EDITOR');
+    const editorB = await createUser('EDITOR');
+    const topicId = await createTopic();
+
+    const rawContentOfA = await createRawContent(editorA.id, topicId);
+    await seedRuleBreakdown(rawContentOfA.id);
+    const stripOfA = await openMnemonicStrip(rawContentOfA.id, actorOf(editorA), testPrisma);
+
+    // (a) cross-tenant: rawContentId VÁLIDO (de A, Tira aberta) — só a
+    // guarda de alcance por autoria pode barrar B.
+    const messageForOtherAuthor = await captureMessage(() =>
+      addMnemonicFrame(
+        rawContentOfA.id,
+        { text: 'Não deveria persistir (cross-tenant)', position: 1 },
+        actorOf(editorB),
+        testPrisma,
+      ),
+    );
+    const messageForRandomId = await captureMessage(() =>
+      addMnemonicFrame(
+        randomUUID(),
+        { text: 'Não deveria persistir (id inexistente)', position: 1 },
+        actorOf(editorB),
+        testPrisma,
+      ),
+    );
+    expect(messageForOtherAuthor).toBe(messageForRandomId);
+    expect(messageForOtherAuthor).toBe('Conteúdo bruto não encontrado.');
+
+    const framesOfAAfterCrossTenant = await testPrisma.mnemonicFrame.findMany({
+      where: { stripId: stripOfA.id },
+      orderBy: { position: 'asc' },
+      select: { id: true, position: true },
+    });
+    expect(framesOfAAfterCrossTenant).toEqual(
+      stripOfA.frames.map((frame) => ({ id: frame.id, position: frame.position })),
+    );
+
+    // (b) vetor soft-delete: MESMO dono (A) — o Conteúdo bruto é soft-deletado
+    // e a recusa passa a ser a de "removido" (distinta de (a), nunca a de
+    // cross-tenant vazando para quem alcança o próprio dado).
+    await testPrisma.rawContent.update({
+      where: { id: rawContentOfA.id },
+      data: { deletedAt: new Date() },
+    });
+
+    const messageForSoftDeleted = await captureMessage(() =>
+      addMnemonicFrame(
+        rawContentOfA.id,
+        { text: 'Não deveria persistir (soft-deleted)', position: 1 },
+        actorOf(editorA),
+        testPrisma,
+      ),
+    );
+    expect(messageForSoftDeleted).toBe('Conteúdo bruto foi removido.');
+
+    const framesOfAAfterSoftDelete = await testPrisma.mnemonicFrame.findMany({
+      where: { stripId: stripOfA.id },
+      orderBy: { position: 'asc' },
+      select: { id: true, position: true },
+    });
+    expect(framesOfAAfterSoftDelete).toEqual(framesOfAAfterCrossTenant);
+  });
+});
+
+describe('updateMnemonicFrameText — alcance por autoria (AC-011-020, AC-011-022, NFR-011-001, NFR-011-006, gate 8)', () => {
+  it('EDITOR B não alcança o Conteúdo bruto de A (cross-tenant, frameId válido de A); o mesmo Conteúdo bruto soft-deletado do PRÓPRIO dono também é recusado — texto e posição de A intocados nos dois casos', async () => {
+    const editorA = await createUser('EDITOR');
+    const editorB = await createUser('EDITOR');
+    const topicId = await createTopic();
+
+    const rawContentOfA = await createRawContent(editorA.id, topicId);
+    await seedRuleBreakdown(rawContentOfA.id);
+    const stripOfA = await openMnemonicStrip(rawContentOfA.id, actorOf(editorA), testPrisma);
+    const targetFrame = stripOfA.frames[0]!;
+
+    const messageForOtherAuthor = await captureMessage(() =>
+      updateMnemonicFrameText(
+        rawContentOfA.id,
+        targetFrame.id,
+        { text: 'Não deveria persistir (cross-tenant)' },
+        actorOf(editorB),
+        testPrisma,
+      ),
+    );
+    const messageForRandomId = await captureMessage(() =>
+      updateMnemonicFrameText(
+        randomUUID(),
+        targetFrame.id,
+        { text: 'Não deveria persistir (id inexistente)' },
+        actorOf(editorB),
+        testPrisma,
+      ),
+    );
+    expect(messageForOtherAuthor).toBe(messageForRandomId);
+    expect(messageForOtherAuthor).toBe('Conteúdo bruto não encontrado.');
+
+    const persistedAfterCrossTenant = await testPrisma.mnemonicFrame.findUniqueOrThrow({
+      where: { id: targetFrame.id },
+      select: { text: true, position: true },
+    });
+    expect(persistedAfterCrossTenant.text).toBe(targetFrame.text);
+    expect(persistedAfterCrossTenant.position).toBe(targetFrame.position);
+
+    await testPrisma.rawContent.update({
+      where: { id: rawContentOfA.id },
+      data: { deletedAt: new Date() },
+    });
+
+    const messageForSoftDeleted = await captureMessage(() =>
+      updateMnemonicFrameText(
+        rawContentOfA.id,
+        targetFrame.id,
+        { text: 'Não deveria persistir (soft-deleted)' },
+        actorOf(editorA),
+        testPrisma,
+      ),
+    );
+    expect(messageForSoftDeleted).toBe('Conteúdo bruto foi removido.');
+
+    const persistedAfterSoftDelete = await testPrisma.mnemonicFrame.findUniqueOrThrow({
+      where: { id: targetFrame.id },
+      select: { text: true, position: true },
+    });
+    expect(persistedAfterSoftDelete).toEqual(persistedAfterCrossTenant);
+  });
+});
+
+describe('removeMnemonicFrame — alcance por autoria (AC-011-020, AC-011-022, NFR-011-001, NFR-011-006, gate 8)', () => {
+  it('EDITOR B não alcança o Conteúdo bruto de A (cross-tenant, frameId válido de A); o mesmo Conteúdo bruto soft-deletado do PRÓPRIO dono também é recusado — nenhum Quadro de A é removido nem reposicionado nos dois casos', async () => {
+    const editorA = await createUser('EDITOR');
+    const editorB = await createUser('EDITOR');
+    const topicId = await createTopic();
+
+    const rawContentOfA = await createRawContent(editorA.id, topicId);
+    await seedRuleBreakdown(rawContentOfA.id);
+    const stripOfA = await openMnemonicStrip(rawContentOfA.id, actorOf(editorA), testPrisma);
+    const targetFrame = stripOfA.frames[0]!;
+
+    const messageForOtherAuthor = await captureMessage(() =>
+      removeMnemonicFrame(rawContentOfA.id, targetFrame.id, actorOf(editorB), testPrisma),
+    );
+    const messageForRandomId = await captureMessage(() =>
+      removeMnemonicFrame(randomUUID(), targetFrame.id, actorOf(editorB), testPrisma),
+    );
+    expect(messageForOtherAuthor).toBe(messageForRandomId);
+    expect(messageForOtherAuthor).toBe('Conteúdo bruto não encontrado.');
+
+    const framesOfAAfterCrossTenant = await testPrisma.mnemonicFrame.findMany({
+      where: { stripId: stripOfA.id },
+      orderBy: { position: 'asc' },
+      select: { id: true, position: true },
+    });
+    expect(framesOfAAfterCrossTenant).toEqual(
+      stripOfA.frames.map((frame) => ({ id: frame.id, position: frame.position })),
+    );
+
+    await testPrisma.rawContent.update({
+      where: { id: rawContentOfA.id },
+      data: { deletedAt: new Date() },
+    });
+
+    const messageForSoftDeleted = await captureMessage(() =>
+      removeMnemonicFrame(rawContentOfA.id, targetFrame.id, actorOf(editorA), testPrisma),
+    );
+    expect(messageForSoftDeleted).toBe('Conteúdo bruto foi removido.');
+
+    const framesOfAAfterSoftDelete = await testPrisma.mnemonicFrame.findMany({
+      where: { stripId: stripOfA.id },
+      orderBy: { position: 'asc' },
+      select: { id: true, position: true },
+    });
+    expect(framesOfAAfterSoftDelete).toEqual(framesOfAAfterCrossTenant);
+  });
+});
+
+/**
  * NFR-011-002 (consumo da primitiva) + lição [Performance]
  * ("`include`/`select` aninhado de relação não é 1 statement por padrão"):
  * cada uma das 3 funções devolve `MnemonicStripDetail` inteiro com
