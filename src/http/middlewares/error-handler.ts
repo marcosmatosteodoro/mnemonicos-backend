@@ -1,4 +1,5 @@
 import type { ErrorRequestHandler, RequestHandler } from 'express';
+import { MulterError } from 'multer';
 import { ZodError } from 'zod';
 
 import { logger } from '../../lib/logger';
@@ -35,6 +36,28 @@ export const errorHandler: ErrorRequestHandler = (err, req, res, _next) => {
     };
 
     res.status(422).json(body);
+    return;
+  }
+
+  // COMP-023-017 (EMENDA/F5): `MulterError` não estende `AppError` (é lançado pelo
+  // `multer`, biblioteca de terceiro) — ramo próprio, na MESMA posição relativa do
+  // `ZodError` acima (antes do fallback genérico). `code === 'LIMIT_FILE_SIZE'` é o
+  // único mapeado para 413 (NFR-022-004); qualquer outro código do multer (ex.:
+  // `LIMIT_FIELD_VALUE`, `LIMIT_UNEXPECTED_FILE`) vira 400 genérico. Nunca `err.field`
+  // nem stack no corpo — o nome do campo interno do multer não é seguro para expor.
+  if (err instanceof MulterError) {
+    const status = err.code === 'LIMIT_FILE_SIZE' ? 413 : 400;
+    const body: ErrorBody = {
+      error: {
+        code: status === 413 ? 'PAYLOAD_TOO_LARGE' : 'BAD_REQUEST',
+        message:
+          status === 413
+            ? 'Arquivo enviado excede o tamanho máximo permitido.'
+            : 'Requisição multipart inválida.',
+      },
+    };
+
+    res.status(status).json(body);
     return;
   }
 

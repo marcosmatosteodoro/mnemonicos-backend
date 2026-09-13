@@ -71,6 +71,11 @@ const envSchema = z.object({
   ARGON2_MEMORY_KIB: z.coerce.number().int().positive().default(19456),
   ARGON2_TIME_COST: z.coerce.number().int().positive().default(2),
   ARGON2_PARALLELISM: z.coerce.number().int().positive().default(1),
+
+  /// Teto de tamanho do upload de imagem da Biblioteca visual (NFR-022-004, A-022-005,
+  /// PLAN-023/F5). Só cobre o ARQUIVO — os limites de campo de texto (`fields`/`fieldSize`)
+  /// do `multer` são literais em `visual-associations.routes.ts`, não afináveis por env.
+  VISUAL_ASSOCIATIONS_MAX_FILE_SIZE_BYTES: z.coerce.number().int().positive().default(5242880),
 });
 
 /**

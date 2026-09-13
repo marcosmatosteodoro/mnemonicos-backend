@@ -151,7 +151,7 @@ afterAll(async () => {
 });
 
 describe('fonte de medição da métrica §1.3 — censo das rotas montadas', () => {
-  it('a árvore montada é exatamente estes 25 pares método+caminho (tripwire: rota nova sem atualizar a suíte falha aqui)', () => {
+  it('a árvore montada é exatamente estes 27 pares método+caminho (tripwire: rota nova sem atualizar a suíte falha aqui — TASK-023-008 somou POST/PATCH /visual-associations[/:id], 25→27)', () => {
     expect(ROUTES.map(key).sort()).toEqual(
       [
         'GET /health',
@@ -179,6 +179,8 @@ describe('fonte de medição da métrica §1.3 — censo das rotas montadas', ()
         'PATCH /contents/:id/strip/frames/:frameId',
         'DELETE /contents/:id/strip/frames/:frameId',
         'PUT /contents/:id/strip/frames/order',
+        'POST /visual-associations',
+        'PATCH /visual-associations/:id',
       ].sort(),
     );
   });
@@ -253,6 +255,7 @@ describe('AC-002-018 — nenhuma capacidade de auto-registro na superfície mont
       '/contents',
       '/contents/:id/strip',
       '/contents/:id/strip/frames',
+      '/visual-associations',
     ]);
   });
 

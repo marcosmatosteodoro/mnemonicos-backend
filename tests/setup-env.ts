@@ -19,3 +19,7 @@ process.env.AUTH_REFRESH_GRACE_SECONDS = '10';
 process.env.ARGON2_MEMORY_KIB = '19456';
 process.env.ARGON2_TIME_COST = '2';
 process.env.ARGON2_PARALLELISM = '1';
+
+// Teto de upload da Biblioteca visual (F5/PLAN-023) — mesmo valor do `.env.example`,
+// determinístico para os testes de tamanho (AC-022-003) computarem o excedente a partir dele.
+process.env.VISUAL_ASSOCIATIONS_MAX_FILE_SIZE_BYTES = '5242880';
