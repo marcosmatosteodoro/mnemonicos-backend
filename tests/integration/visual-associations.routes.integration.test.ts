@@ -7,7 +7,14 @@ import { env } from '../../src/config/env';
 import { ACCESS_COOKIE } from '../../src/http/cookies';
 import { prisma } from '../../src/lib/prisma';
 import { generateToken, hashToken } from '../../src/lib/tokens';
-import { createUser } from '../support/production-events-fixtures';
+import type { ContentActor } from '../../src/modules/contents/contents.service';
+import { openMnemonicStrip } from '../../src/modules/tira/tira.service';
+import {
+  createRawContent,
+  createTopic,
+  createUser,
+  seedRuleBreakdown,
+} from '../support/production-events-fixtures';
 import {
   createVisualAssociation as seedVisualAssociation,
   PNG_FIXTURE_BUFFER as PNG_FIXTURE,
@@ -15,16 +22,17 @@ import {
 import { closeTestDb, resetDb, testPrisma } from './db';
 
 /**
- * `visual-associations.routes.ts` (TASK-023-008, COMP-023-005/006/017) ponta-a-ponta
- * sobre a `app` **real** (`createApp()`, sem popular `ROUTE_ROLES` à mão) e o Postgres
- * real (harness de TASK-003-016). Fatia sensível (princípio 8): upload + assinatura de
- * bytes + guarda de autoria — gate 8 no fecho da wave.
+ * `visual-associations.routes.ts` (TASK-023-008/TASK-023-010, COMP-023-005/006/017)
+ * ponta-a-ponta sobre a `app` **real** (`createApp()`, sem popular `ROUTE_ROLES` à mão)
+ * e o Postgres real (harness de TASK-003-016). Fatia sensível (princípio 8): upload +
+ * assinatura de bytes + guarda de autoria + trava de vínculo ativo (TOCTOU, decisão
+ * 4.140) — gate 8 no fecho da wave.
  *
- * A topologia adversarial das 2 rotas (papéis declarados, chaves independentes,
- * censo 25→27 pares) vive em `route-authz-matrix.integration.test.ts` — não duplicada
- * aqui, exceto a faceta comportamental de STUDENT/anônimo (AC-022-014), que É desta
- * suíte porque a matriz genérica só cobre 401 (todo NON_PUBLIC) e 403-ADMIN-only
- * (nenhuma das 2 rotas novas é ADMIN-only).
+ * A topologia adversarial das 3 rotas (papéis declarados, chaves independentes,
+ * censo 25→27→28 pares) vive em `route-authz-matrix.integration.test.ts` — não
+ * duplicada aqui, exceto a faceta comportamental de STUDENT/anônimo (AC-022-014), que É
+ * desta suíte porque a matriz genérica só cobre 401 (todo NON_PUBLIC) e 403-ADMIN-only
+ * (nenhuma das 3 rotas é ADMIN-only).
  */
 
 /**
@@ -75,6 +83,41 @@ async function seedSession(userId: string): Promise<string> {
 
 function withCookie(access: string): [string, string] {
   return ['Cookie', `${ACCESS_COOKIE}=${access}`];
+}
+
+/**
+ * Monta a cadeia RawContent→RuleBreakdown→MnemonicStrip→MnemonicFrame (via
+ * `openMnemonicStrip`, TASK-012-005) e vincula o 1º Quadro gerado à `associationId` —
+ * gravado direto via `testPrisma`, mesmo padrão de
+ * `visual-associations.model.integration.test.ts` (isola o vínculo do comportamento de
+ * `tira.service.ts`, que não é o alvo destas provas de remoção). `author` é sempre quem
+ * "alcança" o vínculo por autoria (FR-022-022) — `abre` a Tira como o próprio autor.
+ */
+async function linkFrameToAssociation(
+  author: { id: string },
+  associationId: string,
+): Promise<{ rawContentId: string; frameId: string }> {
+  const topicId = await createTopic();
+  const rawContent = await createRawContent(author.id, topicId);
+  await seedRuleBreakdown(rawContent.id);
+  const actor: ContentActor = { id: author.id, role: 'EDITOR' };
+  const strip = await openMnemonicStrip(rawContent.id, actor, testPrisma);
+  const frame = strip.frames[0];
+  if (frame === undefined) throw new Error('Tira gerada sem nenhum Quadro.');
+
+  await testPrisma.mnemonicFrame.update({
+    where: { id: frame.id },
+    data: { visualAssociationId: associationId },
+  });
+  return { rawContentId: rawContent.id, frameId: frame.id };
+}
+
+/** Soft-delete direto via `testPrisma` (setup — não é o service `softDeleteRawContent` sob teste aqui). */
+async function softDeleteRawContentRow(rawContentId: string): Promise<void> {
+  await testPrisma.rawContent.update({
+    where: { id: rawContentId },
+    data: { deletedAt: new Date() },
+  });
 }
 
 beforeEach(async () => {
@@ -444,7 +487,7 @@ describe('Guarda de escrita — mutação contável (assertVisualAssociationWrit
   });
 });
 
-describe('AC-022-014 (parte — POST/PATCH recusados a STUDENT/anônimo)', () => {
+describe('AC-022-014 (parte — POST/PATCH/DELETE recusados a STUDENT/anônimo)', () => {
   it('POST sem sessão → 401; sessão STUDENT → 403', async () => {
     const anon = await request(app)
       .post('/api/v1/visual-associations')
@@ -480,5 +523,216 @@ describe('AC-022-014 (parte — POST/PATCH recusados a STUDENT/anônimo)', () =>
       .set(...withCookie(accessStudent))
       .field('category', 'Nova categoria');
     expect(asStudent.status).toBe(403);
+  });
+
+  it('DELETE sem sessão → 401; sessão STUDENT → 403', async () => {
+    const author = await createUser('EDITOR');
+    const association = await seedVisualAssociation(author.id);
+
+    const anon = await request(app).delete(`/api/v1/visual-associations/${association.id}`);
+    expect(anon.status).toBe(401);
+
+    const student = await createUser('STUDENT');
+    const accessStudent = await seedSession(student.id);
+    const asStudent = await request(app)
+      .delete(`/api/v1/visual-associations/${association.id}`)
+      .set(...withCookie(accessStudent));
+    expect(asStudent.status).toBe(403);
+  });
+});
+
+describe('AC-022-007 (cobre FR-022-007): remoção sem nenhum vínculo exclui a associação', () => {
+  it('DELETE sobre associação sem Quadro vinculado → 204, findUnique subsequente devolve null', async () => {
+    const editor = await createUser('EDITOR');
+    const access = await seedSession(editor.id);
+    const association = await seedVisualAssociation(editor.id);
+
+    const res = await request(app)
+      .delete(`/api/v1/visual-associations/${association.id}`)
+      .set(...withCookie(access));
+
+    expect(res.status).toBe(204);
+    await expect(
+      testPrisma.visualAssociation.findUnique({ where: { id: association.id } }),
+    ).resolves.toBeNull();
+  });
+
+  it('DELETE sobre id inexistente → 404 (necessário para a guarda ter o que ler; contrato próprio de removeVisualAssociation)', async () => {
+    const editor = await createUser('EDITOR');
+    const access = await seedSession(editor.id);
+
+    const res = await request(app)
+      .delete(`/api/v1/visual-associations/${randomUUID()}`)
+      .set(...withCookie(access));
+
+    expect(res.status).toBe(404);
+  });
+});
+
+describe('AC-022-008 (cobre FR-022-008): remoção recusada por vínculo ativo', () => {
+  it('DELETE sobre associação com 1 vínculo ATIVO → 409, informa a existência de vínculos ativos, associação permanece', async () => {
+    const editor = await createUser('EDITOR');
+    const access = await seedSession(editor.id);
+    const association = await seedVisualAssociation(editor.id);
+    await linkFrameToAssociation(editor, association.id);
+
+    const res = await request(app)
+      .delete(`/api/v1/visual-associations/${association.id}`)
+      .set(...withCookie(access));
+
+    expect(res.status).toBe(409);
+    expect(res.body.error.message.length).toBeGreaterThan(0);
+
+    await expect(
+      testPrisma.visualAssociation.findUniqueOrThrow({ where: { id: association.id } }),
+    ).resolves.toMatchObject({ id: association.id });
+  });
+});
+
+describe('AC-022-016 (parte — trava de remoção desconsidera vínculo soft-deleted, FR-022-019)', () => {
+  it('único vínculo aponta para Quadro de Conteúdo bruto soft-deleted → DELETE tem sucesso (vínculo não conta como ativo)', async () => {
+    const editor = await createUser('EDITOR');
+    const access = await seedSession(editor.id);
+    const association = await seedVisualAssociation(editor.id);
+    const { rawContentId } = await linkFrameToAssociation(editor, association.id);
+    await softDeleteRawContentRow(rawContentId);
+
+    const res = await request(app)
+      .delete(`/api/v1/visual-associations/${association.id}`)
+      .set(...withCookie(access));
+
+    expect(res.status).toBe(204);
+    await expect(
+      testPrisma.visualAssociation.findUnique({ where: { id: association.id } }),
+    ).resolves.toBeNull();
+  });
+
+  it('1 vínculo SOFT-DELETED e 1 vínculo ATIVO SIMULTANEAMENTE na mesma associação → DELETE recusado (409), reachableLinks reflete só o vínculo ativo ([Testes] árvore de decisão com precedência — par que fecha a lição, mutante que inverte soft-deleted↔ativo reprova aqui)', async () => {
+    const editor = await createUser('EDITOR');
+    const access = await seedSession(editor.id);
+    const association = await seedVisualAssociation(editor.id);
+    const softDeleted = await linkFrameToAssociation(editor, association.id);
+    const active = await linkFrameToAssociation(editor, association.id);
+    await softDeleteRawContentRow(softDeleted.rawContentId);
+
+    const res = await request(app)
+      .delete(`/api/v1/visual-associations/${association.id}`)
+      .set(...withCookie(access));
+
+    expect(res.status).toBe(409);
+    expect(res.body.error.details.reachableLinks).toEqual([
+      { rawContentId: active.rawContentId, frameId: active.frameId },
+    ]);
+    expect(res.body.error.details.outOfReachCount).toBe(0);
+
+    await expect(
+      testPrisma.visualAssociation.findUniqueOrThrow({ where: { id: association.id } }),
+    ).resolves.toMatchObject({ id: association.id });
+  });
+});
+
+describe('AC-022-019 (cobre FR-022-022): identificação por alcance de autoria quando a remoção é recusada', () => {
+  it('associação vinculada a Quadros de Tiras de autores diferentes: EDITOR recebe em reachableLinks só o que alcança; outOfReachCount reflete o resto SEM identificar', async () => {
+    const editorA = await createUser('EDITOR');
+    const editorB = await createUser('EDITOR');
+    const accessA = await seedSession(editorA.id);
+    const association = await seedVisualAssociation(editorA.id);
+    const ownLink = await linkFrameToAssociation(editorA, association.id);
+    await linkFrameToAssociation(editorB, association.id);
+
+    const res = await request(app)
+      .delete(`/api/v1/visual-associations/${association.id}`)
+      .set(...withCookie(accessA));
+
+    expect(res.status).toBe(409);
+    expect(res.body.error.details.reachableLinks).toEqual([
+      { rawContentId: ownLink.rawContentId, frameId: ownLink.frameId },
+    ]);
+    expect(res.body.error.details.outOfReachCount).toBe(1);
+    // SEM identificar: nenhum rawContentId/frameId de editorB vaza para o EDITOR.
+    expect(JSON.stringify(res.body.error.details)).not.toContain(editorB.id);
+  });
+
+  it('o mesmo cenário, acionado por ADMIN: todos os vínculos identificados em reachableLinks, outOfReachCount 0', async () => {
+    const editorA = await createUser('EDITOR');
+    const editorB = await createUser('EDITOR');
+    const admin = await createUser('ADMIN');
+    const accessAdmin = await seedSession(admin.id);
+    const association = await seedVisualAssociation(editorA.id);
+    const linkA = await linkFrameToAssociation(editorA, association.id);
+    const linkB = await linkFrameToAssociation(editorB, association.id);
+
+    const res = await request(app)
+      .delete(`/api/v1/visual-associations/${association.id}`)
+      .set(...withCookie(accessAdmin));
+
+    expect(res.status).toBe(409);
+    expect(
+      [...(res.body.error.details.reachableLinks as unknown[])].sort((a, b) =>
+        (a as { frameId: string }).frameId.localeCompare((b as { frameId: string }).frameId),
+      ),
+    ).toEqual(
+      [
+        { rawContentId: linkA.rawContentId, frameId: linkA.frameId },
+        { rawContentId: linkB.rawContentId, frameId: linkB.frameId },
+      ].sort((a, b) => a.frameId.localeCompare(b.frameId)),
+    );
+    expect(res.body.error.details.outOfReachCount).toBe(0);
+  });
+});
+
+describe('Corolário de ordem (decisão do PLAN aplicada) — alcance por autoria roda ANTES de qualquer exposição do estado ativo/soft-deleted de um vínculo fora do alcance', () => {
+  it('2 vínculos fora do alcance do EDITOR (1 soft-deleted, 1 ativo, de OUTRO autor) → nenhum aparece em reachableLinks; outOfReachCount é a MESMA contagem agregada (2), indistinguível entre os dois estados', async () => {
+    const editorA = await createUser('EDITOR');
+    const editorB = await createUser('EDITOR');
+    const accessA = await seedSession(editorA.id);
+    const association = await seedVisualAssociation(editorA.id);
+    const outOfReachSoftDeleted = await linkFrameToAssociation(editorB, association.id);
+    await linkFrameToAssociation(editorB, association.id);
+    await softDeleteRawContentRow(outOfReachSoftDeleted.rawContentId);
+
+    const res = await request(app)
+      .delete(`/api/v1/visual-associations/${association.id}`)
+      .set(...withCookie(accessA));
+
+    expect(res.status).toBe(409);
+    expect(res.body.error.details.reachableLinks).toEqual([]);
+    // 2 vínculos de editorB fora do alcance — 1 soft-deleted, 1 ativo — contados JUNTOS,
+    // sem distinção: outOfReachCount não é uma pista sobre o estado do dado que o
+    // EDITOR não alcança.
+    expect(res.body.error.details.outOfReachCount).toBe(2);
+  });
+});
+
+describe('Guarda de escrita — mutação contável (assertVisualAssociationWritable, 2º método, DEC-023-006)', () => {
+  it('EDITOR B (outro autor) tenta DELETE de associação SEM vínculo ativo → 403 com a MESMA mensagem literal de recusa de escrita que PATCH usa; linha permanece INTOCADA; ADMIN, no mesmo cenário, remove com sucesso (AC-022-020, parte)', async () => {
+    const editorA = await createUser('EDITOR');
+    const editorB = await createUser('EDITOR');
+    const admin = await createUser('ADMIN');
+    const associationForEditorB = await seedVisualAssociation(editorA.id);
+    const associationForAdmin = await seedVisualAssociation(editorA.id);
+    const accessB = await seedSession(editorB.id);
+    const accessAdmin = await seedSession(admin.id);
+
+    const deniedRes = await request(app)
+      .delete(`/api/v1/visual-associations/${associationForEditorB.id}`)
+      .set(...withCookie(accessB));
+
+    expect(deniedRes.status).toBe(403);
+    expect(deniedRes.body.error.message).toBe(
+      'Você não tem permissão para alterar esta associação visual.',
+    );
+    await expect(
+      testPrisma.visualAssociation.findUniqueOrThrow({ where: { id: associationForEditorB.id } }),
+    ).resolves.toMatchObject({ id: associationForEditorB.id });
+
+    const adminRes = await request(app)
+      .delete(`/api/v1/visual-associations/${associationForAdmin.id}`)
+      .set(...withCookie(accessAdmin));
+
+    expect(adminRes.status).toBe(204);
+    await expect(
+      testPrisma.visualAssociation.findUnique({ where: { id: associationForAdmin.id } }),
+    ).resolves.toBeNull();
   });
 });

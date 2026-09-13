@@ -11,11 +11,15 @@ import {
   updateVisualAssociationBodySchema,
   visualAssociationIdParamSchema,
 } from './visual-associations.schema';
-import { createVisualAssociation, updateVisualAssociation } from './visual-associations.service';
+import {
+  createVisualAssociation,
+  removeVisualAssociation,
+  updateVisualAssociation,
+} from './visual-associations.service';
 
 /**
  * Superfície HTTP de escrita do acervo de associações visuais (COMP-023-006) — cobre
- * hoje criação e edição; listagem, sugestão de categoria, remoção e entrega do binário
+ * hoje criação, edição e remoção; listagem, sugestão de categoria e entrega do binário
  * ESTENDEM este módulo (`visualAssociationsRoutes`), não o recriam.
  *
  * `upload` (`multer`, `memoryStorage()` — DEC-023-003, nunca `diskStorage()`: o service
@@ -27,9 +31,10 @@ import { createVisualAssociation, updateVisualAssociation } from './visual-assoc
  * teto de tamanho de `category`/`cognitiveDescription` que vale nas DUAS vias é o
  * `.max(500, ...)` do schema Zod (`visual-associations.schema.ts`), não `fieldSize`.
  *
- * `verifyOrigin` é o 1º handler nas 2 rotas (mutações — defesa CSRF). A ordem
- * `verifyOrigin` → `upload.single('image')` → `requireRole(...)` é a do COMP-023-006 do
- * PLAN: `requireAuth` (barreira global, `routes.ts`) já resolve sessão + papel via
+ * `verifyOrigin` é o 1º handler nas 3 rotas mutantes (defesa CSRF). Nas 2 com arquivo a
+ * ordem é `verifyOrigin` → `upload.single('image')` → `requireRole(...)` (COMP-023-006 do
+ * PLAN); `DELETE` não tem arquivo, então é `verifyOrigin` → `requireRole(...)` direto.
+ * `requireAuth` (barreira global, `routes.ts`) já resolve sessão + papel via
  * `ROUTE_ROLES`/`rolesForPath` ANTES de qualquer rota específica rodar — uma sessão sem
  * papel EDITOR/ADMIN nunca alcança este módulo, então `upload.single` só processa
  * multipart de quem já passou a barreira; `requireRole` aqui é defesa em profundidade
@@ -109,5 +114,21 @@ visualAssociationsRoutes.patch(
 
     const updated = await updateVisualAssociation(id, input, file, actorOf(req));
     res.json(updated);
+  },
+);
+
+/**
+ * DELETE /visual-associations/:id — remove a associação visual (FR-022-007/008);
+ * guarda de autoria e trava de vínculo ativo rodam dentro do service (DEC-023-006,
+ * decisão 4.140). Sem corpo de sucesso: `removeVisualAssociation` devolve `void`.
+ */
+visualAssociationsRoutes.delete(
+  '/visual-associations/:id',
+  verifyOrigin,
+  requireRole('DELETE', '/visual-associations/:id', 'EDITOR', 'ADMIN'),
+  async (req, res) => {
+    const { id } = visualAssociationIdParamSchema.parse(req.params);
+    await removeVisualAssociation(id, actorOf(req));
+    res.status(204).end();
   },
 );
