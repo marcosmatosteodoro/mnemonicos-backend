@@ -59,9 +59,9 @@ type VisualAssociationClient = Pick<typeof prisma, 'visualAssociation' | '$trans
 
 /**
  * Guarda pura (sem I/O, DEC-023-006): recebe a linha já lida. EDITOR só escreve a
- * própria associação; ADMIN irrestrito. NASCE nesta TASK — só `updateVisualAssociation`
- * chama aqui (`removeVisualAssociation`, TASK-023-010, é a 2ª chamadora — nunca herdada
- * desta). Erro de escrita é 403 (`ForbiddenError`), não 404: a existência da associação
+ * própria associação; ADMIN irrestrito. Toda função exportada que escreve nesta
+ * entidade chama esta guarda com prova comportamental PRÓPRIA (nunca herdada de
+ * outra chamadora). Erro de escrita é 403 (`ForbiddenError`), não 404: a existência da associação
  * já é pública (leitura/busca/vínculo comuns a todo EDITOR/ADMIN, FR-022-023) — recusar
  * com 403 explícito não vaza nada que o ator já não soubesse (ao contrário do padrão de
  * `RawContent`/`assertRawContentReachable`, que mascara 403 como 404 para não revelar

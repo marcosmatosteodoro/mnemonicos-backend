@@ -15,9 +15,9 @@ import { closeTestDb, Prisma, resetDb, testPrisma } from './db';
 /**
  * `VisualAssociation` / `VisualAssociationLinkEvent` — prova de contrato do
  * schema (TASK-023-001 / COMP-023-004), sem passar por
- * `visual-associations.service.ts` (ainda inexistente, TASK-023-005 em
- * diante). Grava/lê direto via `testPrisma`, mesmo molde de
- * `production-events.model.integration.test.ts`.
+ * `visual-associations.service.ts` (deliberadamente — grava/lê direto via
+ * `testPrisma`, mesmo molde de `production-events.model.integration.test.ts`,
+ * para isolar o contrato do schema do comportamento do service).
  */
 
 beforeEach(async () => {
@@ -48,7 +48,8 @@ describe('VisualAssociation — FK SetNull de MnemonicFrame.visualAssociationId 
 
     const association = await createVisualAssociation(editor.id);
 
-    // Vínculo via schema puro (COMP-023-008 ainda não existe, TASK-023-008).
+    // Vínculo gravado direto via Prisma — isola o contrato do schema da lógica
+    // de vínculo real (link/unlink), que mora em `tira.service.ts`.
     await testPrisma.mnemonicFrame.update({
       where: { id: frame.id },
       data: { visualAssociationId: association.id },

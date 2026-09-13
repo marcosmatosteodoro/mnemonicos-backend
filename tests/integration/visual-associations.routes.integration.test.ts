@@ -194,7 +194,7 @@ describe('AC-022-003 (cobre FR-022-003, NFR-022-004): arquivo acima do teto conf
   });
 });
 
-describe('Limites de multipart além do arquivo (achado do security-engineer, gate 8 da Wave 1)', () => {
+describe('Limites de multipart além do arquivo (NFR-022-004, campos de texto sem .max no Zod)', () => {
   it('campo category com payload muito maior que 4096 bytes → multipart recusado (400 via a EMENDA do error-handler.ts), nunca aceito silenciosamente', async () => {
     const editor = await createUser('EDITOR');
     const access = await seedSession(editor.id);
@@ -297,8 +297,7 @@ describe('AC-022-006 (parte — persistência via PATCH, sem criar nova entidade
     expect(editCategory.status).toBe(200);
     expect(editCategory.body.id).toBe(original.id);
     expect(editCategory.body.category).toBe('Categoria nova');
-    // `select` explícito (achado do security-engineer, gate 8 da Wave 1): a resposta de
-    // PATCH nunca contém o binário.
+    // `select` explícito na resposta: PATCH nunca devolve o binário (imageData).
     expect(editCategory.body).not.toHaveProperty('imageData');
 
     const editDescription = await request(app)
@@ -393,7 +392,7 @@ describe('Contrato do item (DEC-023-012): authorId espúrio nunca vence o autor 
   });
 });
 
-describe('Guarda de escrita — mutação contável (assertVisualAssociationWritable, DEC-023-006, decisão 4.139/4.232)', () => {
+describe('Guarda de escrita — mutação contável (assertVisualAssociationWritable, DEC-023-006)', () => {
   it('EDITOR B (outro autor) tenta PATCH → 403 com a mesma mensagem literal de recusa de escrita; linha permanece INTOCADA; ADMIN, no mesmo cenário, edita com sucesso (AC-022-020, parte)', async () => {
     const editorA = await createUser('EDITOR');
     const editorB = await createUser('EDITOR');

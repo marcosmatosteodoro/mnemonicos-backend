@@ -14,10 +14,9 @@ import {
 import { createVisualAssociation, updateVisualAssociation } from './visual-associations.service';
 
 /**
- * Superfície HTTP de escrita do acervo de associações visuais (COMP-023-006 /
- * TASK-023-008) — só as 2 rotas de criação/edição desta TASK; listagem, sugestão de
- * categoria, remoção e entrega do binário ESTENDEM este módulo
- * (`visualAssociationsRoutes`), não o recriam.
+ * Superfície HTTP de escrita do acervo de associações visuais (COMP-023-006) — cobre
+ * hoje criação e edição; listagem, sugestão de categoria, remoção e entrega do binário
+ * ESTENDEM este módulo (`visualAssociationsRoutes`), não o recriam.
  *
  * `upload` (`multer`, `memoryStorage()` — DEC-023-003, nunca `diskStorage()`: o service
  * só persiste depois de `detectImageSignature` confirmar o formato) é instanciado UMA

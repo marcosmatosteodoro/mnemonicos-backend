@@ -221,13 +221,9 @@ describe('.env.example — carrega com sucesso no envSchema real (nunca derruba 
     const content = readFileSync(join(__dirname, '..', '..', '.env.example'), 'utf8');
     const parsedFile = dotenv.parse(content);
 
-    let result: { success: boolean; error?: unknown } | undefined;
-    jest.isolateModules(() => {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const { envSchema } = require('../../src/config/env') as typeof EnvModule;
-      result = envSchema.safeParse(parsedFile);
-    });
+    const { envSchema } = loadEnvModule();
+    const result = envSchema.safeParse(parsedFile);
 
-    expect(result?.success).toBe(true);
+    expect(result.success).toBe(true);
   });
 });
