@@ -1,5 +1,6 @@
 import {
   addMnemonicFrameSchema,
+  linkVisualAssociationSchema,
   mnemonicFrameIdParamSchema,
   reorderMnemonicFramesSchema,
   updateMnemonicFrameSchema,
@@ -91,6 +92,30 @@ describe('mnemonicFrameIdParamSchema', () => {
     if (!result.success) {
       expect(
         result.error.issues.some((i) => /identificador de quadro inválido/i.test(i.message)),
+      ).toBe(true);
+    }
+  });
+});
+
+describe('linkVisualAssociationSchema', () => {
+  it('aceita um UUID v7 válido', () => {
+    const result = linkVisualAssociationSchema.safeParse({
+      visualAssociationId: '018f4d4a-1b1e-7c3a-8b1a-000000000004',
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejeita visualAssociationId mal formado com mensagem pt-BR', () => {
+    const result = linkVisualAssociationSchema.safeParse({
+      visualAssociationId: 'nao-e-uuid',
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(
+        result.error.issues.some((i) =>
+          /identificador de associação visual inválido/i.test(i.message),
+        ),
       ).toBe(true);
     }
   });
