@@ -11,9 +11,8 @@ import { z } from 'zod';
 /**
  * Criação de associação visual (FR-022-001/002/003/004). `error` no topo de cada
  * `z.string()` cobre o campo AUSENTE (`invalid_type`); `.min(1, ...)` cobre o campo
- * PRESENTE e vazio (`too_small`) — mesma mensagem pt-BR nos dois ramos, exigido pelo
- * Critério de pronto desta TASK ("rejeita... e a ausência dos dois campos... com
- * mensagem pt-BR").
+ * PRESENTE e vazio (`too_small`) — sem o `error` no topo, campo ausente cai no
+ * texto padrão em inglês do Zod, não na mensagem pt-BR abaixo.
  */
 export const createVisualAssociationBodySchema = z.object({
   category: z.string({ error: 'Informe a categoria.' }).trim().min(1, 'Informe a categoria.'),
@@ -54,11 +53,8 @@ export const listVisualAssociationsQuerySchema = z.object({
 export type ListVisualAssociationsQuery = z.infer<typeof listVisualAssociationsQuerySchema>;
 
 /**
- * Sugestão de categoria (FR-022-025). Mensagem pt-BR explícita nos dois ramos
- * (ausente/vazio) — exigida pelo Critério de pronto desta TASK; a interface pública
- * do PLAN-023 (COMP-023-001) omite a mensagem, mas Critérios de pronto prevalecem
- * sobre a transcrição literal do Escopo quando os dois divergem (mesma régua
- * aplicada a "Implementação sugerida").
+ * Sugestão de categoria (FR-022-025). Mesmo par `error`/`.min(1, ...)` de
+ * `createVisualAssociationBodySchema` — mensagem pt-BR nos dois ramos (ausente/vazio).
  */
 export const suggestCategoriesQuerySchema = z.object({
   q: z.string({ error: 'Informe o termo de busca.' }).trim().min(1, 'Informe o termo de busca.'),
