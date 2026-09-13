@@ -8,6 +8,10 @@ import { ACCESS_COOKIE } from '../../src/http/cookies';
 import { prisma } from '../../src/lib/prisma';
 import { generateToken, hashToken } from '../../src/lib/tokens';
 import { createUser } from '../support/production-events-fixtures';
+import {
+  createVisualAssociation as seedVisualAssociation,
+  PNG_FIXTURE_BUFFER as PNG_FIXTURE,
+} from '../support/visual-association-fixtures';
 import { closeTestDb, resetDb, testPrisma } from './db';
 
 /**
@@ -26,11 +30,9 @@ import { closeTestDb, resetDb, testPrisma } from './db';
 /**
  * Prefixos de magic bytes reais (mesmos usados em `image-signature.test.ts` e
  * `visual-association-storage.integration.test.ts`) — bastam para `detectImageSignature`
- * (que só inspeciona o cabeçalho), não são arquivos decodificáveis inteiros.
+ * (que só inspeciona o cabeçalho), não são arquivos decodificáveis inteiros. `PNG_FIXTURE`
+ * é `PNG_FIXTURE_BUFFER` de `tests/support/visual-association-fixtures.ts`.
  */
-const PNG_FIXTURE = Buffer.from([
-  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
-]);
 const JPEG_FIXTURE = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46]);
 const WEBP_FIXTURE = Buffer.from([
   0x52, 0x49, 0x46, 0x46, 0x00, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50,
@@ -73,19 +75,6 @@ async function seedSession(userId: string): Promise<string> {
 
 function withCookie(access: string): [string, string] {
   return ['Cookie', `${ACCESS_COOKIE}=${access}`];
-}
-
-/** Associação visual gravada direto via `testPrisma` — fixture de setup, fora do service sob teste. */
-async function seedVisualAssociation(authorId: string) {
-  return testPrisma.visualAssociation.create({
-    data: {
-      authorId,
-      category: `Categoria ${randomUUID()}`,
-      cognitiveDescription: 'Cena que ancora a regra na memória.',
-      imageData: PNG_FIXTURE,
-      mimeType: 'image/png',
-    },
-  });
 }
 
 beforeEach(async () => {
@@ -219,9 +208,34 @@ describe('Limites de multipart além do arquivo (achado do security-engineer, ga
       .field('cognitiveDescription', 'Ilustra o fato gerador.')
       .attach('image', PNG_FIXTURE, 'imagem.png');
 
-    expect([400, 413]).toContain(res.status);
+    expect(res.status).toBe(400);
+    expect(Object.keys(res.body.error).sort()).toEqual(['code', 'message']);
+    expect(JSON.stringify(res.body)).not.toMatch(/field|stack|multer/i);
+
     const after = await testPrisma.visualAssociation.count();
     expect(after).toBe(before);
+  });
+});
+
+describe('Teto de tamanho de category/cognitiveDescription cobre a via JSON, não só multipart', () => {
+  it('PATCH com Content-Type: application/json e category acima do teto → 422, associação existente permanece intocada', async () => {
+    const editor = await createUser('EDITOR');
+    const access = await seedSession(editor.id);
+    const existing = await seedVisualAssociation(editor.id);
+    const oversizedCategory = 'a'.repeat(501);
+
+    const res = await request(app)
+      .patch(`/api/v1/visual-associations/${existing.id}`)
+      .set(...withCookie(access))
+      .send({ category: oversizedCategory });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error.code).toBe('VALIDATION_ERROR');
+
+    const untouched = await testPrisma.visualAssociation.findUniqueOrThrow({
+      where: { id: existing.id },
+    });
+    expect(untouched.category).toBe(existing.category);
   });
 });
 
@@ -313,8 +327,8 @@ describe('AC-022-006 (parte — persistência via PATCH, sem criar nova entidade
   });
 });
 
-describe('Contrato do item (DEC-023-012, faceta de transporte): 3º campo de texto (spoof de authorId) esbarra no teto fields:2 antes de chegar ao service', () => {
-  it('POST com category + cognitiveDescription + authorId (3 campos) → 400 (LIMIT_FIELD_COUNT via a EMENDA do error-handler.ts), nenhuma linha criada com o authorId injetado — a prova de que o SERVICE ignora `input.authorId` mesmo quando presente é feita diretamente sobre `createVisualAssociation` em visual-associations.service.integration.test.ts (o teto de campos desta rota impede o cenário de chegar tão longe por HTTP)', async () => {
+describe('Contrato do item (DEC-023-012): authorId espúrio nunca vence o autor real', () => {
+  it('POST com category + cognitiveDescription + authorId (3 campos) → 400 (LIMIT_FIELD_COUNT via a EMENDA do error-handler.ts), nenhuma linha criada com o authorId injetado', async () => {
     const editor = await createUser('EDITOR');
     const other = await createUser('EDITOR');
     const access = await seedSession(editor.id);
@@ -328,11 +342,54 @@ describe('Contrato do item (DEC-023-012, faceta de transporte): 3º campo de tex
       .attach('image', PNG_FIXTURE, 'imagem.png');
 
     expect(res.status).toBe(400);
+    expect(Object.keys(res.body.error).sort()).toEqual(['code', 'message']);
+    expect(JSON.stringify(res.body)).not.toMatch(/field|stack|multer/i);
 
     const rowsForOther = await testPrisma.visualAssociation.count({
       where: { authorId: other.id },
     });
     expect(rowsForOther).toBe(0);
+  });
+
+  it('PATCH multipart com exatamente category + authorId (2 campos, dentro do teto fields:2) → 200, authorId da linha permanece o autor original', async () => {
+    const editor = await createUser('EDITOR');
+    const other = await createUser('EDITOR');
+    const access = await seedSession(editor.id);
+    const existing = await seedVisualAssociation(editor.id);
+
+    const res = await request(app)
+      .patch(`/api/v1/visual-associations/${existing.id}`)
+      .set(...withCookie(access))
+      .field('category', 'Categoria via multipart')
+      .field('authorId', other.id);
+
+    expect(res.status).toBe(200);
+    expect(res.body.authorId).toBe(editor.id);
+
+    const row = await testPrisma.visualAssociation.findUniqueOrThrow({
+      where: { id: existing.id },
+    });
+    expect(row.authorId).toBe(editor.id);
+  });
+
+  it('PATCH com Content-Type: application/json e { category, authorId } → 200, authorId da linha permanece o autor original', async () => {
+    const editor = await createUser('EDITOR');
+    const other = await createUser('EDITOR');
+    const access = await seedSession(editor.id);
+    const existing = await seedVisualAssociation(editor.id);
+
+    const res = await request(app)
+      .patch(`/api/v1/visual-associations/${existing.id}`)
+      .set(...withCookie(access))
+      .send({ category: 'Categoria via JSON', authorId: other.id });
+
+    expect(res.status).toBe(200);
+    expect(res.body.authorId).toBe(editor.id);
+
+    const row = await testPrisma.visualAssociation.findUniqueOrThrow({
+      where: { id: existing.id },
+    });
+    expect(row.authorId).toBe(editor.id);
   });
 });
 

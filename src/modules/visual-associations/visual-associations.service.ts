@@ -9,18 +9,16 @@ import type {
 } from './visual-associations.schema';
 
 /**
- * Núcleo do acervo de associações visuais (COMP-023-005 / TASK-023-008): criação
- * (`createVisualAssociation`) e edição in-place (`updateVisualAssociation`), primeira
- * fatia de ESCRITA — mais a guarda `assertVisualAssociationWritable` (DEC-023-006), que
- * nasce aqui e é chamada só por `updateVisualAssociation` nesta TASK (`removeVisualAssociation`,
- * TASK-023-010, é a 2ª chamadora). Listagem/busca/remoção/entrega do binário são TASKs
- * seguintes (TASK-023-010/014/016), fora deste arquivo por ora.
+ * Núcleo do acervo de associações visuais (COMP-023-005): criação
+ * (`createVisualAssociation`) e edição in-place (`updateVisualAssociation`) — mais a
+ * guarda `assertVisualAssociationWritable` (DEC-023-006), chamada aqui só por
+ * `updateVisualAssociation`. Listagem/busca/remoção/entrega do binário ficam fora
+ * deste arquivo.
  */
 
 /**
- * `select` explícito (achado do security-engineer, gate 8 da Wave 1): exclui `imageData`
- * do payload de resposta de `create`/`update` — o binário nunca trafega na resposta JSON
- * de criação/edição, só via `GET .../:id/image` (TASK-023-016).
+ * `select` explícito: exclui `imageData` do payload de resposta de `create`/`update` —
+ * o binário nunca trafega na resposta JSON de criação/edição, só via `GET .../:id/image`.
  */
 const VISUAL_ASSOCIATION_DETAIL_SELECT = {
   id: true,

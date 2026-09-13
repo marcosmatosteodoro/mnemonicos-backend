@@ -1,6 +1,3 @@
-import { randomUUID } from 'node:crypto';
-
-import type { ContentActor } from '../../src/modules/contents/contents.service';
 import {
   addMnemonicFrame,
   openMnemonicStrip,
@@ -12,6 +9,7 @@ import {
   createUser,
   seedRuleBreakdown,
 } from '../support/production-events-fixtures';
+import { actorOf, createVisualAssociation } from '../support/visual-association-fixtures';
 import { closeTestDb, Prisma, resetDb, testPrisma } from './db';
 
 /**
@@ -21,22 +19,6 @@ import { closeTestDb, Prisma, resetDb, testPrisma } from './db';
  * diante). Grava/lê direto via `testPrisma`, mesmo molde de
  * `production-events.model.integration.test.ts`.
  */
-
-function actorOf(user: { id: string; role: 'EDITOR' | 'ADMIN' | 'STUDENT' }): ContentActor {
-  return { id: user.id, role: user.role };
-}
-
-async function createVisualAssociation(authorId: string) {
-  return testPrisma.visualAssociation.create({
-    data: {
-      authorId,
-      category: `Categoria ${randomUUID()}`,
-      cognitiveDescription: 'Cena que ancora a regra na memória.',
-      imageData: Buffer.from([0x89, 0x50, 0x4e, 0x47]),
-      mimeType: 'image/png',
-    },
-  });
-}
 
 beforeEach(async () => {
   await resetDb();

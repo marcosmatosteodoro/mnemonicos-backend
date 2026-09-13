@@ -3,31 +3,15 @@ import type { prisma } from '../../lib/prisma';
 /**
  * Camada de acesso ao binário no Postgres (COMP-023-003 / DEC-023-002): o
  * binário da imagem é a coluna `imageData Bytes` da própria linha
- * `VisualAssociation` — não é módulo de filesystem, e as 2 funções nunca abrem
- * transação própria. Operam sobre o MESMO client/`tx` recebido do chamador
- * (COMP-023-005 decide QUANDO chamar, dentro do `create`/`update` da linha) —
- * mesmo padrão de tipo de parâmetro injetável de
- * `MnemonicStripClient`/`MnemonicFrameWriteClient` em `tira.service.ts`.
+ * `VisualAssociation` — não é módulo de filesystem. Opera sobre o MESMO
+ * client/`tx` recebido do chamador, nunca abrindo transação própria — mesmo
+ * padrão de tipo de parâmetro injetável de
+ * `MnemonicStripClient`/`MnemonicFrameWriteClient` em `tira.service.ts`. A
+ * escrita do binário roda no MESMO INSERT/UPDATE do Prisma em
+ * `visual-associations.service.ts` (`create`/`update` com `imageData` no
+ * `data`), não por uma função de escrita separada aqui.
  */
 type PrismaClientOrTx = Pick<typeof prisma, 'visualAssociation'>;
-
-/**
- * Grava o binário já validado por assinatura de bytes (`image-signature.ts`,
- * fora desta camada) na coluna `imageData` da linha existente.
- */
-export async function saveVisualAssociationImage(
-  tx: PrismaClientOrTx,
-  id: string,
-  buffer: Buffer,
-): Promise<void> {
-  await tx.visualAssociation.update({
-    where: { id },
-    // `Buffer` é `Uint8Array<ArrayBufferLike>`; o campo `Bytes` do Prisma
-    // espera `Uint8Array<ArrayBuffer>` — só o parâmetro genérico diverge (o
-    // buffer em memória nunca é `SharedArrayBuffer` nesta aplicação).
-    data: { imageData: buffer as unknown as Uint8Array<ArrayBuffer> },
-  });
-}
 
 /**
  * Lê o binário da linha, ou `null` se o id não existir — nunca lança para

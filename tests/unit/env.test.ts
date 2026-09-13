@@ -147,6 +147,29 @@ describe('config/env — variáveis da fatia de acesso interno', () => {
   });
 });
 
+describe('config/env — VISUAL_ASSOCIATIONS_MAX_FILE_SIZE_BYTES (PLAN-023/F5)', () => {
+  const originalEnv = { ...process.env };
+
+  afterEach(() => {
+    process.env = { ...originalEnv };
+  });
+
+  it('envSchema.safeParse sem a chave no ambiente usa o default 5242880', () => {
+    delete process.env.VISUAL_ASSOCIATIONS_MAX_FILE_SIZE_BYTES;
+
+    let result:
+      { success: boolean; data?: { VISUAL_ASSOCIATIONS_MAX_FILE_SIZE_BYTES: number } } | undefined;
+    jest.isolateModules(() => {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { envSchema } = require('../../src/config/env') as typeof EnvModule;
+      result = envSchema.safeParse(process.env);
+    });
+
+    expect(result?.success).toBe(true);
+    expect(result?.data?.VISUAL_ASSOCIATIONS_MAX_FILE_SIZE_BYTES).toBe(5242880);
+  });
+});
+
 describe('.env.example — chaves da fatia de acesso interno', () => {
   it('lista cada uma das 9 chaves novas do envSchema', () => {
     const content = readFileSync(join(__dirname, '..', '..', '.env.example'), 'utf8');

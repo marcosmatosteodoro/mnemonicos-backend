@@ -12,14 +12,23 @@ import { z } from 'zod';
  * Criação de associação visual (FR-022-001/002/003/004). `error` no topo de cada
  * `z.string()` cobre o campo AUSENTE (`invalid_type`); `.min(1, ...)` cobre o campo
  * PRESENTE e vazio (`too_small`) — sem o `error` no topo, campo ausente cai no
- * texto padrão em inglês do Zod, não na mensagem pt-BR abaixo.
+ * texto padrão em inglês do Zod, não na mensagem pt-BR abaixo. `.max(500, ...)` é o
+ * teto de tamanho: esta é a ÚNICA fronteira que cobre as duas vias de transporte —
+ * `multer`'s `limits.fieldSize` (`visual-associations.routes.ts`) só atua sobre corpo
+ * multipart, então um `PATCH`/`POST` com `Content-Type: application/json` passaria
+ * ilimitado (até o teto de `express.json()` do app inteiro) sem este `.max()`.
  */
 export const createVisualAssociationBodySchema = z.object({
-  category: z.string({ error: 'Informe a categoria.' }).trim().min(1, 'Informe a categoria.'),
+  category: z
+    .string({ error: 'Informe a categoria.' })
+    .trim()
+    .min(1, 'Informe a categoria.')
+    .max(500, 'Categoria excede o tamanho máximo permitido (500 caracteres).'),
   cognitiveDescription: z
     .string({ error: 'Informe a função cognitiva da imagem.' })
     .trim()
-    .min(1, 'Informe a função cognitiva da imagem.'),
+    .min(1, 'Informe a função cognitiva da imagem.')
+    .max(500, 'Função cognitiva da imagem excede o tamanho máximo permitido (500 caracteres).'),
 });
 
 export type CreateVisualAssociationBodyInput = z.infer<typeof createVisualAssociationBodySchema>;

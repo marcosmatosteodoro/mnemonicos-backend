@@ -16,16 +16,17 @@ import { createVisualAssociation, updateVisualAssociation } from './visual-assoc
 /**
  * Superfície HTTP de escrita do acervo de associações visuais (COMP-023-006 /
  * TASK-023-008) — só as 2 rotas de criação/edição desta TASK; listagem, sugestão de
- * categoria, remoção e entrega do binário são TASKs seguintes (TASK-023-010/014/016),
- * que ESTENDEM este módulo (`visualAssociationsRoutes`), não o recriam.
+ * categoria, remoção e entrega do binário ESTENDEM este módulo
+ * (`visualAssociationsRoutes`), não o recriam.
  *
  * `upload` (`multer`, `memoryStorage()` — DEC-023-003, nunca `diskStorage()`: o service
  * só persiste depois de `detectImageSignature` confirmar o formato) é instanciado UMA
  * ÚNICA VEZ no topo do módulo, nunca por requisição. `limits.fileSize` cobre o ARQUIVO
  * (`NFR-022-004`/`env.VISUAL_ASSOCIATIONS_MAX_FILE_SIZE_BYTES`); `files`/`fields`/
- * `fieldSize` (achado do security-engineer, gate 8 da Wave 1, decisão 4.140) cobrem o
- * resto do corpo multipart — sem eles, `category`/`cognitiveDescription` (schemas Zod
- * sem `.max()`) ficariam ilimitados em tamanho/quantidade de campos.
+ * `fieldSize` cobrem quantidade/tamanho de campo NO TRANSPORTE MULTIPART — o `multer`
+ * não atua em corpo `application/json` (só intercepta `multipart/form-data`), então o
+ * teto de tamanho de `category`/`cognitiveDescription` que vale nas DUAS vias é o
+ * `.max(500, ...)` do schema Zod (`visual-associations.schema.ts`), não `fieldSize`.
  *
  * `verifyOrigin` é o 1º handler nas 2 rotas (mutações — defesa CSRF). A ordem
  * `verifyOrigin` → `upload.single('image')` → `requireRole(...)` é a do COMP-023-006 do
