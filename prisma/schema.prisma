@@ -70,9 +70,15 @@ enum ProductionStageType {
   CONTEUDO_BRUTO
   QUEBRA_DA_REGRA
   TIRA_MNEMONICA
-  // Fatias futuras (F5 biblioteca visual, F6 publicação, F8 versionamento, F9
-  // QC) acrescentam valores aqui — migração aditiva, sem redesenho do
-  // mecanismo (NFR-009-001/DEC-010-001, agora também NFR-011-004).
+  // NOVO (F5) — aditivo, sem redesenho do mecanismo (NFR-009-001/DEC-010-001).
+  // Comentário em linha própria (não inline após o valor): o extrator textual
+  // de domain-types-parity.test.ts (`extractPrismaEnum`) parte o corpo do enum
+  // por linha e só descarta linha que comece com `//` — comentário colado ao
+  // valor entraria como parte do próprio literal extraído.
+  ASSOCIACAO_VISUAL
+  // Fatias futuras (F6 publicação, F8 versionamento, F9 QC) acrescentam
+  // valores aqui — migração aditiva, sem redesenho do mecanismo
+  // (NFR-009-001/DEC-010-001, agora também NFR-011-004).
 }
 
 enum ProductionEventTransition {
@@ -105,6 +111,8 @@ model User {
   editedRawContents RawContent[] @relation("RawContentLastEditor")
 
   productionStageEvents ProductionStageEvent[]
+
+  visualAssociations VisualAssociation[] @relation("VisualAssociationAuthor")
 
   @@map("users")
 }
@@ -389,11 +397,60 @@ model MnemonicFrame {
   /// (A-011-011, DEC-012-004).
   originBlock String?
 
+  /// NOVO (F5): no máximo 1 associação visual por Quadro (FR-022-021). SetNull: remover a
+  /// VisualAssociation exige trava de vínculo ativo (FR-022-008) — nunca chega a apagar
+  /// um MnemonicFrame; a direção inversa (remover o Quadro) apaga a linha inteira e o
+  /// vínculo some junto, sem tocar a VisualAssociation (FR-022-020).
+  visualAssociationId String?
+  visualAssociation   VisualAssociation? @relation(fields: [visualAssociationId], references: [id], onDelete: SetNull)
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@unique([stripId, position])
   @@map("mnemonic_frames")
+}
+
+/// Acervo de associações visuais reutilizáveis (F5, SPEC-022) — imagem raster
+/// validada por assinatura de bytes, categoria e função cognitiva escritas
+/// pelo EDITOR (DEC-023-002/DEC-023-003).
+model VisualAssociation {
+  id String @id @default(uuid(7))
+
+  authorId String
+  /// Restrict: mesmo padrão de RawContent.authorId — autor com associação criada não pode
+  /// ser hard-deletado enquanto ela existir (DEC-006-008).
+  author   User   @relation("VisualAssociationAuthor", fields: [authorId], references: [id], onDelete: Restrict)
+
+  category             String
+  cognitiveDescription String
+
+  /// Binário da imagem, guardado na própria linha (bytea) — DEC-023-002. mimeType é
+  /// sempre o detectado por assinatura de bytes (image-signature.ts), nunca o
+  /// Content-Type declarado pelo cliente (NFR-022-001).
+  imageData Bytes
+  mimeType  String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  frames MnemonicFrame[]
+
+  @@map("visual_associations")
+}
+
+/// Log mínimo de instrumentação da métrica de §1.3 da SPEC-022 — não é trilha de auditoria
+/// (RISK-022-004): sem relação/FK para visualAssociationId (deliberado, DEC-023-011), sobrevive
+/// à remoção da associação e nunca bloqueia (FR-022-007/008 leem só MnemonicFrame, nunca este
+/// log). Uma linha por vínculo REAL criado (nunca por idempotente, nunca por desvínculo).
+model VisualAssociationLinkEvent {
+  id                  String   @id @default(uuid(7))
+  visualAssociationId String
+  wasReuse            Boolean
+  occurredAt          DateTime @default(now())
+
+  @@index([occurredAt])
+  @@map("visual_association_link_events")
 }
 
 /// Evento append-only e imutável de transição de etapa de produção (SPEC-009).
