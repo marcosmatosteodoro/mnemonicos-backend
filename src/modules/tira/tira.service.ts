@@ -26,6 +26,7 @@ export interface MnemonicFrameDetail {
   text: string;
   position: number;
   originBlock: string | null;
+  visualAssociationId: string | null;
 }
 
 export interface MnemonicStripDetail {
@@ -75,7 +76,7 @@ const MNEMONIC_STRIP_DETAIL_SELECT = {
   id: true,
   frames: {
     orderBy: { position: 'asc' },
-    select: { id: true, text: true, position: true, originBlock: true },
+    select: { id: true, text: true, position: true, originBlock: true, visualAssociationId: true },
   },
 } as const satisfies Prisma.MnemonicStripSelect;
 
