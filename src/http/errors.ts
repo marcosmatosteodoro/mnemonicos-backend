@@ -49,3 +49,9 @@ export class TooManyRequestsError extends AppError {
     super(message, 429, 'TOO_MANY_REQUESTS');
   }
 }
+
+export class GenerationTimeoutError extends AppError {
+  constructor(message = 'A geração do documento demorou demais. Tente novamente.') {
+    super(message, 503, 'GENERATION_TIMEOUT');
+  }
+}
