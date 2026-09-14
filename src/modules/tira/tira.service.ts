@@ -7,6 +7,10 @@ import {
   type RuleBreakdownDetail,
 } from '../contents/contents.service';
 import { recordProductionStageEvent } from '../production-events/production-events.service';
+// DEC-023-009: `tira.service.ts` importa de `visual-associations.service.ts` (confirmar
+// existência da associação), NUNCA o inverso — o vínculo mora na árvore de recursos do
+// Quadro, `visual-associations` nunca resolve `rawContentId`/`frameId`.
+import { assertVisualAssociationExists } from '../visual-associations/visual-associations.service';
 import type {
   AddMnemonicFrameInput,
   ReorderMnemonicFramesInput,
@@ -26,6 +30,7 @@ export interface MnemonicFrameDetail {
   text: string;
   position: number;
   originBlock: string | null;
+  visualAssociationId: string | null;
 }
 
 export interface MnemonicStripDetail {
@@ -75,7 +80,7 @@ const MNEMONIC_STRIP_DETAIL_SELECT = {
   id: true,
   frames: {
     orderBy: { position: 'asc' },
-    select: { id: true, text: true, position: true, originBlock: true },
+    select: { id: true, text: true, position: true, originBlock: true, visualAssociationId: true },
   },
 } as const satisfies Prisma.MnemonicStripSelect;
 
@@ -88,11 +93,19 @@ type MnemonicStripRow = Prisma.MnemonicStripGetPayload<{
  * `RuleBreakdownClient` de `contents.service.ts`): cobre `rawContent`
  * (para `assertRawContentReachable`), `ruleBreakdown` (localizar a Quebra do
  * `rawContentId`), `mnemonicStrip` (a própria Tira), `mnemonicFrame`
- * (validar/reindexar Quadros) e `$transaction`.
+ * (validar/reindexar Quadros), `visualAssociation` (confirmar existência ao
+ * vincular, COMP-023-008) e `visualAssociationLinkEvent` (log de reuso,
+ * DEC-023-011) e `$transaction`.
  */
 type MnemonicStripClient = Pick<
   typeof prisma,
-  'rawContent' | 'ruleBreakdown' | 'mnemonicStrip' | 'mnemonicFrame' | '$transaction'
+  | 'rawContent'
+  | 'ruleBreakdown'
+  | 'mnemonicStrip'
+  | 'mnemonicFrame'
+  | 'visualAssociation'
+  | 'visualAssociationLinkEvent'
+  | '$transaction'
 >;
 
 const RULE_BREAKDOWN_FOR_STRIP_SELECT = {
@@ -664,6 +677,220 @@ export async function reorderMnemonicFrames(
     await recordProductionStageEvent(tx, {
       rawContentId,
       stageType: 'TIRA_MNEMONICA',
+      actorId: actor.id,
+      now: new Date(),
+    });
+
+    return tx.mnemonicStrip.findUniqueOrThrow({
+      where: { id: stripId },
+      relationLoadStrategy: 'join',
+      select: MNEMONIC_STRIP_DETAIL_SELECT,
+    });
+  });
+}
+
+/**
+ * Vincula uma associação visual a um Quadro (COMP-023-008), dentro de
+ * `$transaction`:
+ * 1. `assertRawContentReachable` — 1ª chamada, sempre (NFR-011-001/006
+ *    herdado, FR-022-018).
+ * 2. `findStripId` — localiza o `stripId` a partir do `rawContentId` da URL
+ *    (nunca aceito cru de outro lugar).
+ * 3. `assertVisualAssociationExists` — leitura comum a todo EDITOR/ADMIN
+ *    (FR-022-023, 2ª cláusula: sem escopo de autoria da associação aqui — é
+ *    ela quem é comum, não o Quadro; DEC-023-009).
+ * 4. Lê o vínculo atual do Quadro escopado por `{ id: frameId, stripId }`
+ *    (mesma guarda de pertencimento anti-confused-deputy de
+ *    `updateMnemonicFrameText`/`removeMnemonicFrame`) — `null` →
+ *    `NotFoundError('Quadro não encontrado.')`, mesma mensagem única para
+ *    "id inexistente" e "frameId de outra Tira".
+ * 5. Idempotência (FR-022-021, 2ª cláusula): MESMO `visualAssociationId` já
+ *    vinculado → no-op — devolve a Tira SEM escrever nem emitir evento. Esta
+ *    checagem roda ANTES do cálculo de `wasReuse` (passo 6): um vínculo
+ *    concorrente de OUTRO Quadro à mesma associação, presente neste instante,
+ *    não reabre a idempotência nem recalcula/regrava `wasReuse`. O mutante que
+ *    inverte esta ordem (calcular `wasReuse` antes de checar idempotência) não
+ *    grava nada a mais nem a menos no ramo idempotente (o `return` antecipado
+ *    continua sem escrita nos dois casos) — por isso a prova não é por EFEITO
+ *    persistido, e sim por TRABALHO: o mutante insere 1 round-trip a mais (o
+ *    `count` de `otherActiveLinks`, hoje pulado neste ramo), fixado por
+ *    `withQueryProbe` no caso "vínculo concorrente pré-existente" de
+ *    `tira.service.integration.test.ts`.
+ * 6. Caso contrário (1º vínculo do Quadro ou substituição — a confirmação
+ *    explícita de substituição já ocorreu na UI antes desta chamada):
+ *    `wasReuse` = havia OUTRO Quadro (`id != frameId`), além deste, já
+ *    apontando para a MESMA associação ANTES desta escrita, sob o MESMO
+ *    filtro de exclusão de `RawContent` soft-deleted de FR-022-019 (cadeia
+ *    Frame→Strip→RuleBreakdown→RawContent, mesmo filtro de
+ *    `removeVisualAssociation`); grava `visualAssociationId` no MESMO
+ *    `updateMany` que checa `{ id: frameId, stripId }` (guarda de
+ *    pertencimento **e** escrita juntas); registra
+ *    `VisualAssociationLinkEvent` e chama `recordProductionStageEvent`
+ *    (`ASSOCIACAO_VISUAL`) — decide ABERTURA/CONCLUSAO/RETRABALHO pelo
+ *    histórico já registrado do par (`rawContentId`, `'ASSOCIACAO_VISUAL'`),
+ *    satisfazendo FR-022-024 (1ª mutação humana de vínculo emite; CRUD
+ *    isolado do acervo — `visual-associations.service.ts` — nunca chama esta
+ *    função, logo nunca emite).
+ *
+ * Fail-secure (mesma família de `addMnemonicFrame`/`updateMnemonicFrameText`/
+ * `removeMnemonicFrame`): escrita do vínculo, do log de reuso e a emissão do
+ * evento de etapa rodam na MESMA `$transaction` — falha em qualquer passo não
+ * deixa vínculo nem log parcial. `P2003` (violação de FK no `updateMany` do
+ * passo 6) é mapeado para `NotFoundError` — a mesma associação confirmada
+ * existente no passo 3 pode ter sido removida por `removeVisualAssociation`
+ * (`visual-associations.service.ts`) entre aquela leitura e esta escrita; a
+ * trava de `removeVisualAssociation` (`SELECT ... FOR UPDATE`) faz esse
+ * vinculador esperar atrás dela e, se a remoção vencer a corrida, falhar
+ * FECHADO aqui em vez de ter o vínculo anulado em silêncio.
+ */
+export async function linkVisualAssociationToFrame(
+  rawContentId: string,
+  frameId: string,
+  visualAssociationId: string,
+  actor: ContentActor,
+  db: MnemonicStripClient = prisma,
+): Promise<MnemonicStripDetail> {
+  try {
+    return await db.$transaction(async (tx) => {
+      await assertRawContentReachable(rawContentId, actor, tx);
+
+      const stripId = await findStripId(
+        tx,
+        rawContentId,
+        'Abra a Tira mnemônica antes de vincular uma associação visual.',
+      );
+
+      await assertVisualAssociationExists(visualAssociationId, tx);
+
+      const current = await tx.mnemonicFrame.findFirst({
+        where: { id: frameId, stripId },
+        select: { visualAssociationId: true },
+      });
+      if (current === null) {
+        throw new NotFoundError('Quadro não encontrado.');
+      }
+
+      if (current.visualAssociationId === visualAssociationId) {
+        return tx.mnemonicStrip.findUniqueOrThrow({
+          where: { id: stripId },
+          relationLoadStrategy: 'join',
+          select: MNEMONIC_STRIP_DETAIL_SELECT,
+        });
+      }
+
+      const otherActiveLinks = await tx.mnemonicFrame.count({
+        where: {
+          visualAssociationId,
+          id: { not: frameId },
+          strip: { ruleBreakdown: { rawContent: { deletedAt: null } } },
+        },
+      });
+      const wasReuse = otherActiveLinks > 0;
+
+      const result = await tx.mnemonicFrame.updateMany({
+        where: { id: frameId, stripId },
+        data: { visualAssociationId },
+      });
+      if (result.count === 0) {
+        throw new NotFoundError('Quadro não encontrado.');
+      }
+
+      await tx.visualAssociationLinkEvent.create({
+        data: { visualAssociationId, wasReuse },
+      });
+
+      await recordProductionStageEvent(tx, {
+        rawContentId,
+        stageType: 'ASSOCIACAO_VISUAL',
+        actorId: actor.id,
+        now: new Date(),
+      });
+
+      return tx.mnemonicStrip.findUniqueOrThrow({
+        where: { id: stripId },
+        relationLoadStrategy: 'join',
+        select: MNEMONIC_STRIP_DETAIL_SELECT,
+      });
+    });
+  } catch (error) {
+    // A associação existia no passo 3 (`assertVisualAssociationExists`) e foi
+    // removida (`removeVisualAssociation`) antes deste `updateMany` — a trava
+    // de vínculo ativo do lado da remoção (`SELECT ... FOR UPDATE`) faz este
+    // vinculador esperar atrás dela; se a remoção vencer, o `updateMany` viola
+    // a FK (`P2003`) em vez de gravar um vínculo para uma linha que não existe
+    // mais. Fail-secure: mesma mensagem/404 de uma associação inexistente
+    // desde o início — nunca 500 genérico para uma corrida esperada.
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2003') {
+      throw new NotFoundError('Associação visual não encontrada.');
+    }
+    throw error;
+  }
+}
+
+/**
+ * Desvincula a associação visual de um Quadro (COMP-023-008) — mesmos passos
+ * 1-2-4 de `linkVisualAssociationToFrame` acima (sem o passo 3: esta função
+ * não recebe nenhum `visualAssociationId` de entrada, então não há existência
+ * de associação alguma a confirmar), dentro de `$transaction`:
+ * 1. `assertRawContentReachable` — 1ª chamada, sempre.
+ * 2. `findStripId` — localiza o `stripId` a partir do `rawContentId`.
+ * 3. Lê o vínculo atual do Quadro escopado por `{ id: frameId, stripId }` —
+ *    `null` → `NotFoundError('Quadro não encontrado.')`.
+ * 4. Quadro já sem vínculo (`visualAssociationId === null`) → no-op, SEM
+ *    evento (mesmo raciocínio de idempotência do passo 5 de `link`, aqui
+ *    sobre o caso "nada a desfazer" — mutante que remove esta checagem
+ *    reprova no caso "Quadro já sem vínculo" de
+ *    `tira.service.integration.test.ts`). Caso contrário: grava
+ *    `visualAssociationId: null` no MESMO `updateMany` que checa
+ *    `{ id: frameId, stripId }` (guarda de pertencimento **e** escrita
+ *    juntas) e chama `recordProductionStageEvent` (`ASSOCIACAO_VISUAL`) — SEM
+ *    `VisualAssociationLinkEvent` (a métrica de reuso é sobre CRIAÇÃO de
+ *    vínculo, nunca sobre remoção).
+ *
+ * Fail-secure: escrita e emissão de evento na MESMA `$transaction`.
+ */
+export async function unlinkVisualAssociationFromFrame(
+  rawContentId: string,
+  frameId: string,
+  actor: ContentActor,
+  db: MnemonicStripClient = prisma,
+): Promise<MnemonicStripDetail> {
+  return db.$transaction(async (tx) => {
+    await assertRawContentReachable(rawContentId, actor, tx);
+
+    const stripId = await findStripId(
+      tx,
+      rawContentId,
+      'Abra a Tira mnemônica antes de desvincular uma associação visual.',
+    );
+
+    const current = await tx.mnemonicFrame.findFirst({
+      where: { id: frameId, stripId },
+      select: { visualAssociationId: true },
+    });
+    if (current === null) {
+      throw new NotFoundError('Quadro não encontrado.');
+    }
+
+    if (current.visualAssociationId === null) {
+      return tx.mnemonicStrip.findUniqueOrThrow({
+        where: { id: stripId },
+        relationLoadStrategy: 'join',
+        select: MNEMONIC_STRIP_DETAIL_SELECT,
+      });
+    }
+
+    const result = await tx.mnemonicFrame.updateMany({
+      where: { id: frameId, stripId },
+      data: { visualAssociationId: null },
+    });
+    if (result.count === 0) {
+      throw new NotFoundError('Quadro não encontrado.');
+    }
+
+    await recordProductionStageEvent(tx, {
+      rawContentId,
+      stageType: 'ASSOCIACAO_VISUAL',
       actorId: actor.id,
       now: new Date(),
     });

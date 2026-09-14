@@ -12,7 +12,8 @@ import { resolve } from 'node:path';
  * acusaria uma interface renomeada ou um campo fantasma no outro lado).
  *
  * Nomes canônicos (backend vence — a fonte real do dado):
- *   - `MnemonicFrameDetail`/`MnemonicFrame`: `id`/`text`/`position`/`originBlock`.
+ *   - `MnemonicFrameDetail`/`MnemonicFrame`: `id`/`text`/`position`/`originBlock`/
+ *     `visualAssociationId`.
  *   - `MnemonicStripDetail`/`MnemonicStrip`: `id`/`frames`.
  *
  * Limite conhecido (RISK-006-006, INDEX.md): este teste compara
@@ -66,7 +67,9 @@ describe('paridade cross-repo — MnemonicFrame/MnemonicStrip', () => {
     const backendFields = extractInterfaceFields(backendSource, 'MnemonicFrameDetail').sort();
     const frontendFields = extractInterfaceFields(frontendSource, 'MnemonicFrame').sort();
 
-    expect(backendFields).toEqual(['id', 'text', 'position', 'originBlock'].sort());
+    expect(backendFields).toEqual(
+      ['id', 'text', 'position', 'originBlock', 'visualAssociationId'].sort(),
+    );
     expect(frontendFields).toEqual(backendFields);
     // Mutante: renomear `originBlock` só do frontend (ex.: `sourceBlock`) faz
     // esta comparação reprovar.

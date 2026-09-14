@@ -131,3 +131,27 @@ describe('ProductionStageEvent — valor aditivo TIRA_MNEMONICA gravável na mes
     expect(read.transitionType).toBe('ABERTURA');
   });
 });
+
+describe('ProductionStageEvent — valor aditivo ASSOCIACAO_VISUAL gravável na mesma sessão da migração (TRISK-023-001, PLAN-023)', () => {
+  it('grava e lê stageType: ASSOCIACAO_VISUAL logo após a migração ter aplicado o ADD VALUE', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const rawContent = await createRawContent(editor.id, topicId);
+
+    const created = await testPrisma.productionStageEvent.create({
+      data: {
+        rawContentId: rawContent.id,
+        stageType: 'ASSOCIACAO_VISUAL',
+        transitionType: 'ABERTURA',
+        actorId: editor.id,
+      },
+    });
+
+    const read = await testPrisma.productionStageEvent.findUniqueOrThrow({
+      where: { id: created.id },
+    });
+
+    expect(read.stageType).toBe('ASSOCIACAO_VISUAL');
+    expect(read.transitionType).toBe('ABERTURA');
+  });
+});

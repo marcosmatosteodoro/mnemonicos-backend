@@ -147,6 +147,24 @@ describe('config/env — variáveis da fatia de acesso interno', () => {
   });
 });
 
+describe('config/env — VISUAL_ASSOCIATIONS_MAX_FILE_SIZE_BYTES (PLAN-023/F5)', () => {
+  const originalEnv = { ...process.env };
+
+  afterEach(() => {
+    process.env = { ...originalEnv };
+  });
+
+  it('envSchema.safeParse sem a chave no ambiente usa o default 5242880', () => {
+    delete process.env.VISUAL_ASSOCIATIONS_MAX_FILE_SIZE_BYTES;
+
+    const { envSchema } = loadEnvModule();
+    const result = envSchema.safeParse(process.env);
+
+    expect(result.success).toBe(true);
+    expect(result.data?.VISUAL_ASSOCIATIONS_MAX_FILE_SIZE_BYTES).toBe(5242880);
+  });
+});
+
 describe('.env.example — chaves da fatia de acesso interno', () => {
   it('lista cada uma das 9 chaves novas do envSchema', () => {
     const content = readFileSync(join(__dirname, '..', '..', '.env.example'), 'utf8');
@@ -203,13 +221,9 @@ describe('.env.example — carrega com sucesso no envSchema real (nunca derruba 
     const content = readFileSync(join(__dirname, '..', '..', '.env.example'), 'utf8');
     const parsedFile = dotenv.parse(content);
 
-    let result: { success: boolean; error?: unknown } | undefined;
-    jest.isolateModules(() => {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const { envSchema } = require('../../src/config/env') as typeof EnvModule;
-      result = envSchema.safeParse(parsedFile);
-    });
+    const { envSchema } = loadEnvModule();
+    const result = envSchema.safeParse(parsedFile);
 
-    expect(result?.success).toBe(true);
+    expect(result.success).toBe(true);
   });
 });

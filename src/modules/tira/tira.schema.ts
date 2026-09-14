@@ -49,3 +49,10 @@ export const mnemonicFrameIdParamSchema = z.object({
 });
 
 export type MnemonicFrameIdParam = z.infer<typeof mnemonicFrameIdParamSchema>;
+
+/** Corpo de `POST/DELETE .../frames/:frameId/visual-association` (COMP-023-007). */
+export const linkVisualAssociationSchema = z.object({
+  visualAssociationId: z.uuid('Identificador de associação visual inválido.'),
+});
+
+export type LinkVisualAssociationInput = z.infer<typeof linkVisualAssociationSchema>;
