@@ -407,10 +407,8 @@ describe('montagem — caminho feliz (oráculo distinto do request): sessão leg
 
 describe('TASK-006-011/TASK-025-009 — as 8 rotas de /contents sob a barreira (topologia adversarial, itens i/ii/v da lição [Segurança])', () => {
   // `POST /contents/:id/publication` (TASK-025-009, COMP-025-006) soma-se às 7 rotas
-  // originais de TASK-006-011 (retry gate 1: excluí-la por filtro, sem enumeração nem
-  // asserção de papel, era um ponto cego estrutural a um mutante que remove 'ADMIN' de
-  // `requireRole(...)` — ela é a barreira de autorização REAL do pipeline de
-  // publicação, NFR-024-003, o service de baixo nível não checa papel de propósito).
+  // originais de TASK-006-011 — é a barreira de autorização REAL do pipeline de
+  // publicação, NFR-024-003, o service de baixo nível não checa papel de propósito.
   const CONTENT_ROUTE_KEYS = [
     'GET /contents',
     'POST /contents',
