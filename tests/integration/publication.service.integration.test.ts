@@ -3,7 +3,6 @@ import { randomUUID } from 'node:crypto';
 import { env } from '../../src/config/env';
 import { GenerationTimeoutError, NotFoundError } from '../../src/http/errors';
 import { logger } from '../../src/lib/logger';
-import type { ContentActor } from '../../src/modules/contents/contents.service';
 import { openMnemonicStrip } from '../../src/modules/tira/tira.service';
 // Namespace (não named import): espiar `buildSummaryPdf`/`buildStripPdf` exige o objeto
 // de módulo para `jest.spyOn` — mesmo padrão de `tira.service.integration.test.ts`
@@ -20,8 +19,10 @@ import {
   seedRuleBreakdown,
 } from '../support/production-events-fixtures';
 import {
+  actorOf,
   createVisualAssociation as seedVisualAssociation,
   PNG_FIXTURE_BUFFER,
+  WEBP_FIXTURE_BUFFER,
 } from '../support/visual-association-fixtures';
 import { closeTestDb, resetDb, testPrisma } from './db';
 
@@ -31,17 +32,9 @@ import { closeTestDb, resetDb, testPrisma } from './db';
  * (DEC-025-007), leitura de baixo nível da Quebra/Tira, composição sob teto de duração
  * (DEC-025-002), gravação transacional do evento genérico + log dedicado (DEC-025-005),
  * fail-secure. Reusa as fixtures compartilhadas de `production-events-fixtures.ts` e
- * `visual-association-fixtures.ts` — não recria fixture equivalente.
+ * `visual-association-fixtures.ts` (`actorOf`, `PNG_FIXTURE_BUFFER`,
+ * `WEBP_FIXTURE_BUFFER`) — não recria fixture equivalente.
  */
-
-function actorOf(user: { id: string; role: 'EDITOR' | 'ADMIN' | 'STUDENT' }): ContentActor {
-  return { id: user.id, role: user.role };
-}
-
-/** Assinatura WEBP mínima (RIFF + WEBP nos offsets exigidos por `detectImageSignature`). */
-const WEBP_FIXTURE_BUFFER = Buffer.from([
-  0x52, 0x49, 0x46, 0x46, 0x00, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50,
-]);
 
 /** Captura o erro de uma chamada que deve rejeitar — evita duplicar a chamada real. */
 async function captureError(fn: () => Promise<unknown>): Promise<unknown> {
@@ -118,6 +111,35 @@ describe('exportPublication — Variante TIRA gera a Tira automaticamente quando
 
     const stripCountAfter = await testPrisma.mnemonicStrip.count();
     expect(stripCountAfter).toBe(1);
+  });
+
+  it('cabeamento de suppressOpeningEvent:true — a auto-geração NÃO emite ABERTURA; a 1ª reabertura SEGUINTE (histórico vazio) emite; remover a flag em produção deixa este teste vermelho (retry gate 1)', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const rawContent = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdown(rawContent.id);
+
+    await exportPublication(rawContent.id, { variant: 'TIRA' }, actorOf(editor), testPrisma);
+
+    // (a) `exportPublication` gerou a Tira automaticamente — com `suppressOpeningEvent:
+    // true` cabeado de fato, 0 eventos TIRA_MNEMONICA existem ainda (a ABERTURA fica
+    // pendente para a 1ª interação humana subsequente, FR-024-013/DEC-025-003). Se a
+    // flag fosse removida da chamada em `publication.service.ts`, `openMnemonicStrip`
+    // emitiria ABERTURA na própria criação e este count já seria 1 aqui.
+    const openingEventsAfterExport = await testPrisma.productionStageEvent.count({
+      where: { rawContentId: rawContent.id, stageType: 'TIRA_MNEMONICA' },
+    });
+    expect(openingEventsAfterExport).toBe(0);
+
+    // (b) 1ª interação humana subsequente (simulada por uma reabertura SEM a flag,
+    // mesmo caminho de `tira.routes.ts`) — histórico vazio confirma ABERTURA agora
+    // (COMP-025-007). Prova que a supressão em (a) não é permanente nem foi um no-op:
+    // o evento estava genuinamente pendente, não perdido.
+    await openMnemonicStrip(rawContent.id, actorOf(editor), testPrisma);
+    const openingEventsAfterReopen = await testPrisma.productionStageEvent.count({
+      where: { rawContentId: rawContent.id, stageType: 'TIRA_MNEMONICA' },
+    });
+    expect(openingEventsAfterReopen).toBe(1);
   });
 });
 
