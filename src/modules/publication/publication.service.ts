@@ -159,7 +159,7 @@ async function resolveOrderedFramesForStrip(
 ): Promise<Array<Pick<MnemonicFrameDetail, 'text' | 'visualAssociationId'>>> {
   // Relação de LISTA (`frames`) — `relationLoadStrategy: 'join'` fixado explicitamente
   // (perfil node-22.md §10; mesma relação de `tira.service.ts:MNEMONIC_STRIP_DETAIL_SELECT`).
-  // Medido contra o Postgres real (retry do gate 6): 1 round-trip com `join` (LATERAL JOIN +
+  // Medido contra o Postgres real: 1 round-trip com `join` (LATERAL JOIN +
   // JSONB_AGG) contra 2 com `query` (1 SELECT em `mnemonic_strips` + 1 em `mnemonic_frames`).
   const existingStrip = await db.mnemonicStrip.findUnique({
     where: { ruleBreakdownId },

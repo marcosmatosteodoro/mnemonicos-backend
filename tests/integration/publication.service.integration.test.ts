@@ -113,7 +113,7 @@ describe('exportPublication — Variante TIRA gera a Tira automaticamente quando
     expect(stripCountAfter).toBe(1);
   });
 
-  it('cabeamento de suppressOpeningEvent:true — a auto-geração NÃO emite ABERTURA; a 1ª reabertura SEGUINTE (histórico vazio) emite; remover a flag em produção deixa este teste vermelho (retry gate 1)', async () => {
+  it('cabeamento de suppressOpeningEvent:true — a auto-geração NÃO emite ABERTURA; a 1ª reabertura SEGUINTE (histórico vazio) emite; remover a flag em produção deixa este teste vermelho', async () => {
     const editor = await createUser('EDITOR');
     const topicId = await createTopic();
     const rawContent = await createRawContent(editor.id, topicId);

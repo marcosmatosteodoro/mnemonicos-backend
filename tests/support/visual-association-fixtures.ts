@@ -23,11 +23,8 @@ export const PNG_FIXTURE_BUFFER = Buffer.from([
 ]);
 
 /**
- * Assinatura WEBP mínima — RIFF (offset 0) + `WEBP` (offset 8), os únicos bytes que
- * `detectImageSignature` exige. Promovida para cá (retry do gate 7/DRY, TASK-025-008):
- * fonte única para `visual-associations.routes.integration.test.ts`,
- * `image-signature.test.ts` e `publication.service.integration.test.ts` (os 2 primeiros
- * mantêm a cópia local pré-existente, fora do escopo deste retry).
+ * Assinatura WEBP mínima — RIFF (0) + WEBP (8), os únicos bytes que
+ * `detectImageSignature` exige.
  */
 export const WEBP_FIXTURE_BUFFER = Buffer.from([
   0x52, 0x49, 0x46, 0x46, 0x00, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50,
