@@ -25,22 +25,29 @@ function readSource(path: string): string {
  * corpo de função contém `{`/`}` aninhados (bloco da `$transaction`, `if`),
  * então a extração precisa contar profundidade em vez de parar na 1ª `\n}`.
  *
- * A busca pela `{` do corpo salta a LISTA DE PARÂMETROS por parênteses
- * balanceados a partir do 1º `(` após a âncora — um parâmetro com tipo
- * inline (ex.: `options?: { suppressOpeningEvent?: boolean }`,
- * COMP-025-007) contém uma `{` que NÃO é o corpo da função; procurar a 1ª
- * `{` "crua" após a âncora (sem pular os parênteses) pegaria essa `{` errada.
+ * Um tipo inline na assinatura (parâmetro OU retorno) contém `{` que NÃO é
+ * o corpo da função — ex.: `options?: { suppressOpeningEvent?: boolean }`
+ * (COMP-025-007) do lado do parâmetro, ou `Array<{ originBlock: string }>`
+ * do lado do retorno. A busca pela `{` do corpo salta a LISTA DE PARÂMETROS
+ * por parênteses balanceados a partir do 1º `(` após a âncora, o que cobre o
+ * lado dos parâmetros; o lado do RETORNO não tem um delimitador textual tão
+ * simples de saltar (a assinatura pode ter `):`, genéricos, união de tipos
+ * etc.) — por isso fica coberto pelo `requiredAnchor` obrigatório abaixo, em
+ * vez de por outro salto estrutural.
  *
- * `requiredAnchor`, quando informado, é um CONTROLE POSITIVO: o corpo
- * extraído precisa contê-lo — se o extrator mirar o alvo errado de novo no
- * futuro (outra âncora textual coincidente antes do corpo real), a extração
- * falha alto em vez de devolver um trecho vazio/errado sobre o qual as
- * asserções de ordem abaixo passariam verdes sem provar nada.
+ * `requiredAnchor` é um CONTROLE POSITIVO obrigatório: o corpo extraído
+ * precisa contê-lo — se o extrator mirar o alvo errado (seja do lado do
+ * parâmetro, ainda coberto pelo salto acima, seja do lado do retorno, não
+ * coberto), a extração falha alto em vez de devolver um trecho vazio/errado
+ * sobre o qual as asserções de ordem abaixo passariam verdes sem provar
+ * nada. Parâmetro obrigatório (não opcional) para que nenhuma chamada futura
+ * esqueça o controle — fecha a CLASSE do defeito, não só a instância que
+ * disparou este retry.
  */
 function extractFunctionBody(
   source: string,
   signatureAnchor: string,
-  requiredAnchor?: string,
+  requiredAnchor: string,
 ): string {
   const anchorIndex = source.indexOf(signatureAnchor);
   if (anchorIndex === -1) {
@@ -82,7 +89,7 @@ function extractFunctionBody(
       depth -= 1;
       if (depth === 0) {
         const body = source.slice(openBraceIndex + 1, i);
-        if (requiredAnchor !== undefined && !body.includes(requiredAnchor)) {
+        if (!body.includes(requiredAnchor)) {
           throw new Error(
             `controle positivo falhou: corpo extraído de "${signatureAnchor}" não contém ` +
               `"${requiredAnchor}" — o extrator pode ter mirado o alvo errado`,
