@@ -1,6 +1,3 @@
-import { PrismaPg } from '@prisma/adapter-pg';
-
-import { PrismaClient } from '../../src/generated/prisma/client';
 import type {
   CreateVisualAssociationBodyInput,
   UpdateVisualAssociationBodyInput,
@@ -11,6 +8,7 @@ import {
   updateVisualAssociation,
 } from '../../src/modules/visual-associations/visual-associations.service';
 import { createUser } from '../support/production-events-fixtures';
+import { withQueryProbe } from '../support/query-probe';
 import {
   actorOf,
   createVisualAssociation as seedVisualAssociation,
@@ -19,28 +17,6 @@ import {
   softDeleteRawContentRow,
 } from '../support/visual-association-fixtures';
 import { closeTestDb, resetDb, testPrisma } from './db';
-import { TEST_DATABASE_URL } from './db-url';
-
-/**
- * Sonda de round-trips (lição [Performance]) — mesmo padrão local de
- * `contents.service.integration.test.ts`/`tira.service.integration.test.ts`.
- */
-async function withQueryProbe(run: (probe: PrismaClient) => Promise<unknown>): Promise<string[]> {
-  const probe = new PrismaClient({
-    adapter: new PrismaPg({ connectionString: TEST_DATABASE_URL, max: 1 }),
-    log: [{ emit: 'event', level: 'query' }],
-  });
-  const queries: string[] = [];
-  probe.$on('query', (event) => queries.push(event.query));
-
-  try {
-    await run(probe);
-  } finally {
-    await probe.$disconnect();
-  }
-
-  return queries;
-}
 
 /**
  * `createVisualAssociation`/`updateVisualAssociation` (COMP-023-005) direto contra o

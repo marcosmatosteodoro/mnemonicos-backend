@@ -828,6 +828,72 @@ describe('GET /visual-associations?category=... (AC-022-010, cobre FR-022-011): 
   });
 });
 
+describe('GET /visual-associations?category=... — metacaracteres de padrão LIKE no valor de entrada são tratados como literais', () => {
+  it('category=% NÃO devolve o acervo inteiro — só bateria com uma categoria literalmente chamada "%"', async () => {
+    const editor = await createUser('EDITOR');
+    const access = await seedSession(editor.id);
+    await seedVisualAssociation(editor.id, { category: 'Categoria X' });
+    await seedVisualAssociation(editor.id, { category: 'Categoria Y' });
+
+    const res = await request(app)
+      .get('/api/v1/visual-associations')
+      .query({ category: '%' })
+      .set(...withCookie(access));
+
+    expect(res.status).toBe(200);
+    expect(res.body.total).toBe(0);
+    expect(summaryItems(res)).toHaveLength(0);
+  });
+
+  it('category contendo % (ex. "Trib%ário") casa SOMENTE a categoria com esse texto exato — nunca uma categoria que a interpretação de padrão também casaria (ex. "Tributário", que começa com "Trib" e termina com "ário")', async () => {
+    const editor = await createUser('EDITOR');
+    const access = await seedSession(editor.id);
+    const literalPercent = await seedVisualAssociation(editor.id, { category: 'Trib%ário' });
+    await seedVisualAssociation(editor.id, { category: 'Tributário' });
+
+    const res = await request(app)
+      .get('/api/v1/visual-associations')
+      .query({ category: 'Trib%ário' })
+      .set(...withCookie(access));
+
+    expect(res.status).toBe(200);
+    expect(res.body.total).toBe(1);
+    expect(summaryItems(res).map((item) => item.id)).toEqual([literalPercent.id]);
+  });
+
+  it('category contendo _ (ex. "A_B") casa SOMENTE o texto exato — nunca uma categoria que difere por 1 caractere na posição do _ (ex. "AXB", que a interpretação de padrão também casaria)', async () => {
+    const editor = await createUser('EDITOR');
+    const access = await seedSession(editor.id);
+    const literalUnderscore = await seedVisualAssociation(editor.id, { category: 'A_B' });
+    await seedVisualAssociation(editor.id, { category: 'AXB' });
+
+    const res = await request(app)
+      .get('/api/v1/visual-associations')
+      .query({ category: 'A_B' })
+      .set(...withCookie(access));
+
+    expect(res.status).toBe(200);
+    expect(res.body.total).toBe(1);
+    expect(summaryItems(res).map((item) => item.id)).toEqual([literalUnderscore.id]);
+  });
+
+  it('category contendo \\ (barra invertida) casa o texto literal, sem erro de sintaxe SQL e sem alterar o casamento de uma categoria distinta', async () => {
+    const editor = await createUser('EDITOR');
+    const access = await seedSession(editor.id);
+    const literalBackslash = await seedVisualAssociation(editor.id, { category: 'Pasta\\Arquivo' });
+    await seedVisualAssociation(editor.id, { category: 'PastaXArquivo' });
+
+    const res = await request(app)
+      .get('/api/v1/visual-associations')
+      .query({ category: 'Pasta\\Arquivo' })
+      .set(...withCookie(access));
+
+    expect(res.status).toBe(200);
+    expect(res.body.total).toBe(1);
+    expect(summaryItems(res).map((item) => item.id)).toEqual([literalBackslash.id]);
+  });
+});
+
 describe('AC-022-025 (cobre NFR-022-007): filtro por categoria ignora capitalização e espaço nas bordas do TERMO buscado (DEC-023-008), sem alterar o texto armazenado', () => {
   it('duas associações com a mesma categoria em capitalizações diferentes ("Tributário"/"TRIBUTÁRIO") → filtro "  tributário  " (espaço nas bordas + minúsculo) devolve AMBAS agrupadas; leitura direta por id confirma o texto original intocado nas duas linhas', async () => {
     const editor = await createUser('EDITOR');

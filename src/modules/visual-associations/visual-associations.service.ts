@@ -434,6 +434,20 @@ function toVisualAssociationSummary(row: VisualAssociationSummaryRow): VisualAss
 }
 
 /**
+ * Escapa os metacaracteres do padrão `LIKE`/`ILIKE` do Postgres (`\`, `%`, `_`) num
+ * valor vindo do CLIENTE antes de montar um filtro `mode: 'insensitive'` do Prisma —
+ * sem isso, `{ category: { equals: category.trim(), mode: 'insensitive' } }` compila
+ * para `"category" ILIKE $1` e o valor de entrada é interpretado como PADRÃO, não como
+ * igualdade literal (`?category=%` devolveria o acervo inteiro; `?category=Trib%`
+ * casaria parcialmente). Um único `replace` com regex global sobre os 3 caracteres —
+ * cada ocorrência do valor ORIGINAL é substituída uma vez só (o `replace` não reprocessa
+ * o texto já inserido), então a ordem dos 3 caracteres na classe não importa.
+ */
+function escapeLikeMetacharacters(value: string): string {
+  return value.replace(/[\\%_]/g, '\\$&');
+}
+
+/**
  * Lista o acervo paginado com filtro por categoria normalizada (FR-022-010/011,
  * DEC-023-008/DEC-023-010) — mesmo padrão de paginação de `listRawContents`
  * (`contents.service.ts:310-330`): `page`/`perPage` no `where` idêntico tanto no
@@ -441,7 +455,9 @@ function toVisualAssociationSummary(row: VisualAssociationSummaryRow): VisualAss
  *
  * `category` da query: `trim()` + `mode: 'insensitive'` do Prisma contra o texto
  * ARMAZENADO (nunca alterado) — o mesmo agrupamento de `normalizeCategoryKey`, expresso
- * como predicado SQL em vez de comparação em memória.
+ * como predicado SQL em vez de comparação em memória. `mode: 'insensitive'` compila
+ * para `ILIKE`, então o valor de entrada passa por `escapeLikeMetacharacters` antes de
+ * entrar no filtro (ver docblock da função).
  *
  * Round-trips fixados em teste (gate 10 / TRISK-023-005): `findMany` (com o `_count`
  * filtrado embutido no mesmo `SELECT`) + `count`, sempre 2 — não cresce com o nº de
@@ -453,7 +469,9 @@ export async function listVisualAssociations(
 ): Promise<Paginated<VisualAssociationSummary>> {
   const { page, perPage, category } = query;
   const where: Prisma.VisualAssociationWhereInput =
-    category === undefined ? {} : { category: { equals: category.trim(), mode: 'insensitive' } };
+    category === undefined
+      ? {}
+      : { category: { equals: escapeLikeMetacharacters(category.trim()), mode: 'insensitive' } };
 
   const [rows, total] = await Promise.all([
     db.visualAssociation.findMany({
