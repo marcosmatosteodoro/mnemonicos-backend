@@ -1775,12 +1775,20 @@ describe('linkVisualAssociationToFrame — idempotência (FR-022-021, 2ª cláus
 
     // Vincular a MESMA associação de novo ao 1º Quadro (já vinculado a ela)
     // permanece no-op, MESMO com o vínculo concorrente do 2º Quadro presente.
-    await linkVisualAssociationToFrame(
-      rawContentFirst.id,
-      frameFirst.id,
-      association.id,
-      actorOf(editor),
-      testPrisma,
+    // Prova por EFEITO (nenhuma linha nova nas 2 tabelas) — necessária, mas
+    // NÃO discrimina o mutante que reordena a checagem de idempotência para
+    // DEPOIS do cálculo de `wasReuse`: nos dois casos (ordem correta ou
+    // invertida) o `return` antecipado do ramo idempotente segue sem gravar
+    // NADA, então a contagem de eventos empata de qualquer jeito. A prova que
+    // discrimina o mutante é por TRABALHO (round-trips), logo abaixo.
+    const queries = await withQueryProbe((probe) =>
+      linkVisualAssociationToFrame(
+        rawContentFirst.id,
+        frameFirst.id,
+        association.id,
+        actorOf(editor),
+        probe,
+      ),
     );
 
     const linkEventsAfter = await testPrisma.visualAssociationLinkEvent.count();
@@ -1789,6 +1797,21 @@ describe('linkVisualAssociationToFrame — idempotência (FR-022-021, 2ª cláus
     });
     expect(linkEventsAfter).toBe(linkEventsBefore);
     expect(stageEventsAfter).toBe(stageEventsBefore);
+
+    // Prova por TRABALHO (discrimina o mutante): o ramo idempotente, na ORDEM
+    // correta, devolve a Tira sem NUNCA calcular `wasReuse` — o `count` de
+    // `otherActiveLinks` é pulado. Fixado em 7 round-trips, medido contra o
+    // Postgres real: assertRawContentReachable (1) + findStripId (2:
+    // ruleBreakdown + mnemonicStrip) + assertVisualAssociationExists (1) +
+    // findFirst do vínculo atual (1) + findUniqueOrThrow final com
+    // relationLoadStrategy: 'join' (1) + o COMMIT da `$transaction` (1 —
+    // mesmo padrão de contagem do teste de `openMnemonicStrip` acima, que
+    // também inclui o COMMIT no total). Mutante-alvo (reordenar a checagem de
+    // idempotência para DEPOIS do cálculo de `wasReuse`): insere o `count` de
+    // `otherActiveLinks` ANTES do `return` antecipado — 1 round-trip A MAIS
+    // neste MESMO caminho, mesmo sem gravar nada — fazendo esta contagem
+    // SUBIR de 7 para 8 e reprovar.
+    expect(queries).toHaveLength(7);
   });
 });
 
@@ -2143,6 +2166,113 @@ describe('linkVisualAssociationToFrame/unlinkVisualAssociationFromFrame — guar
   });
 });
 
+/**
+ * Corrida REAL sob READ COMMITTED (gate 8, TOCTOU real corrigido por `SELECT
+ * ... FOR UPDATE` como 1º statement de `removeVisualAssociation`,
+ * `visual-associations.service.ts`) — motor real, nunca mock. Sem
+ * instrumentação determinística do ponto exato do lock, a varredura de
+ * `headStartMs` cobre a faixa onde a corrida se manifesta contra Postgres
+ * local (latência de round-trip sub-milissegundo a poucos ms): `link` sempre
+ * dispara primeiro (tem mais round-trips pela frente até o `updateMany` que
+ * grava o vínculo — `assertRawContentReachable`/`findStripId`/
+ * `assertVisualAssociationExists`/leitura do vínculo atual/`count` de
+ * `wasReuse` — do que `remove`, cujo 1º statement já É o lock); `remove` só
+ * dispara depois do atraso, simulando o vinculador concorrente já EM CURSO
+ * quando a remoção começa a decidir.
+ */
+describe('removeVisualAssociation × linkVisualAssociationToFrame — corrida real sob READ COMMITTED (gate 8, TOCTOU)', () => {
+  it('vincular e remover a MESMA associação quase simultaneamente NUNCA resolve as duas chamadas com sucesso — sem o SELECT ... FOR UPDATE, um vinculador em curso comitava enquanto a remoção, cega a esse commit, também comitava (SetNull anulando o vínculo em silêncio)', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const actor = actorOf(editor);
+
+    const HEAD_START_DELAYS_MS = [0, 1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 20];
+
+    for (const headStartMs of HEAD_START_DELAYS_MS) {
+      const rawContent = await createRawContent(editor.id, topicId);
+      await seedRuleBreakdown(rawContent.id);
+      const strip = await openMnemonicStrip(rawContent.id, actor, testPrisma);
+      const frame = strip.frames[0]!;
+      const association = await seedVisualAssociation(editor.id);
+
+      const linkPromise = linkVisualAssociationToFrame(
+        rawContent.id,
+        frame.id,
+        association.id,
+        actor,
+        testPrisma,
+      );
+      const removePromise = new Promise<void>((resolve) => setTimeout(resolve, headStartMs)).then(
+        () => removeVisualAssociation(association.id, actor, testPrisma),
+      );
+
+      const [linkResult, removeResult] = await Promise.allSettled([linkPromise, removePromise]);
+      const linkSucceeded = linkResult.status === 'fulfilled';
+      const removeSucceeded = removeResult.status === 'fulfilled';
+
+      // Invariante central (independe de qual lado venceu a corrida): nunca as
+      // DUAS chamadas concorrentes resolvem com sucesso sobre a MESMA
+      // associação — um vínculo que comitou tem que travar a remoção (409) OU
+      // uma remoção que comitou primeiro tem que derrubar o vínculo
+      // concorrente fail-secure (404 via P2003 mapeado), nunca as duas
+      // coisas ao mesmo tempo (o bug real: as duas resolviam, e o vínculo
+      // recém-comitado sumia em silêncio pelo `SetNull` da remoção).
+      expect(linkSucceeded && removeSucceeded).toBe(false);
+
+      if (linkSucceeded) {
+        // O vínculo venceu: a associação e o vínculo devem PERMANECER —
+        // nenhuma anulação silenciosa.
+        await expect(
+          testPrisma.visualAssociation.findUniqueOrThrow({ where: { id: association.id } }),
+        ).resolves.toMatchObject({ id: association.id });
+        const persistedFrame = await testPrisma.mnemonicFrame.findUniqueOrThrow({
+          where: { id: frame.id },
+          select: { visualAssociationId: true },
+        });
+        expect(persistedFrame.visualAssociationId).toBe(association.id);
+      } else {
+        // A remoção venceu (ou o vínculo falhou fail-secure): a associação
+        // some e o Quadro nunca fica apontando para uma linha inexistente.
+        await expect(
+          testPrisma.visualAssociation.findUnique({ where: { id: association.id } }),
+        ).resolves.toBeNull();
+        const persistedFrame = await testPrisma.mnemonicFrame.findUniqueOrThrow({
+          where: { id: frame.id },
+          select: { visualAssociationId: true },
+        });
+        expect(persistedFrame.visualAssociationId).toBeNull();
+      }
+    }
+  });
+
+  it('controle SEQUENCIAL (sem corrida): vínculo já COMITADO antes da remoção começar → remoção sempre recusada (409), sem tocar o banco', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const actor = actorOf(editor);
+
+    const rawContent = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdown(rawContent.id);
+    const strip = await openMnemonicStrip(rawContent.id, actor, testPrisma);
+    const frame = strip.frames[0]!;
+    const association = await seedVisualAssociation(editor.id);
+
+    await linkVisualAssociationToFrame(rawContent.id, frame.id, association.id, actor, testPrisma);
+
+    await expect(removeVisualAssociation(association.id, actor, testPrisma)).rejects.toThrow(
+      ConflictError,
+    );
+
+    await expect(
+      testPrisma.visualAssociation.findUniqueOrThrow({ where: { id: association.id } }),
+    ).resolves.toMatchObject({ id: association.id });
+    const persistedFrame = await testPrisma.mnemonicFrame.findUniqueOrThrow({
+      where: { id: frame.id },
+      select: { visualAssociationId: true },
+    });
+    expect(persistedFrame.visualAssociationId).toBe(association.id);
+  });
+});
+
 describe('linkVisualAssociationToFrame — wasReuse desconsidera Quadro cujo Conteúdo bruto de origem foi soft-deleted (AC-022-016, FR-022-019)', () => {
   it('associação já vinculada a um Quadro cujo RawContent está soft-deleted → um NOVO vínculo a ela conta wasReuse: false (nenhum "outro Quadro" ATIVO)', async () => {
     const editor = await createUser('EDITOR');
@@ -2329,9 +2459,13 @@ describe('linkVisualAssociationToFrame — round-trips ESTÁVEIS, independente d
     );
 
     // `count()` do cálculo de `wasReuse` é 1 round-trip único, independente de
-    // QUANTAS linhas casam o filtro — a contagem NÃO cresce com o nº de
-    // Quadros já vinculados à mesma associação (mutante-alvo: um `findMany`
-    // de todos os vínculos, em vez de `count`, faria este número crescer).
+    // QUANTAS linhas casam o filtro — a contagem de round-trips NÃO cresce com
+    // o nº de Quadros já vinculados à mesma associação. Verificado: um
+    // `findMany` no lugar de `count` NÃO faria este número crescer (também é 1
+    // round-trip só, com mais linhas na MESMA resposta) — esta asserção prova
+    // ausência de N+1 pela quantidade de vínculos existentes, não discrimina
+    // `count` de `findMany`; essa distinção é de FORMATO da query (`COUNT(*)`
+    // vs. `SELECT *`), não de round-trips.
     expect(queriesAgainstManyLinks).toHaveLength(queriesAgainstNoLinks.length);
   });
 });

@@ -248,22 +248,31 @@ type RemoveLinkedFrameRow = Prisma.MnemonicFrameGetPayload<{
 /**
  * Remove uma associação visual do acervo (FR-022-007/FR-022-008), dentro de
  * `$transaction`:
- * 1. Lê a linha (`authorId`) — 404 (`NotFoundError`) se o id não existir.
- * 2. `assertVisualAssociationWritable` PRIMEIRO (autor ou ADMIN, senão 403) — 2ª
- *    chamadora da guarda (DEC-023-006; TASK-023-008 entregou a 1ª, `updateVisualAssociation`,
- *    com prova comportamental própria — não herdada aqui, lição "[Segurança] Guarda
+ * 1. Trava a linha PAI com `SELECT ... FOR UPDATE` — 1º statement, ANTES de
+ *    ler/decidir qualquer coisa. `FOR UPDATE` conflita com o `FOR KEY SHARE` que o
+ *    próprio trigger de integridade referencial do Postgres toma sobre esta linha
+ *    quando `linkVisualAssociationToFrame` grava um vínculo (`tira.service.ts`): (a)
+ *    um vinculador em curso (ainda não commitado) faz este `SELECT` esperar — quando
+ *    ele commita, o PRÓXIMO statement (`deleteMany`, passo 3) abre um snapshot NOVO
+ *    sob READ COMMITTED, que já enxerga o vínculo recém-commitado; sem esta trava, o
+ *    `deleteMany` sozinho também espera o lock do vinculador, mas resolve a condição
+ *    do `where` contra o snapshot ORIGINAL do statement — tomado ANTES da espera —,
+ *    então não vê o vínculo commitado durante a espera e apaga a linha por engano,
+ *    anulando o vínculo em silêncio via `SetNull`; (b) um vinculador POSTERIOR a este
+ *    lock fica bloqueado atrás dele e, se este `remove` commitar primeiro (apagando a
+ *    linha), falha FECHADO na FK (`P2003`, mapeado por `linkVisualAssociationToFrame`
+ *    em `tira.service.ts`) em vez de ter o vínculo anulado. `undefined` (nenhuma linha)
+ *    → `NotFoundError`.
+ * 2. `assertVisualAssociationWritable` (autor ou ADMIN, senão 403) — 2ª chamadora da
+ *    guarda (DEC-023-006; TASK-023-008 entregou a 1ª, `updateVisualAssociation`, com
+ *    prova comportamental própria — não herdada aqui, lição "[Segurança] Guarda
  *    reusada continua exigindo prova comportamental própria por novo método de
  *    escrita").
- * 3. Trava de vínculo ativo FECHADA NA ESCRITA (achado do `security-engineer`, gate 8
- *    da Wave 1, decisão 4.140 — TOCTOU em READ COMMITTED): contar vínculos ativos e
- *    DEPOIS apagar em passos separados abriria uma janela — um vínculo criado entre a
- *    contagem e o `delete` seria anulado silenciosamente pelo `SetNull` de
- *    `MnemonicFrame.visualAssociationId`, furando FR-022-008. Por isso o `deleteMany`
- *    carrega a CONDIÇÃO no próprio `where`: `frames: { none: { strip: { ruleBreakdown:
- *    { rawContent: { deletedAt: null } } } } }` só casa (permite o delete) quando NENHUM
- *    `MnemonicFrame` vinculado tem cadeia até um `RawContent` ainda ativo (não
- *    soft-deleted, FR-022-019) — a decisão de bloquear é do PRÓPRIO banco, na MESMA
- *    operação que apagaria a linha, sem leitura solta entre decidir e escrever.
+ * 3. Trava de vínculo ativo na ESCRITA: o `deleteMany` carrega a CONDIÇÃO no próprio
+ *    `where`: `frames: { none: { strip: { ruleBreakdown: { rawContent: { deletedAt:
+ *    null } } } } }` só casa (permite o delete) quando NENHUM `MnemonicFrame` vinculado
+ *    tem cadeia até um `RawContent` ainda ativo (não soft-deleted, FR-022-019) — a
+ *    decisão de bloquear é do PRÓPRIO banco, na MESMA operação que apagaria a linha.
  * 4. `result.count === 1` → sucesso, o binário some junto (é a mesma linha).
  *    `result.count === 0` → a linha existe e é escrita pelo `actor` (passos 1-2 já
  *    confirmaram); a única razão do `where` condicional não ter casado é 1+ vínculo
@@ -276,7 +285,7 @@ type RemoveLinkedFrameRow = Prisma.MnemonicFrameGetPayload<{
  *    ATIVOS entram em `reachableLinks` (soft-deleted alcançável não bloqueia a remoção,
  *    então não é listado como algo a desvincular).
  *
- * Fail-secure: leitura, guarda e a trava condicional rodam na MESMA `$transaction` —
+ * Fail-secure: o lock, a guarda e a trava condicional rodam na MESMA `$transaction` —
  * falha em qualquer passo não deixa a linha meio-removida.
  */
 export async function removeVisualAssociation(
@@ -285,11 +294,11 @@ export async function removeVisualAssociation(
   db: VisualAssociationClient = prisma,
 ): Promise<void> {
   await db.$transaction(async (tx) => {
-    const existing = await tx.visualAssociation.findUnique({
-      where: { id },
-      select: { authorId: true },
-    });
-    if (existing === null) {
+    const locked = await tx.$queryRaw<Array<{ id: string; authorId: string }>>`
+      SELECT id, "authorId" FROM visual_associations WHERE id = ${id} FOR UPDATE
+    `;
+    const existing = locked[0];
+    if (existing === undefined) {
       throw new NotFoundError('Associação visual não encontrada.');
     }
 

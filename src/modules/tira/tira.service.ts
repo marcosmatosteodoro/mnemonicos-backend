@@ -708,9 +708,13 @@ export async function reorderMnemonicFrames(
  *    vinculado → no-op — devolve a Tira SEM escrever nem emitir evento. Esta
  *    checagem roda ANTES do cálculo de `wasReuse` (passo 6): um vínculo
  *    concorrente de OUTRO Quadro à mesma associação, presente neste instante,
- *    não reabre a idempotência nem recalcula/regrava `wasReuse` — o mutante
- *    que inverte esta ordem (calcular `wasReuse` antes de checar
- *    idempotência) reprova no caso "vínculo concorrente pré-existente" de
+ *    não reabre a idempotência nem recalcula/regrava `wasReuse`. O mutante que
+ *    inverte esta ordem (calcular `wasReuse` antes de checar idempotência) não
+ *    grava nada a mais nem a menos no ramo idempotente (o `return` antecipado
+ *    continua sem escrita nos dois casos) — por isso a prova não é por EFEITO
+ *    persistido, e sim por TRABALHO: o mutante insere 1 round-trip a mais (o
+ *    `count` de `otherActiveLinks`, hoje pulado neste ramo), fixado por
+ *    `withQueryProbe` no caso "vínculo concorrente pré-existente" de
  *    `tira.service.integration.test.ts`.
  * 6. Caso contrário (1º vínculo do Quadro ou substituição — a confirmação
  *    explícita de substituição já ocorreu na UI antes desta chamada):
@@ -731,7 +735,13 @@ export async function reorderMnemonicFrames(
  * Fail-secure (mesma família de `addMnemonicFrame`/`updateMnemonicFrameText`/
  * `removeMnemonicFrame`): escrita do vínculo, do log de reuso e a emissão do
  * evento de etapa rodam na MESMA `$transaction` — falha em qualquer passo não
- * deixa vínculo nem log parcial.
+ * deixa vínculo nem log parcial. `P2003` (violação de FK no `updateMany` do
+ * passo 6) é mapeado para `NotFoundError` — a mesma associação confirmada
+ * existente no passo 3 pode ter sido removida por `removeVisualAssociation`
+ * (`visual-associations.service.ts`) entre aquela leitura e esta escrita; a
+ * trava de `removeVisualAssociation` (`SELECT ... FOR UPDATE`) faz esse
+ * vinculador esperar atrás dela e, se a remoção vencer a corrida, falhar
+ * FECHADO aqui em vez de ter o vínculo anulado em silêncio.
  */
 export async function linkVisualAssociationToFrame(
   rawContentId: string,
@@ -740,67 +750,81 @@ export async function linkVisualAssociationToFrame(
   actor: ContentActor,
   db: MnemonicStripClient = prisma,
 ): Promise<MnemonicStripDetail> {
-  return db.$transaction(async (tx) => {
-    await assertRawContentReachable(rawContentId, actor, tx);
+  try {
+    return await db.$transaction(async (tx) => {
+      await assertRawContentReachable(rawContentId, actor, tx);
 
-    const stripId = await findStripId(
-      tx,
-      rawContentId,
-      'Abra a Tira mnemônica antes de vincular uma associação visual.',
-    );
+      const stripId = await findStripId(
+        tx,
+        rawContentId,
+        'Abra a Tira mnemônica antes de vincular uma associação visual.',
+      );
 
-    await assertVisualAssociationExists(visualAssociationId, tx);
+      await assertVisualAssociationExists(visualAssociationId, tx);
 
-    const current = await tx.mnemonicFrame.findFirst({
-      where: { id: frameId, stripId },
-      select: { visualAssociationId: true },
-    });
-    if (current === null) {
-      throw new NotFoundError('Quadro não encontrado.');
-    }
+      const current = await tx.mnemonicFrame.findFirst({
+        where: { id: frameId, stripId },
+        select: { visualAssociationId: true },
+      });
+      if (current === null) {
+        throw new NotFoundError('Quadro não encontrado.');
+      }
 
-    if (current.visualAssociationId === visualAssociationId) {
+      if (current.visualAssociationId === visualAssociationId) {
+        return tx.mnemonicStrip.findUniqueOrThrow({
+          where: { id: stripId },
+          relationLoadStrategy: 'join',
+          select: MNEMONIC_STRIP_DETAIL_SELECT,
+        });
+      }
+
+      const otherActiveLinks = await tx.mnemonicFrame.count({
+        where: {
+          visualAssociationId,
+          id: { not: frameId },
+          strip: { ruleBreakdown: { rawContent: { deletedAt: null } } },
+        },
+      });
+      const wasReuse = otherActiveLinks > 0;
+
+      const result = await tx.mnemonicFrame.updateMany({
+        where: { id: frameId, stripId },
+        data: { visualAssociationId },
+      });
+      if (result.count === 0) {
+        throw new NotFoundError('Quadro não encontrado.');
+      }
+
+      await tx.visualAssociationLinkEvent.create({
+        data: { visualAssociationId, wasReuse },
+      });
+
+      await recordProductionStageEvent(tx, {
+        rawContentId,
+        stageType: 'ASSOCIACAO_VISUAL',
+        actorId: actor.id,
+        now: new Date(),
+      });
+
       return tx.mnemonicStrip.findUniqueOrThrow({
         where: { id: stripId },
         relationLoadStrategy: 'join',
         select: MNEMONIC_STRIP_DETAIL_SELECT,
       });
+    });
+  } catch (error) {
+    // A associação existia no passo 3 (`assertVisualAssociationExists`) e foi
+    // removida (`removeVisualAssociation`) antes deste `updateMany` — a trava
+    // de vínculo ativo do lado da remoção (`SELECT ... FOR UPDATE`) faz este
+    // vinculador esperar atrás dela; se a remoção vencer, o `updateMany` viola
+    // a FK (`P2003`) em vez de gravar um vínculo para uma linha que não existe
+    // mais. Fail-secure: mesma mensagem/404 de uma associação inexistente
+    // desde o início — nunca 500 genérico para uma corrida esperada.
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2003') {
+      throw new NotFoundError('Associação visual não encontrada.');
     }
-
-    const otherActiveLinks = await tx.mnemonicFrame.count({
-      where: {
-        visualAssociationId,
-        id: { not: frameId },
-        strip: { ruleBreakdown: { rawContent: { deletedAt: null } } },
-      },
-    });
-    const wasReuse = otherActiveLinks > 0;
-
-    const result = await tx.mnemonicFrame.updateMany({
-      where: { id: frameId, stripId },
-      data: { visualAssociationId },
-    });
-    if (result.count === 0) {
-      throw new NotFoundError('Quadro não encontrado.');
-    }
-
-    await tx.visualAssociationLinkEvent.create({
-      data: { visualAssociationId, wasReuse },
-    });
-
-    await recordProductionStageEvent(tx, {
-      rawContentId,
-      stageType: 'ASSOCIACAO_VISUAL',
-      actorId: actor.id,
-      now: new Date(),
-    });
-
-    return tx.mnemonicStrip.findUniqueOrThrow({
-      where: { id: stripId },
-      relationLoadStrategy: 'join',
-      select: MNEMONIC_STRIP_DETAIL_SELECT,
-    });
-  });
+    throw error;
+  }
 }
 
 /**

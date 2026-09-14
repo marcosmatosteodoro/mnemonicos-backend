@@ -53,8 +53,11 @@ function extractFunctionBody(source: string, signatureAnchor: string): string {
 /**
  * A 1ª linha EXECUTÁVEL do corpo: descarta comentário/linha vazia e também a
  * linha que só ABRE um escopo aninhado (`return db.$transaction(async (tx) =>
- * {`) — essa linha não é, ela mesma, uma chamada de guarda, é o envelope da
- * transação em que a guarda roda (mesmo padrão de `saveRuleBreakdown`/
+ * {`, `return await db.$transaction(...)`, ou o `try {` que envelopa a
+ * `$transaction` quando a função precisa mapear um erro do banco antes de
+ * propagar — `linkVisualAssociationToFrame`, TASK-023-011 retry) — essa linha
+ * não é, ela mesma, uma chamada de guarda, é o envelope da transação (ou do
+ * `try`) em que a guarda roda (mesmo padrão de `saveRuleBreakdown`/
  * `openMnemonicStrip`).
  */
 function firstExecutableLine(body: string): string {
@@ -69,7 +72,8 @@ function firstExecutableLine(body: string): string {
         !line.startsWith('/*'),
     );
 
-  const isScopeOpener = (line: string): boolean => line.endsWith('=> {') || line.endsWith(') {');
+  const isScopeOpener = (line: string): boolean =>
+    line.endsWith('=> {') || line.endsWith(') {') || line === 'try {';
 
   const line = lines.find((candidate) => !isScopeOpener(candidate));
   if (line === undefined) {
