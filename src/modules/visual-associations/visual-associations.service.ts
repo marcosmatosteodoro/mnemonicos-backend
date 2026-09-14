@@ -361,11 +361,11 @@ export function normalizeCategoryKey(category: string): string {
  * ORIGINAL (nunca a normalizada) das categorias combinadas, sem duplicatas (grafia
  * exata repetida na entrada não se repete na saída).
  *
- * `query` normalizado vazio (string vazia ou só espaço) → lista vazia, SEMPRE — decisão
- * do Tech Lead na consolidação (achado do `qa` pré-código): a sugestão só existe em
- * resposta a texto digitado; a fronteira HTTP real (`suggestCategoriesQuerySchema`) já
- * barra `q` vazio antes de chegar aqui — este ramo só é alcançável pelo teste unitário
- * da função pura.
+ * `query` normalizado vazio (string vazia ou só espaço) → lista vazia, SEMPRE: a
+ * sugestão só existe em resposta a texto digitado (FR-022-025, "ao digitar"); devolver
+ * todas as categorias sem nenhuma intenção do EDITOR seria imprevisível. A fronteira
+ * HTTP real (`suggestCategoriesQuerySchema`) já barra `q` vazio antes de chegar aqui —
+ * este ramo só é alcançável pelo teste unitário da função pura.
  */
 export function suggestCategories(existingCategories: readonly string[], query: string): string[] {
   const normalizedQuery = normalizeCategoryKey(query);
@@ -407,12 +407,11 @@ const ACTIVE_LINKED_FRAME_WHERE: Prisma.MnemonicFrameWhereInput = {
 };
 
 /**
- * `select` explícito (excluindo `imageData`, achado do `security-engineer` no gate 8 da
- * Wave 1): cada linha da listagem pode ter até 5 MB no binário; arrastar isso por
- * padrão numa consulta paginada é o custo que este `select` evita por construção.
- * `linkCount` é a contagem FILTRADA da relação `frames` (`_count.select.frames.where`,
- * suportado nativamente pelo Prisma como parte do MESMO `SELECT` — não é um round-trip
- * por linha; medido em teste, TRISK-023-005).
+ * `select` explícito, excluindo `imageData`: cada linha da listagem pode ter até 5 MB
+ * no binário; arrastar isso por padrão numa consulta paginada é o custo que este
+ * `select` evita por construção. `linkCount` é a contagem FILTRADA da relação `frames`
+ * (`_count.select.frames.where`, suportado nativamente pelo Prisma como parte do MESMO
+ * `SELECT` — não é um round-trip por linha; medido em teste, TRISK-023-005).
  */
 const VISUAL_ASSOCIATION_SUMMARY_SELECT = {
   id: true,
