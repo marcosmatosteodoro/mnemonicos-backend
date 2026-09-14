@@ -80,10 +80,10 @@ function withCookie(access: string): [string, string] {
   return ['Cookie', `${ACCESS_COOKIE}=${access}`];
 }
 
-// `linkFrameToAssociation`/`softDeleteRawContentRow`: helper único, agora em
-// `tests/support/visual-association-fixtures.ts` (TASK-023-014, escoteiro — reusado por
+// `linkFrameToAssociation`/`softDeleteRawContentRow`: helper único, em
+// `tests/support/visual-association-fixtures.ts` — reusado por
 // `visual-associations.service.integration.test.ts` sem duplicar a montagem da cadeia
-// RawContent→RuleBreakdown→MnemonicStrip→MnemonicFrame).
+// RawContent→RuleBreakdown→MnemonicStrip→MnemonicFrame.
 
 beforeEach(async () => {
   await resetDb();
