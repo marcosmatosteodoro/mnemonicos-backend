@@ -1072,3 +1072,117 @@ describe('GET /visual-associations/categories (AC-022-022, cobre FR-022-025): su
     expect(res.status).toBe(422);
   });
 });
+
+/**
+ * GET /visual-associations/:id/image (COMP-023-005/006, TASK-023-016) — entrega do
+ * binário já armazenado.
+ */
+describe('AC-022-023 (cobre NFR-022-005): GET /visual-associations/:id/image — barreira é sessão EDITOR/ADMIN válida, NÃO autoria/alcance por FR-022-018', () => {
+  it('(a) sem sessão → 401; (b) sessão STUDENT → 403', async () => {
+    const editor = await createUser('EDITOR');
+    const association = await seedVisualAssociation(editor.id);
+
+    const anon = await request(app).get(`/api/v1/visual-associations/${association.id}/image`);
+    expect(anon.status).toBe(401);
+
+    const student = await createUser('STUDENT');
+    const accessStudent = await seedSession(student.id);
+    const asStudent = await request(app)
+      .get(`/api/v1/visual-associations/${association.id}/image`)
+      .set(...withCookie(accessStudent));
+    expect(asStudent.status).toBe(403);
+  });
+
+  it('(c) EDITOR B, com sessão EDITOR válida mas SEM NENHUM vínculo com a Tira que usa a imagem (associação de EDITOR A, vinculada a um Quadro de uma Tira TAMBÉM de EDITOR A) → 200, binário entregue normalmente — a leitura CORRETA (A-023-001: barreira é sessão válida, NÃO autoria da associação/alcance de FR-022-018; barrar aqui seria a redação ERRADA que este teste pega)', async () => {
+    const editorA = await createUser('EDITOR');
+    const editorB = await createUser('EDITOR');
+    const association = await seedVisualAssociation(editorA.id);
+    await linkFrameToAssociation(editorA, association.id);
+    const accessB = await seedSession(editorB.id);
+
+    const res = await request(app)
+      .get(`/api/v1/visual-associations/${association.id}/image`)
+      .set(...withCookie(accessB));
+
+    expect(res.status).toBe(200);
+    expect(Buffer.compare(res.body as Buffer, PNG_FIXTURE)).toBe(0);
+  });
+
+  it('(c, ADMIN) sessão ADMIN → 200, mesmo raciocínio de (c)', async () => {
+    const editorA = await createUser('EDITOR');
+    const admin = await createUser('ADMIN');
+    const association = await seedVisualAssociation(editorA.id);
+    await linkFrameToAssociation(editorA, association.id);
+    const accessAdmin = await seedSession(admin.id);
+
+    const res = await request(app)
+      .get(`/api/v1/visual-associations/${association.id}/image`)
+      .set(...withCookie(accessAdmin));
+
+    expect(res.status).toBe(200);
+  });
+
+  it('(d) id inexistente → 404', async () => {
+    const editor = await createUser('EDITOR');
+    const access = await seedSession(editor.id);
+
+    const res = await request(app)
+      .get(`/api/v1/visual-associations/${randomUUID()}/image`)
+      .set(...withCookie(access));
+
+    expect(res.status).toBe(404);
+  });
+});
+
+describe('Contrato do item: Content-Type reflete o mimeType gravado, corpo é o imageData BYTE-A-BYTE (sem AC dedicado além de AC-022-023)', () => {
+  it.each(RASTER_FORMATS)(
+    'associação com mimeType $mimeType ($format) → Content-Type $mimeType, corpo idêntico ao imageData gravado',
+    async ({ buffer, mimeType }) => {
+      const editor = await createUser('EDITOR');
+      const access = await seedSession(editor.id);
+      const association = await seedVisualAssociation(editor.id, {
+        imageData: buffer,
+        mimeType,
+      });
+
+      const res = await request(app)
+        .get(`/api/v1/visual-associations/${association.id}/image`)
+        .set(...withCookie(access));
+
+      expect(res.status).toBe(200);
+      expect(res.headers['content-type']).toMatch(new RegExp(`^${mimeType}`));
+      expect(Buffer.compare(res.body as Buffer, buffer)).toBe(0);
+    },
+  );
+});
+
+describe('Content-Type NUNCA ecoa a coluna livre do banco (achado do security-engineer, gate 8 da Wave 1)', () => {
+  it('mimeType corrompido gravado diretamente via Prisma (bypassando a rota de criação, fora do allowlist PNG/JPEG/WEBP) → 500 genérico, Content-Type NUNCA refletido como o valor corrompido', async () => {
+    const editor = await createUser('EDITOR');
+    const access = await seedSession(editor.id);
+    const association = await seedVisualAssociation(editor.id, { mimeType: 'text/html' });
+
+    const res = await request(app)
+      .get(`/api/v1/visual-associations/${association.id}/image`)
+      .set(...withCookie(access));
+
+    expect(res.status).toBe(500);
+    expect(res.headers['content-type']).not.toMatch(/text\/html/i);
+    expect(res.body).toEqual({
+      error: { code: 'INTERNAL_SERVER_ERROR', message: 'Erro interno.' },
+    });
+  });
+
+  it('caso normal (mimeType válido, image/png) responde 200 com o Content-Type correspondente', async () => {
+    const editor = await createUser('EDITOR');
+    const access = await seedSession(editor.id);
+    const association = await seedVisualAssociation(editor.id);
+
+    const res = await request(app)
+      .get(`/api/v1/visual-associations/${association.id}/image`)
+      .set(...withCookie(access));
+
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toMatch(/^image\/png/);
+  });
+});

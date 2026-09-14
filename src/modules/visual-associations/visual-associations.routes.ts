@@ -2,10 +2,11 @@ import { Router, type Request } from 'express';
 import multer from 'multer';
 
 import { env } from '../../config/env';
-import { BadRequestError, UnauthorizedError } from '../../http/errors';
+import { BadRequestError, NotFoundError, UnauthorizedError } from '../../http/errors';
 import { requireRole } from '../../http/middlewares/authorize';
 import { verifyOrigin } from '../auth/auth.routes';
 import type { ContentActor } from '../contents/contents.service';
+import { mimeTypeForFormat, type RasterImageFormat } from './image-signature';
 import {
   createVisualAssociationBodySchema,
   listVisualAssociationsQuerySchema,
@@ -15,6 +16,7 @@ import {
 } from './visual-associations.schema';
 import {
   createVisualAssociation,
+  getVisualAssociationBinary,
   listVisualAssociationCategories,
   listVisualAssociations,
   removeVisualAssociation,
@@ -23,10 +25,9 @@ import {
 
 /**
  * Superfície HTTP do acervo de associações visuais (COMP-023-006) — cobre criação,
- * edição, remoção (TASK-023-008/010) e, aqui (TASK-023-014), listagem paginada
- * (`GET /visual-associations`) e sugestão de categoria (`GET
- * /visual-associations/categories`); entrega do binário ESTENDE este módulo
- * (TASK-023-016), não o recria.
+ * edição, remoção (TASK-023-008/010), listagem paginada (`GET /visual-associations`) e
+ * sugestão de categoria (`GET /visual-associations/categories`, TASK-023-014), e a
+ * entrega do binário (`GET /visual-associations/:id/image`, TASK-023-016).
  *
  * `upload` (`multer`, `memoryStorage()` — DEC-023-003, nunca `diskStorage()`: o service
  * só persiste depois de `detectImageSignature` confirmar o formato) é instanciado UMA
@@ -67,6 +68,19 @@ const upload = multer({
 });
 
 /**
+ * Allowlist fechada dos `Content-Type` que `GET /visual-associations/:id/image` pode
+ * responder (TASK-023-016, achado do `security-engineer` no gate 8 da Wave 1) —
+ * derivada de `mimeTypeForFormat` (`image-signature.ts`, COMP-023-002) sobre os 3
+ * formatos raster, nunca um literal duplicado à mão: `mimeType` é coluna `String`
+ * livre no schema (não um enum de banco), então o `Content-Type` da resposta NUNCA
+ * ecoa a coluna diretamente — só um valor deste conjunto fechado sai no header.
+ */
+const IMAGE_RASTER_FORMATS: readonly RasterImageFormat[] = ['PNG', 'JPEG', 'WEBP'];
+const IMAGE_MIME_TYPE_ALLOWLIST: ReadonlySet<string> = new Set(
+  IMAGE_RASTER_FORMATS.map(mimeTypeForFormat),
+);
+
+/**
  * `req.auth` sempre existe aqui (as rotas rodam depois de `requireAuth` +
  * `requireRole`, que já recusaram sessão ausente) — a checagem é defesa em
  * profundidade, mesmo padrão de `tira.routes.ts`/`contents.routes.ts`.
@@ -93,8 +107,9 @@ visualAssociationsRoutes.get(
 
 /**
  * GET /visual-associations/categories — sugestão de categoria (FR-022-025). Registrada
- * ANTES de qualquer rota `GET /visual-associations/:id` futura (TASK-023-016) — caminho
- * estático precede `:param` na árvore montada.
+ * ANTES de `GET /visual-associations/:id/image` (TASK-023-016) — caminho estático
+ * precede `:param` na árvore montada (aqui sem colisão real: os dois têm nº de
+ * segmentos diferente, mas a ordem segue a convenção do módulo).
  */
 visualAssociationsRoutes.get(
   '/visual-associations/categories',
@@ -103,6 +118,39 @@ visualAssociationsRoutes.get(
     const query = suggestCategoriesQuerySchema.parse(req.query);
     const categories = await listVisualAssociationCategories(query);
     res.json(categories);
+  },
+);
+
+/**
+ * GET /visual-associations/:id/image — entrega o binário já armazenado
+ * (COMP-023-005/006, TASK-023-016, DEC-023-002/DEC-023-004): `res.type(...).send(...)`
+ * sobre o `Buffer` já em memória, NUNCA `res.sendFile`/`express.static` — não há
+ * caminho de arquivo em nenhum momento desta rota, a superfície de path traversal não
+ * existe aqui. Leitura pura, SEM `verifyOrigin` (mesmo raciocínio de `GET
+ * /contents/:id/strip`, NFR-022-005): a barreira é a sessão EDITOR/ADMIN válida
+ * (`requireRole` abaixo), NÃO uma restrição de alcance por autoria de FR-022-018 — a
+ * leitura/busca/vínculo do acervo é comum a todo EDITOR/ADMIN (FR-022-023, A-023-001
+ * [assumido] do PLAN).
+ *
+ * `id` inexistente → 404. `mimeType` fora do `IMAGE_MIME_TYPE_ALLOWLIST` (não deveria
+ * acontecer — defesa em profundidade contra corrupção/bug futuro) → `Error` puro
+ * (não `AppError`), que o `errorHandler` despacha como 500 genérico: o valor da
+ * coluna nunca chega à resposta, nem no `Content-Type` nem no corpo.
+ */
+visualAssociationsRoutes.get(
+  '/visual-associations/:id/image',
+  requireRole('GET', '/visual-associations/:id/image', 'EDITOR', 'ADMIN'),
+  async (req, res) => {
+    const { id } = visualAssociationIdParamSchema.parse(req.params);
+    const binary = await getVisualAssociationBinary(id);
+    if (binary === null) {
+      throw new NotFoundError('Associação visual não encontrada.');
+    }
+    if (!IMAGE_MIME_TYPE_ALLOWLIST.has(binary.mimeType)) {
+      throw new Error(`mimeType fora do allowlist esperado: ${binary.mimeType}`);
+    }
+
+    res.type(binary.mimeType).set('Content-Disposition', 'inline').send(binary.imageData);
   },
 );
 

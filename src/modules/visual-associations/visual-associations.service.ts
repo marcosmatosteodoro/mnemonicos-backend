@@ -15,9 +15,10 @@ import type {
  * (`createVisualAssociation`), edição in-place (`updateVisualAssociation`) e remoção com
  * trava de vínculo ativo (`removeVisualAssociation`) — mais a guarda
  * `assertVisualAssociationWritable` (DEC-023-006), chamada por `updateVisualAssociation`
- * e `removeVisualAssociation` — e a leitura em massa (`normalizeCategoryKey`/
+ * e `removeVisualAssociation` — a leitura em massa (`normalizeCategoryKey`/
  * `suggestCategories`, `listVisualAssociations`, `listVisualAssociationCategories`,
- * TASK-023-014/COMP-023-005). Entrega do binário fica fora deste arquivo.
+ * TASK-023-014/COMP-023-005) e a leitura do binário individual
+ * (`getVisualAssociationBinary`, TASK-023-016).
  */
 
 /**
@@ -109,6 +110,45 @@ export async function assertVisualAssociationExists(
   if (existing === null) {
     throw new NotFoundError('Associação visual não encontrada.');
   }
+}
+
+/** Cliente Prisma injetável exigido só por `getVisualAssociationBinary`. */
+type VisualAssociationBinaryClient = Pick<typeof prisma, 'visualAssociation'>;
+
+const VISUAL_ASSOCIATION_BINARY_SELECT = {
+  imageData: true,
+  mimeType: true,
+} as const satisfies Prisma.VisualAssociationSelect;
+
+export interface VisualAssociationBinary {
+  imageData: Buffer;
+  mimeType: string;
+}
+
+/**
+ * Leitura pura do binário (COMP-023-005, TASK-023-016) — `select` explícito, só
+ * `imageData`/`mimeType`. Nenhuma checagem de autoria: a leitura/busca/vínculo do
+ * acervo é comum a todo EDITOR/ADMIN (FR-022-023, 2ª cláusula) — A-023-001 [assumido]
+ * do PLAN, a barreira é a sessão EDITOR/ADMIN válida na rota (NFR-022-005), não uma
+ * restrição de alcance por autoria. `null` se o `id` não existir.
+ */
+export async function getVisualAssociationBinary(
+  id: string,
+  db: VisualAssociationBinaryClient = prisma,
+): Promise<VisualAssociationBinary | null> {
+  const row = await db.visualAssociation.findUnique({
+    where: { id },
+    select: VISUAL_ASSOCIATION_BINARY_SELECT,
+  });
+  if (row === null) {
+    return null;
+  }
+  return {
+    // `Bytes` do Prisma tipa como `Uint8Array<ArrayBuffer>`; `Buffer.from` respeita
+    // offset/length (node-22.md §11) — nunca `.buffer` direto.
+    imageData: Buffer.from(row.imageData),
+    mimeType: row.mimeType,
+  };
 }
 
 /**
