@@ -22,6 +22,42 @@ function pngHeaderWithDimensions(width: number, height: number): Buffer {
   return Buffer.concat([signature, chunkLength, chunkType, ihdrData]); // CRC irrelevante aqui
 }
 
+/**
+ * PoC do security-engineer (retry Wave 2, re-check do teto de pixels — achado ALTA): PNG
+ * com um chunk decoy (`tEXt`, 20 bytes de payload) ANTES do `IHDR` real. Uma leitura de
+ * OFFSET FIXO (16/20, sem validar o que está ali) leria os bytes 16-23 — que caem DENTRO
+ * do payload do decoy, construído de propósito para decodificar como `width=1,height=1`
+ * — e liberaria a imagem como inofensiva; o decoder real (`@pdf-lib/upng`) VARRE os
+ * chunks e acharia o `IHDR` verdadeiro mais adiante, com a dimensão FORJADA
+ * (`fakeWidth`/`fakeHeight`, tipicamente acima do teto). `readImageDimensions` precisa
+ * devolver `null` para o arquivo inteiro — nem o decoy nem o `IHDR` forjado podem
+ * "vazar" uma dimensão aceita.
+ */
+function pngWithDecoyChunkBeforeIhdr(fakeWidth: number, fakeHeight: number): Buffer {
+  const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+  const decoyLength = Buffer.alloc(4);
+  decoyLength.writeUInt32BE(20, 0);
+  const decoyType = Buffer.from('tEXt', 'ascii');
+  const decoyPayload = Buffer.concat([
+    Buffer.from([0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01]), // offsets ABSOLUTOS 16-23: "1×1"
+    Buffer.alloc(12, 0x00), // completa os 20 bytes declarados em decoyLength
+  ]);
+  const decoyCrc = Buffer.alloc(4); // ninguém aqui valida CRC — irrelevante para o PoC
+  const decoyChunk = Buffer.concat([decoyLength, decoyType, decoyPayload, decoyCrc]);
+
+  const ihdrLength = Buffer.alloc(4);
+  ihdrLength.writeUInt32BE(13, 0);
+  const ihdrType = Buffer.from('IHDR', 'ascii');
+  const ihdrData = Buffer.alloc(13);
+  ihdrData.writeUInt32BE(fakeWidth, 0);
+  ihdrData.writeUInt32BE(fakeHeight, 4);
+  const ihdrCrc = Buffer.alloc(4);
+  const ihdrChunk = Buffer.concat([ihdrLength, ihdrType, ihdrData, ihdrCrc]);
+
+  return Buffer.concat([signature, decoyChunk, ihdrChunk]);
+}
+
 /** SOI + (opcional) 1 segmento genérico antes do SOF0 + SOF0 com `width`/`height` — só o
  * necessário para `readImageDimensions` achar o marcador; sem DQT/DHT/SOS/dado
  * codificado (esta suíte testa leitura de cabeçalho, não decodificação via `pdf-lib`). */
@@ -174,6 +210,16 @@ describe('readImageDimensions (retry Wave 2, gate 8 achado ALTA — lê SÓ o ca
 
     expect(() => readImageDimensions(truncated, 'PNG')).not.toThrow();
     expect(readImageDimensions(truncated, 'PNG')).toBeNull();
+  });
+
+  it('PNG: devolve null (nunca a dimensão do decoy NEM a forjada) quando um chunk decoy antecede o IHDR real — PoC do security-engineer, retry Wave 2', () => {
+    const forged = pngWithDecoyChunkBeforeIhdr(5000, 5000);
+
+    const result = readImageDimensions(forged, 'PNG');
+
+    expect(result).not.toEqual({ width: 1, height: 1 }); // não "vaza" a leitura por offset fixo do decoy
+    expect(result).not.toEqual({ width: 5000, height: 5000 }); // não "vaza" o IHDR forjado sem validar posição
+    expect(result).toBeNull();
   });
 
   it('JPEG: lê width/height do marcador SOF0, pulando um segmento genérico antes dele', () => {

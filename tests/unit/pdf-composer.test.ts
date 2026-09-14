@@ -251,11 +251,38 @@ function buildPngWithCorruptIdat(): Buffer {
   return toStandaloneBuffer(Buffer.concat([signature, ihdr, garbageIdat, iend]));
 }
 
+/**
+ * PoC do security-engineer (retry Wave 2, re-check do teto de pixels — achado ALTA): PNG
+ * com um chunk decoy (`tEXt`, 20 bytes de payload) ANTES do `IHDR` real. O payload do
+ * decoy é construído para que uma leitura de OFFSET FIXO (16/20, sem validar o que está
+ * ali) decodifique como `width=1,height=1` — inofensivo — enquanto o `IHDR` verdadeiro,
+ * mais adiante (achado pelo decoder real, que VARRE os chunks), declara uma dimensão
+ * FORJADA acima do teto. `readImageDimensions` tem que devolver `null` para o arquivo
+ * inteiro, e `embedFrameImage` nunca pode chegar a chamar `embedPng` com isto.
+ */
+function buildPngWithDecoyChunkBeforeIhdr(fakeWidth: number, fakeHeight: number): Buffer {
+  const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+  const decoyPayload = Buffer.concat([
+    Buffer.from([0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01]), // offsets ABSOLUTOS 16-23: "1×1"
+    Buffer.alloc(12, 0x00),
+  ]);
+  const decoyChunk = pngChunk('tEXt', decoyPayload);
+
+  const ihdrData = Buffer.alloc(13);
+  ihdrData.writeUInt32BE(fakeWidth, 0);
+  ihdrData.writeUInt32BE(fakeHeight, 4);
+  const ihdrChunk = pngChunk('IHDR', ihdrData);
+
+  return toStandaloneBuffer(Buffer.concat([signature, decoyChunk, ihdrChunk]));
+}
+
 const VALID_PNG_1X1 = buildValidPng1x1();
 const VALID_JPEG_1X1 = buildValidJpeg1x1();
 const PNG_WITH_OVERSIZED_HEADER = buildPngWithOversizedHeader();
 const PNG_WITH_ACTL_CHUNK = buildPngWithActlChunk();
 const PNG_WITH_CORRUPT_IDAT = buildPngWithCorruptIdat();
+const PNG_WITH_DECOY_CHUNK_BEFORE_IHDR = buildPngWithDecoyChunkBeforeIhdr(5000, 5000);
 
 /** Codificação hex (maiúscula) que `showText`/`PDFHexString` grava no operador `Tj` para
  * texto puramente ASCII sob fonte padrão WinAnsi — nessa faixa (0x20-0x7E), WinAnsi
@@ -493,6 +520,35 @@ describe('buildStripPdf — retry Wave 2, gate 8 achado ALTA (teto de pixels/APN
     ];
 
     await expect(buildStripPdf(frames, META)).resolves.toBeInstanceOf(Buffer);
+  });
+
+  it('PoC do security-engineer (re-check): PNG com chunk decoy (tEXt) antes do IHDR real cai no caminho só-texto — NUNCA chega a CHAMAR embedPng, mesmo com o teto de pixels no lugar', async () => {
+    // Espiona o método real de `pdf-lib` (sem mockImplementation — o spy só observa,
+    // continua chamando através) para provar "nunca chamado" de forma direta, em vez de
+    // inferir isso indiretamente pelo resultado — um fixture incompleto por outro motivo
+    // (ex.: sem IDAT) faria `embedPng` falhar de qualquer jeito, mascarando se a checagem
+    // de estrutura BARROU antes ou se só o decode real por acaso também rejeitou.
+    const embedPngSpy = jest.spyOn(PDFDocument.prototype, 'embedPng');
+
+    const frames: StripFrameForPdf[] = [
+      {
+        text: 'QUADRO_PNG_FORJADO',
+        image: { buffer: PNG_WITH_DECOY_CHUNK_BEFORE_IHDR, format: 'PNG' },
+      },
+    ];
+    const skipped: ImageSkippedInfo[] = [];
+
+    const buffer = await buildStripPdf(frames, META, (info) => skipped.push(info)); // NÃO deve lançar, NÃO deve estourar heap
+
+    const doc = await PDFDocument.load(buffer); // PDFDocument.load NÃO chama embedPng — não interfere no spy
+    expect(pageXObjectCount(doc, 0)).toBe(0);
+    // 'decode-failed': readImageDimensions recusou o arquivo inteiro (null) ANTES de
+    // qualquer teto de pixels ser calculado — nem a leitura por offset (decoy = "1×1")
+    // nem o IHDR forjado (5000×5000) chegam a produzir um resultado "pixel-budget-exceeded".
+    expect(skipped).toEqual([{ frameIndex: 0, format: 'PNG', reason: 'decode-failed' }]);
+    expect(embedPngSpy).not.toHaveBeenCalled();
+
+    embedPngSpy.mockRestore();
   });
 
   it('PNG com IHDR válido (dentro do teto, sem acTL) mas IDAT corrompido ainda cai no caminho só-texto — o try/catch em torno de embedPng continua vivo depois das checagens novas', async () => {

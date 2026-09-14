@@ -95,14 +95,54 @@ export interface ImageDimensions {
   height: number;
 }
 
+/** Assinatura PNG completa (8 bytes) — não só os 4 bytes que `detectImageSignature` usa
+ * como magic number (aquilo é heurística de formato; isto é pré-condição de estrutura
+ * antes de confiar em offset fixo). */
+const PNG_FULL_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a] as const;
+/** Offset do campo `length` (4 bytes) do 1º chunk, logo após a assinatura. */
+const PNG_FIRST_CHUNK_LENGTH_OFFSET = 8;
+/** Offset do campo `type` (4 bytes ASCII) do 1º chunk. */
+const PNG_FIRST_CHUNK_TYPE_OFFSET = 12;
+/** `IHDR` tem tamanho de payload fixo pelo spec PNG (width/height/bitDepth/colorType/
+ * compression/filter/interlace = 4+4+1+1+1+1+1). */
+const PNG_IHDR_EXPECTED_LENGTH = 13;
 /** Offset do 1º byte de `width` no chunk `IHDR`: assinatura PNG (8) + tamanho do chunk (4)
  * + tipo "IHDR" (4) = 16; `height` começa 4 bytes depois. */
 const PNG_IHDR_WIDTH_OFFSET = 16;
 const PNG_IHDR_HEIGHT_OFFSET = 20;
 const PNG_IHDR_MIN_LENGTH = PNG_IHDR_HEIGHT_OFFSET + 4;
 
+/**
+ * `true` só se a assinatura PNG de 8 bytes bate E o 1º chunk é literalmente `IHDR` com o
+ * tamanho de payload esperado (13) — as únicas 2 garantias que o spec PNG dá e que tornam
+ * os offsets fixos 16/20 (usados por `readPngDimensions` abaixo) SEGUROS de ler direto,
+ * sem variar chunk a chunk como o decoder real (`@pdf-lib/upng`) faz.
+ *
+ * Sem esta checagem, um PNG forjado com um chunk decoy (ex.: `tEXt`) ANTES do `IHDR`
+ * verdadeiro faz um leitor de offset fixo ler os bytes ERRADOS (dentro do payload do
+ * decoy) como se fossem width/height — enquanto o decoder real, que varre os chunks, acha
+ * o `IHDR` de verdade mais adiante, com a dimensão real (possivelmente forjada acima do
+ * teto). `detectImageSignature` (heurística de formato, só 4 bytes) não pega isso — é
+ * outra camada, outro propósito. Achado do security-engineer, retry Wave 2 (re-check do
+ * teto de pixels): PoC de ~100 bytes enganava a leitura por offset fixo para "1×1"
+ * enquanto o `IHDR` real declarava `5000×5000`.
+ */
+function hasValidPngSignatureAndIhdr(buffer: Buffer): boolean {
+  if (buffer.length < PNG_IHDR_MIN_LENGTH) return false;
+  for (let i = 0; i < PNG_FULL_SIGNATURE.length; i++) {
+    if (buffer[i] !== PNG_FULL_SIGNATURE[i]) return false;
+  }
+  if (buffer.readUInt32BE(PNG_FIRST_CHUNK_LENGTH_OFFSET) !== PNG_IHDR_EXPECTED_LENGTH) return false;
+  const chunkType = buffer.toString(
+    'ascii',
+    PNG_FIRST_CHUNK_TYPE_OFFSET,
+    PNG_FIRST_CHUNK_TYPE_OFFSET + 4,
+  );
+  return chunkType === 'IHDR';
+}
+
 function readPngDimensions(buffer: Buffer): ImageDimensions | null {
-  if (buffer.length < PNG_IHDR_MIN_LENGTH) return null;
+  if (!hasValidPngSignatureAndIhdr(buffer)) return null;
   const width = buffer.readUInt32BE(PNG_IHDR_WIDTH_OFFSET);
   const height = buffer.readUInt32BE(PNG_IHDR_HEIGHT_OFFSET);
   if (width === 0 || height === 0) return null;
