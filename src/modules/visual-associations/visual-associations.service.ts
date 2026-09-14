@@ -1,3 +1,4 @@
+import type { Paginated } from '../../domain/types';
 import type { Prisma } from '../../generated/prisma/client';
 import { BadRequestError, ConflictError, ForbiddenError, NotFoundError } from '../../http/errors';
 import { prisma } from '../../lib/prisma';
@@ -5,6 +6,7 @@ import type { ContentActor } from '../contents/contents.service';
 import { detectImageSignature, mimeTypeForFormat } from './image-signature';
 import type {
   CreateVisualAssociationBodyInput,
+  ListVisualAssociationsQuery,
   UpdateVisualAssociationBodyInput,
 } from './visual-associations.schema';
 
@@ -13,8 +15,9 @@ import type {
  * (`createVisualAssociation`), edição in-place (`updateVisualAssociation`) e remoção com
  * trava de vínculo ativo (`removeVisualAssociation`) — mais a guarda
  * `assertVisualAssociationWritable` (DEC-023-006), chamada por `updateVisualAssociation`
- * e `removeVisualAssociation`. Listagem/busca/entrega do binário ficam fora deste
- * arquivo.
+ * e `removeVisualAssociation` — e a leitura em massa (`normalizeCategoryKey`/
+ * `suggestCategories`, `listVisualAssociations`, `listVisualAssociationCategories`,
+ * TASK-023-014/COMP-023-005). Entrega do binário fica fora deste arquivo.
  */
 
 /**
@@ -340,4 +343,155 @@ export async function removeVisualAssociation(
     const details: RemoveVisualAssociationConflictDetails = { reachableLinks, outOfReachCount };
     throw new ConflictError('Associação visual possui vínculos ativos.', details);
   });
+}
+
+/**
+ * Trim + case-fold (NFR-022-007) — pura, sem I/O. Usada para agrupar sugestões
+ * (`suggestCategories`) e para comparar o filtro `category` da query contra o texto
+ * armazenado (`listVisualAssociations`, via `mode: 'insensitive'` do Prisma após
+ * `trim()` do valor de entrada, DEC-023-008) — nunca altera o texto armazenado.
+ */
+export function normalizeCategoryKey(category: string): string {
+  return category.trim().toLowerCase();
+}
+
+/**
+ * Sugestão de categoria (FR-022-025) — pura, sem I/O: filtra `existingCategories` cuja
+ * `normalizeCategoryKey` INCLUI `normalizeCategoryKey(query)`, devolvendo a GRAFIA
+ * ORIGINAL (nunca a normalizada) das categorias combinadas, sem duplicatas (grafia
+ * exata repetida na entrada não se repete na saída).
+ *
+ * `query` normalizado vazio (string vazia ou só espaço) → lista vazia, SEMPRE — decisão
+ * do Tech Lead na consolidação (achado do `qa` pré-código): a sugestão só existe em
+ * resposta a texto digitado; a fronteira HTTP real (`suggestCategoriesQuerySchema`) já
+ * barra `q` vazio antes de chegar aqui — este ramo só é alcançável pelo teste unitário
+ * da função pura.
+ */
+export function suggestCategories(existingCategories: readonly string[], query: string): string[] {
+  const normalizedQuery = normalizeCategoryKey(query);
+  if (normalizedQuery === '') {
+    return [];
+  }
+
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const category of existingCategories) {
+    if (!normalizeCategoryKey(category).includes(normalizedQuery)) {
+      continue;
+    }
+    if (seen.has(category)) {
+      continue;
+    }
+    seen.add(category);
+    result.push(category);
+  }
+  return result;
+}
+
+export interface VisualAssociationSummary {
+  id: string;
+  category: string;
+  /** Exclui vínculos cujo `RawContent` de origem foi soft-deleted (FR-022-019). */
+  linkCount: number;
+  createdAt: Date;
+}
+
+/**
+ * MESMA cadeia de exclusão de soft-delete usada por `removeVisualAssociation`
+ * (`frames.strip.ruleBreakdown.rawContent.deletedAt`, acima) e por
+ * `linkVisualAssociationToFrame`/`wasReuse` (`tira.service.ts`) — nunca reimplementada
+ * divergente (FR-022-019, TRISK-023-005).
+ */
+const ACTIVE_LINKED_FRAME_WHERE: Prisma.MnemonicFrameWhereInput = {
+  strip: { ruleBreakdown: { rawContent: { deletedAt: null } } },
+};
+
+/**
+ * `select` explícito (excluindo `imageData`, achado do `security-engineer` no gate 8 da
+ * Wave 1): cada linha da listagem pode ter até 5 MB no binário; arrastar isso por
+ * padrão numa consulta paginada é o custo que este `select` evita por construção.
+ * `linkCount` é a contagem FILTRADA da relação `frames` (`_count.select.frames.where`,
+ * suportado nativamente pelo Prisma como parte do MESMO `SELECT` — não é um round-trip
+ * por linha; medido em teste, TRISK-023-005).
+ */
+const VISUAL_ASSOCIATION_SUMMARY_SELECT = {
+  id: true,
+  category: true,
+  createdAt: true,
+  _count: { select: { frames: { where: ACTIVE_LINKED_FRAME_WHERE } } },
+} as const satisfies Prisma.VisualAssociationSelect;
+
+type VisualAssociationSummaryRow = Prisma.VisualAssociationGetPayload<{
+  select: typeof VISUAL_ASSOCIATION_SUMMARY_SELECT;
+}>;
+
+function toVisualAssociationSummary(row: VisualAssociationSummaryRow): VisualAssociationSummary {
+  return {
+    id: row.id,
+    category: row.category,
+    linkCount: row._count.frames,
+    createdAt: row.createdAt,
+  };
+}
+
+/**
+ * Lista o acervo paginado com filtro por categoria normalizada (FR-022-010/011,
+ * DEC-023-008/DEC-023-010) — mesmo padrão de paginação de `listRawContents`
+ * (`contents.service.ts:310-330`): `page`/`perPage` no `where` idêntico tanto no
+ * `findMany` quanto no `count`, ordenação `createdAt desc` determinística.
+ *
+ * `category` da query: `trim()` + `mode: 'insensitive'` do Prisma contra o texto
+ * ARMAZENADO (nunca alterado) — o mesmo agrupamento de `normalizeCategoryKey`, expresso
+ * como predicado SQL em vez de comparação em memória.
+ *
+ * Round-trips fixados em teste (gate 10 / TRISK-023-005): `findMany` (com o `_count`
+ * filtrado embutido no mesmo `SELECT`) + `count`, sempre 2 — não cresce com o nº de
+ * associações listadas nem com o nº de vínculos de cada uma.
+ */
+export async function listVisualAssociations(
+  query: ListVisualAssociationsQuery,
+  db: VisualAssociationClient = prisma,
+): Promise<Paginated<VisualAssociationSummary>> {
+  const { page, perPage, category } = query;
+  const where: Prisma.VisualAssociationWhereInput =
+    category === undefined ? {} : { category: { equals: category.trim(), mode: 'insensitive' } };
+
+  const [rows, total] = await Promise.all([
+    db.visualAssociation.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      skip: (page - 1) * perPage,
+      take: perPage,
+      select: VISUAL_ASSOCIATION_SUMMARY_SELECT,
+    }),
+    db.visualAssociation.count({ where }),
+  ]);
+
+  return {
+    data: rows.map(toVisualAssociationSummary),
+    page,
+    perPage,
+    total,
+  };
+}
+
+/**
+ * Categorias distintas do acervo que combinam com `q` (FR-022-025), grafia original
+ * preservada. `DISTINCT category` (1 round-trip, TRISK-023-004: custo cresce com o nº
+ * de categorias distintas do acervo — aceitável no volume inicial, ferramenta interna)
+ * seguido de `suggestCategories` em memória — não paginado (o resultado é uma lista de
+ * sugestão curta, não o acervo inteiro).
+ */
+export async function listVisualAssociationCategories(
+  query: { q: string },
+  db: VisualAssociationClient = prisma,
+): Promise<string[]> {
+  const rows = await db.visualAssociation.findMany({
+    distinct: ['category'],
+    select: { category: true },
+  });
+  return suggestCategories(
+    rows.map((row) => row.category),
+    query.q,
+  );
 }

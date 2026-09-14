@@ -8,19 +8,25 @@ import { verifyOrigin } from '../auth/auth.routes';
 import type { ContentActor } from '../contents/contents.service';
 import {
   createVisualAssociationBodySchema,
+  listVisualAssociationsQuerySchema,
+  suggestCategoriesQuerySchema,
   updateVisualAssociationBodySchema,
   visualAssociationIdParamSchema,
 } from './visual-associations.schema';
 import {
   createVisualAssociation,
+  listVisualAssociationCategories,
+  listVisualAssociations,
   removeVisualAssociation,
   updateVisualAssociation,
 } from './visual-associations.service';
 
 /**
- * Superfície HTTP de escrita do acervo de associações visuais (COMP-023-006) — cobre
- * hoje criação, edição e remoção; listagem, sugestão de categoria e entrega do binário
- * ESTENDEM este módulo (`visualAssociationsRoutes`), não o recriam.
+ * Superfície HTTP do acervo de associações visuais (COMP-023-006) — cobre criação,
+ * edição, remoção (TASK-023-008/010) e, aqui (TASK-023-014), listagem paginada
+ * (`GET /visual-associations`) e sugestão de categoria (`GET
+ * /visual-associations/categories`); entrega do binário ESTENDE este módulo
+ * (TASK-023-016), não o recria.
  *
  * `upload` (`multer`, `memoryStorage()` — DEC-023-003, nunca `diskStorage()`: o service
  * só persiste depois de `detectImageSignature` confirmar o formato) é instanciado UMA
@@ -69,6 +75,36 @@ function actorOf(req: Request): ContentActor {
   if (req.auth === undefined) throw new UnauthorizedError();
   return { id: req.auth.userId, role: req.auth.role };
 }
+
+/**
+ * GET /visual-associations — lista/busca por categoria, paginada (FR-022-010/011).
+ * Leitura pura, sem `verifyOrigin` (mesmo raciocínio de `GET /contents`,
+ * `contents.routes.ts` — CSRF só se aplica a mutação de estado).
+ */
+visualAssociationsRoutes.get(
+  '/visual-associations',
+  requireRole('GET', '/visual-associations', 'EDITOR', 'ADMIN'),
+  async (req, res) => {
+    const query = listVisualAssociationsQuerySchema.parse(req.query);
+    const result = await listVisualAssociations(query);
+    res.json(result);
+  },
+);
+
+/**
+ * GET /visual-associations/categories — sugestão de categoria (FR-022-025). Registrada
+ * ANTES de qualquer rota `GET /visual-associations/:id` futura (TASK-023-016) — caminho
+ * estático precede `:param` na árvore montada.
+ */
+visualAssociationsRoutes.get(
+  '/visual-associations/categories',
+  requireRole('GET', '/visual-associations/categories', 'EDITOR', 'ADMIN'),
+  async (req, res) => {
+    const query = suggestCategoriesQuerySchema.parse(req.query);
+    const categories = await listVisualAssociationCategories(query);
+    res.json(categories);
+  },
+);
 
 /**
  * POST /visual-associations — cria a associação visual (FR-022-001/002/003/004).

@@ -7,17 +7,12 @@ import { env } from '../../src/config/env';
 import { ACCESS_COOKIE } from '../../src/http/cookies';
 import { prisma } from '../../src/lib/prisma';
 import { generateToken, hashToken } from '../../src/lib/tokens';
-import type { ContentActor } from '../../src/modules/contents/contents.service';
-import { openMnemonicStrip } from '../../src/modules/tira/tira.service';
-import {
-  createRawContent,
-  createTopic,
-  createUser,
-  seedRuleBreakdown,
-} from '../support/production-events-fixtures';
+import { createUser } from '../support/production-events-fixtures';
 import {
   createVisualAssociation as seedVisualAssociation,
+  linkFrameToAssociation,
   PNG_FIXTURE_BUFFER as PNG_FIXTURE,
+  softDeleteRawContentRow,
 } from '../support/visual-association-fixtures';
 import { closeTestDb, resetDb, testPrisma } from './db';
 
@@ -85,40 +80,10 @@ function withCookie(access: string): [string, string] {
   return ['Cookie', `${ACCESS_COOKIE}=${access}`];
 }
 
-/**
- * Monta a cadeia RawContent→RuleBreakdown→MnemonicStrip→MnemonicFrame (via
- * `openMnemonicStrip`, TASK-012-005) e vincula o 1º Quadro gerado à `associationId` —
- * gravado direto via `testPrisma`, mesmo padrão de
- * `visual-associations.model.integration.test.ts` (isola o vínculo do comportamento de
- * `tira.service.ts`, que não é o alvo destas provas de remoção). `author` é sempre quem
- * "alcança" o vínculo por autoria (FR-022-022) — `abre` a Tira como o próprio autor.
- */
-async function linkFrameToAssociation(
-  author: { id: string },
-  associationId: string,
-): Promise<{ rawContentId: string; frameId: string }> {
-  const topicId = await createTopic();
-  const rawContent = await createRawContent(author.id, topicId);
-  await seedRuleBreakdown(rawContent.id);
-  const actor: ContentActor = { id: author.id, role: 'EDITOR' };
-  const strip = await openMnemonicStrip(rawContent.id, actor, testPrisma);
-  const frame = strip.frames[0];
-  if (frame === undefined) throw new Error('Tira gerada sem nenhum Quadro.');
-
-  await testPrisma.mnemonicFrame.update({
-    where: { id: frame.id },
-    data: { visualAssociationId: associationId },
-  });
-  return { rawContentId: rawContent.id, frameId: frame.id };
-}
-
-/** Soft-delete direto via `testPrisma` (setup — não é o service `softDeleteRawContent` sob teste aqui). */
-async function softDeleteRawContentRow(rawContentId: string): Promise<void> {
-  await testPrisma.rawContent.update({
-    where: { id: rawContentId },
-    data: { deletedAt: new Date() },
-  });
-}
+// `linkFrameToAssociation`/`softDeleteRawContentRow`: helper único, agora em
+// `tests/support/visual-association-fixtures.ts` (TASK-023-014, escoteiro — reusado por
+// `visual-associations.service.integration.test.ts` sem duplicar a montagem da cadeia
+// RawContent→RuleBreakdown→MnemonicStrip→MnemonicFrame).
 
 beforeEach(async () => {
   await resetDb();
@@ -539,6 +504,33 @@ describe('AC-022-014 (parte — POST/PATCH/DELETE recusados a STUDENT/anônimo)'
       .set(...withCookie(accessStudent));
     expect(asStudent.status).toBe(403);
   });
+
+  it('GET /visual-associations sem sessão → 401; sessão STUDENT → 403 (TASK-023-014)', async () => {
+    const anon = await request(app).get('/api/v1/visual-associations');
+    expect(anon.status).toBe(401);
+
+    const student = await createUser('STUDENT');
+    const accessStudent = await seedSession(student.id);
+    const asStudent = await request(app)
+      .get('/api/v1/visual-associations')
+      .set(...withCookie(accessStudent));
+    expect(asStudent.status).toBe(403);
+  });
+
+  it('GET /visual-associations/categories sem sessão → 401; sessão STUDENT → 403 (TASK-023-014)', async () => {
+    const anon = await request(app)
+      .get('/api/v1/visual-associations/categories')
+      .query({ q: 'trib' });
+    expect(anon.status).toBe(401);
+
+    const student = await createUser('STUDENT');
+    const accessStudent = await seedSession(student.id);
+    const asStudent = await request(app)
+      .get('/api/v1/visual-associations/categories')
+      .query({ q: 'trib' })
+      .set(...withCookie(accessStudent));
+    expect(asStudent.status).toBe(403);
+  });
 });
 
 describe('AC-022-007 (cobre FR-022-007): remoção sem nenhum vínculo exclui a associação', () => {
@@ -734,5 +726,283 @@ describe('Guarda de escrita — mutação contável (assertVisualAssociationWrit
     await expect(
       testPrisma.visualAssociation.findUnique({ where: { id: associationForAdmin.id } }),
     ).resolves.toBeNull();
+  });
+});
+
+/**
+ * `listVisualAssociations`/`listVisualAssociationCategories` (COMP-023-005/006,
+ * TASK-023-014) — leitura em massa do acervo: listagem paginada com `linkCount` e
+ * filtro por categoria normalizada, e sugestão de categoria. A medição de round-trips
+ * (TRISK-023-005) vive em `visual-associations.service.integration.test.ts` (chamada
+ * direta ao service com `withQueryProbe`) — este arquivo prova o comportamento
+ * observável via HTTP.
+ */
+
+/** Forma do item de `res.body.data` de `GET /visual-associations` — só o necessário aos testes abaixo. */
+interface VisualAssociationSummaryItem {
+  id: string;
+  category: string;
+  linkCount: number;
+}
+
+/** `res.body` do supertest é `any` — cast único para o shape esperado, evita `no-unsafe-call` repetido. */
+function summaryItems(res: { body: { data: unknown } }): VisualAssociationSummaryItem[] {
+  return res.body.data as VisualAssociationSummaryItem[];
+}
+describe('GET /visual-associations (AC-022-009 parte, FR-022-010/011/012): listagem paginada com linkCount', () => {
+  it('acervo com 2 associações, cada uma com nº distinto de vínculos ATIVOS → cada item traz id/category/linkCount corretos, confrontado por leitura direta do banco', async () => {
+    const editor = await createUser('EDITOR');
+    const access = await seedSession(editor.id);
+    const associationA = await seedVisualAssociation(editor.id, { category: 'Tributário' });
+    const associationB = await seedVisualAssociation(editor.id, { category: 'Trabalhista' });
+    await linkFrameToAssociation(editor, associationA.id);
+    await linkFrameToAssociation(editor, associationA.id);
+    await linkFrameToAssociation(editor, associationB.id);
+
+    const res = await request(app)
+      .get('/api/v1/visual-associations')
+      .set(...withCookie(access));
+
+    expect(res.status).toBe(200);
+    const itemA = summaryItems(res).find((item) => item.id === associationA.id);
+    const itemB = summaryItems(res).find((item) => item.id === associationB.id);
+    expect(itemA).toMatchObject({ id: associationA.id, category: 'Tributário', linkCount: 2 });
+    expect(itemB).toMatchObject({ id: associationB.id, category: 'Trabalhista', linkCount: 1 });
+
+    // Confrontação por leitura DIRETA do banco — não só o número devolvido pela API.
+    const dbLinkCountA = await testPrisma.mnemonicFrame.count({
+      where: { visualAssociationId: associationA.id },
+    });
+    const dbLinkCountB = await testPrisma.mnemonicFrame.count({
+      where: { visualAssociationId: associationB.id },
+    });
+    expect(dbLinkCountA).toBe(2);
+    expect(dbLinkCountB).toBe(1);
+  });
+
+  it('select explícito (achado do security-engineer, gate 8 da Wave 1): nenhum item da listagem expõe imageData', async () => {
+    const editor = await createUser('EDITOR');
+    const access = await seedSession(editor.id);
+    await seedVisualAssociation(editor.id);
+
+    const res = await request(app)
+      .get('/api/v1/visual-associations')
+      .set(...withCookie(access));
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.length).toBeGreaterThan(0);
+    for (const item of res.body.data) {
+      expect(item).not.toHaveProperty('imageData');
+    }
+  });
+});
+
+describe('GET /visual-associations?category=... (AC-022-010, cobre FR-022-011): filtro por categoria', () => {
+  it('category=X devolve SOMENTE as associações de X; category=Y (outra) devolve as de Y; sem category devolve todas (paginadas)', async () => {
+    const editor = await createUser('EDITOR');
+    const access = await seedSession(editor.id);
+    const associationX = await seedVisualAssociation(editor.id, { category: 'Categoria X' });
+    const associationY = await seedVisualAssociation(editor.id, { category: 'Categoria Y' });
+
+    const onlyX = await request(app)
+      .get('/api/v1/visual-associations')
+      .query({ category: 'Categoria X' })
+      .set(...withCookie(access));
+    expect(onlyX.status).toBe(200);
+    expect(summaryItems(onlyX).map((item) => item.id)).toEqual([associationX.id]);
+
+    const onlyY = await request(app)
+      .get('/api/v1/visual-associations')
+      .query({ category: 'Categoria Y' })
+      .set(...withCookie(access));
+    expect(summaryItems(onlyY).map((item) => item.id)).toEqual([associationY.id]);
+
+    const all = await request(app)
+      .get('/api/v1/visual-associations')
+      .set(...withCookie(access));
+    expect(
+      summaryItems(all)
+        .map((item) => item.id)
+        .sort(),
+    ).toEqual([associationX.id, associationY.id].sort());
+  });
+});
+
+describe('AC-022-025 (cobre NFR-022-007): filtro por categoria ignora capitalização e espaço nas bordas do TERMO buscado (DEC-023-008), sem alterar o texto armazenado', () => {
+  it('duas associações com a mesma categoria em capitalizações diferentes ("Tributário"/"TRIBUTÁRIO") → filtro "  tributário  " (espaço nas bordas + minúsculo) devolve AMBAS agrupadas; leitura direta por id confirma o texto original intocado nas duas linhas', async () => {
+    const editor = await createUser('EDITOR');
+    const access = await seedSession(editor.id);
+    const capitalized = await seedVisualAssociation(editor.id, { category: 'Tributário' });
+    const allCaps = await seedVisualAssociation(editor.id, { category: 'TRIBUTÁRIO' });
+
+    const res = await request(app)
+      .get('/api/v1/visual-associations')
+      .query({ category: '  tributário  ' })
+      .set(...withCookie(access));
+
+    expect(res.status).toBe(200);
+    expect(
+      summaryItems(res)
+        .map((item) => item.id)
+        .sort(),
+    ).toEqual([capitalized.id, allCaps.id].sort());
+
+    const rowCapitalized = await testPrisma.visualAssociation.findUniqueOrThrow({
+      where: { id: capitalized.id },
+    });
+    const rowAllCaps = await testPrisma.visualAssociation.findUniqueOrThrow({
+      where: { id: allCaps.id },
+    });
+    expect(rowCapitalized.category).toBe('Tributário');
+    expect(rowAllCaps.category).toBe('TRIBUTÁRIO');
+  });
+});
+
+describe('AC-022-016 (parte — linkCount exibido, cobre FR-022-019): predicado composto de 2 eixos, um caso por eixo ([Testes] lição ativa)', () => {
+  it('(a) vínculo de OUTRA associação não entra na contagem desta associação', async () => {
+    const editor = await createUser('EDITOR');
+    const access = await seedSession(editor.id);
+    const target = await seedVisualAssociation(editor.id);
+    const other = await seedVisualAssociation(editor.id);
+    await linkFrameToAssociation(editor, other.id);
+
+    const res = await request(app)
+      .get('/api/v1/visual-associations')
+      .set(...withCookie(access));
+
+    const item = summaryItems(res).find((i) => i.id === target.id);
+    expect(item?.linkCount).toBe(0);
+  });
+
+  it('(b) vínculo DESTA associação cujo RawContent de origem está soft-deleted não entra', async () => {
+    const editor = await createUser('EDITOR');
+    const access = await seedSession(editor.id);
+    const target = await seedVisualAssociation(editor.id);
+    const { rawContentId } = await linkFrameToAssociation(editor, target.id);
+    await softDeleteRawContentRow(rawContentId);
+
+    const res = await request(app)
+      .get('/api/v1/visual-associations')
+      .set(...withCookie(access));
+
+    const item = summaryItems(res).find((i) => i.id === target.id);
+    expect(item?.linkCount).toBe(0);
+  });
+
+  it('(c) vínculo DESTA associação ativo entra na contagem', async () => {
+    const editor = await createUser('EDITOR');
+    const access = await seedSession(editor.id);
+    const target = await seedVisualAssociation(editor.id);
+    await linkFrameToAssociation(editor, target.id);
+
+    const res = await request(app)
+      .get('/api/v1/visual-associations')
+      .set(...withCookie(access));
+
+    const item = summaryItems(res).find((i) => i.id === target.id);
+    expect(item?.linkCount).toBe(1);
+  });
+
+  it('1 vínculo ATIVO e 1 SOFT-DELETED simultaneamente na MESMA associação → linkCount conta só o ativo (par que fecha a lição, mesmo par de fixtures da trava de remoção, TASK-023-010)', async () => {
+    const editor = await createUser('EDITOR');
+    const access = await seedSession(editor.id);
+    const target = await seedVisualAssociation(editor.id);
+    const softDeleted = await linkFrameToAssociation(editor, target.id);
+    await linkFrameToAssociation(editor, target.id);
+    await softDeleteRawContentRow(softDeleted.rawContentId);
+
+    const res = await request(app)
+      .get('/api/v1/visual-associations')
+      .set(...withCookie(access));
+
+    const item = summaryItems(res).find((i) => i.id === target.id);
+    expect(item?.linkCount).toBe(1);
+  });
+});
+
+describe('Paginação (DEC-023-010, contrato do próprio item + AC-022-009/010)', () => {
+  it('sem page/perPage usa os defaults (page: 1, perPage: 20)', async () => {
+    const editor = await createUser('EDITOR');
+    const access = await seedSession(editor.id);
+    await seedVisualAssociation(editor.id);
+
+    const res = await request(app)
+      .get('/api/v1/visual-associations')
+      .set(...withCookie(access));
+
+    expect(res.status).toBe(200);
+    expect(res.body.page).toBe(1);
+    expect(res.body.perPage).toBe(20);
+  });
+
+  it('acervo de 25 associações — page=2 devolve as 5 restantes', async () => {
+    const editor = await createUser('EDITOR');
+    const access = await seedSession(editor.id);
+    for (let i = 0; i < 25; i += 1) {
+      await seedVisualAssociation(editor.id);
+    }
+
+    const res = await request(app)
+      .get('/api/v1/visual-associations')
+      .query({ page: 2, perPage: 20 })
+      .set(...withCookie(access));
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toHaveLength(5);
+    expect(res.body.total).toBe(25);
+  });
+
+  it('perPage=101 é recusado (422, teto do schema já existente, TASK-023-003)', async () => {
+    const editor = await createUser('EDITOR');
+    const access = await seedSession(editor.id);
+
+    const res = await request(app)
+      .get('/api/v1/visual-associations')
+      .query({ perPage: 101 })
+      .set(...withCookie(access));
+
+    expect(res.status).toBe(422);
+  });
+});
+
+describe('GET /visual-associations/categories (AC-022-022, cobre FR-022-025): sugestão de categoria', () => {
+  it('acervo com "Tributário" e "Trabalhista", q=trib → devolve só "Tributário" (grafia original)', async () => {
+    const editor = await createUser('EDITOR');
+    const access = await seedSession(editor.id);
+    await seedVisualAssociation(editor.id, { category: 'Tributário' });
+    await seedVisualAssociation(editor.id, { category: 'Trabalhista' });
+
+    const res = await request(app)
+      .get('/api/v1/visual-associations/categories')
+      .query({ q: 'trib' })
+      .set(...withCookie(access));
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(['Tributário']);
+  });
+
+  it('q sem nenhuma combinação → lista vazia', async () => {
+    const editor = await createUser('EDITOR');
+    const access = await seedSession(editor.id);
+    await seedVisualAssociation(editor.id, { category: 'Tributário' });
+
+    const res = await request(app)
+      .get('/api/v1/visual-associations/categories')
+      .query({ q: 'penal' })
+      .set(...withCookie(access));
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([]);
+  });
+
+  it('q ausente → 422 (suggestCategoriesQuerySchema exige q não-vazio)', async () => {
+    const editor = await createUser('EDITOR');
+    const access = await seedSession(editor.id);
+
+    const res = await request(app)
+      .get('/api/v1/visual-associations/categories')
+      .set(...withCookie(access));
+
+    expect(res.status).toBe(422);
   });
 });
