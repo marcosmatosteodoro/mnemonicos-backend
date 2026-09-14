@@ -10,28 +10,12 @@ import {
   readImageDimensions,
   type RasterImageFormat,
 } from '../../src/modules/visual-associations/image-signature';
-
-function crc32(bytes: Buffer): number {
-  let crc = 0xffffffff;
-  for (let i = 0; i < bytes.length; i++) {
-    crc ^= bytes[i]!;
-    for (let bit = 0; bit < 8; bit++) {
-      crc = crc & 1 ? (crc >>> 1) ^ 0xedb88320 : crc >>> 1;
-    }
-  }
-  return (crc ^ 0xffffffff) >>> 0;
-}
-
-/** Chunk PNG REAL (length + type + data + crc) — usado pelos PoCs de `hasAnimatedPngChunk`
- * abaixo, que precisam de fronteiras de chunk corretas (não só um IHDR solto). */
-function pngChunk(type: string, data: Buffer): Buffer {
-  const typeBuf = Buffer.from(type, 'ascii');
-  const length = Buffer.alloc(4);
-  length.writeUInt32BE(data.length, 0);
-  const crc = Buffer.alloc(4);
-  crc.writeUInt32BE(crc32(Buffer.concat([typeBuf, data])), 0);
-  return Buffer.concat([length, typeBuf, data, crc]);
-}
+import {
+  buildPngWithDecoyChunkBeforeIhdr,
+  buildPngWithDuplicateIhdr,
+  pngChunk,
+  pngHeaderWithDimensions,
+} from '../support/png-fixtures';
 
 /**
  * PNG 1×1 estático (sem `acTL` nenhum) genuinamente válido — `IHDR`+`IDAT`+`IEND`, todos
@@ -67,86 +51,6 @@ function buildStaticPngWithAcTLBytesInPayload(location: 'text-chunk' | 'pixel-da
   const iend = pngChunk('IEND', Buffer.alloc(0));
 
   return Buffer.concat([signature, ihdr, ...middleChunks, idat, iend]);
-}
-
-/** `IHDR` de um PNG com `width`/`height` arbitrários — só o cabeçalho (sem `IDAT`/`IEND`),
- * suficiente para `readImageDimensions`, que nunca olha além dos primeiros 24 bytes. Inclui
- * o CRC (4 bytes, valor dummy — ninguém aqui o valida) para que o chunk fique com o
- * tamanho REAL de um chunk PNG: `hasAnimatedPngChunk` (varredura por fronteira de chunk)
- * precisa disso para achar corretamente o próximo chunk depois do IHDR. */
-function pngHeaderWithDimensions(width: number, height: number): Buffer {
-  const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-  const chunkLength = Buffer.alloc(4);
-  chunkLength.writeUInt32BE(13, 0);
-  const chunkType = Buffer.from('IHDR', 'ascii');
-  const ihdrData = Buffer.alloc(13);
-  ihdrData.writeUInt32BE(width, 0);
-  ihdrData.writeUInt32BE(height, 4);
-  const crc = Buffer.alloc(4);
-  return Buffer.concat([signature, chunkLength, chunkType, ihdrData, crc]);
-}
-
-/**
- * PNG com um chunk decoy (`tEXt`, 20 bytes de payload) ANTES do `IHDR` real. Uma leitura de
- * OFFSET FIXO (16/20, sem validar o que está ali) leria os bytes 16-23 — que caem DENTRO
- * do payload do decoy, construído de propósito para decodificar como `width=1,height=1`
- * — e liberaria a imagem como inofensiva; o decoder real (`@pdf-lib/upng`) VARRE os
- * chunks e acharia o `IHDR` verdadeiro mais adiante, com a dimensão FORJADA
- * (`fakeWidth`/`fakeHeight`, tipicamente acima do teto). `readImageDimensions` precisa
- * devolver `null` para o arquivo inteiro — nem o decoy nem o `IHDR` forjado podem
- * "vazar" uma dimensão aceita.
- */
-function pngWithDecoyChunkBeforeIhdr(fakeWidth: number, fakeHeight: number): Buffer {
-  const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-
-  const decoyLength = Buffer.alloc(4);
-  decoyLength.writeUInt32BE(20, 0);
-  const decoyType = Buffer.from('tEXt', 'ascii');
-  const decoyPayload = Buffer.concat([
-    Buffer.from([0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01]), // offsets ABSOLUTOS 16-23: "1×1"
-    Buffer.alloc(12, 0x00), // completa os 20 bytes declarados em decoyLength
-  ]);
-  const decoyCrc = Buffer.alloc(4); // ninguém aqui valida CRC — irrelevante para o PoC
-  const decoyChunk = Buffer.concat([decoyLength, decoyType, decoyPayload, decoyCrc]);
-
-  const ihdrLength = Buffer.alloc(4);
-  ihdrLength.writeUInt32BE(13, 0);
-  const ihdrType = Buffer.from('IHDR', 'ascii');
-  const ihdrData = Buffer.alloc(13);
-  ihdrData.writeUInt32BE(fakeWidth, 0);
-  ihdrData.writeUInt32BE(fakeHeight, 4);
-  const ihdrCrc = Buffer.alloc(4);
-  const ihdrChunk = Buffer.concat([ihdrLength, ihdrType, ihdrData, ihdrCrc]);
-
-  return Buffer.concat([signature, decoyChunk, ihdrChunk]);
-}
-
-/**
- * PNG com 2 chunks `IHDR` — `width1`×`height1` primeiro, `width2`×`height2` depois. O
- * decoder real (`@pdf-lib/upng`) sobrescreve width/height a cada `IHDR` que encontra —
- * vence o ÚLTIMO, não o primeiro — então um `IHDR` pequeno seguido de um `IHDR` gigante
- * engana qualquer leitura que confie só no 1º. `readImageDimensions` precisa devolver
- * `null` para o arquivo inteiro (0 ou 2+ `IHDR` é inválido pelo spec PNG).
- */
-function pngWithDuplicateIhdr(
-  width1: number,
-  height1: number,
-  width2: number,
-  height2: number,
-): Buffer {
-  const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-
-  const ihdr1Data = Buffer.alloc(13);
-  ihdr1Data.writeUInt32BE(width1, 0);
-  ihdr1Data.writeUInt32BE(height1, 4);
-  const ihdr1 = pngChunk('IHDR', ihdr1Data);
-
-  const ihdr2Data = Buffer.alloc(13);
-  ihdr2Data.writeUInt32BE(width2, 0);
-  ihdr2Data.writeUInt32BE(height2, 4);
-  const ihdr2 = pngChunk('IHDR', ihdr2Data);
-
-  return Buffer.concat([signature, ihdr1, ihdr2]);
 }
 
 /** PNG cujo 1º (e único) chunk usa o TYPE `"ihdr"` (minúsculo) em vez de `"IHDR"` — o case
@@ -338,7 +242,7 @@ describe('readImageDimensions (lê SÓ o cabeçalho)', () => {
   });
 
   it('PNG: devolve null (nunca a dimensão do decoy NEM a forjada) quando um chunk decoy antecede o IHDR real', () => {
-    const forged = pngWithDecoyChunkBeforeIhdr(5000, 5000);
+    const forged = buildPngWithDecoyChunkBeforeIhdr(5000, 5000);
 
     const result = readImageDimensions(forged, 'PNG');
 
@@ -348,7 +252,7 @@ describe('readImageDimensions (lê SÓ o cabeçalho)', () => {
   });
 
   it('PNG: devolve null (nunca a dimensão do 1º NEM a do 2º IHDR) quando o arquivo tem 2 chunks IHDR', () => {
-    const forged = pngWithDuplicateIhdr(1, 1, 20_000, 20_000);
+    const forged = buildPngWithDuplicateIhdr(1, 1, 20_000, 20_000);
 
     const result = readImageDimensions(forged, 'PNG');
 
@@ -358,7 +262,7 @@ describe('readImageDimensions (lê SÓ o cabeçalho)', () => {
   });
 
   it('PNG: 1 único IHDR legítimo continua lido normalmente (controle positivo pós-varredura unificada)', () => {
-    const buffer = pngWithDuplicateIhdr(4000, 3000, 4000, 3000).subarray(0, 8 + 8 + 13 + 4); // só o 1º IHDR
+    const buffer = buildPngWithDuplicateIhdr(4000, 3000, 4000, 3000).subarray(0, 8 + 8 + 13 + 4); // só o 1º IHDR
 
     expect(readImageDimensions(buffer, 'PNG')).toEqual({ width: 4000, height: 3000 });
   });
