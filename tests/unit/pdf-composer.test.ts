@@ -108,7 +108,7 @@ function buildValidPng1x1(): Buffer {
  * zero-coeficientes, exatamente o que este arquivo codifica à mão. Verificado por
  * `doc.embedJpg(...)` real contra o pdf-lib instalado (não só a heurística de assinatura).
  */
-function buildValidJpeg1x1(): Buffer {
+function buildValidJpeg1x1Bytes(): Buffer {
   const u16 = (n: number): Buffer => {
     const b = Buffer.alloc(2);
     b.writeUInt16BE(n, 0);
@@ -155,9 +155,31 @@ function buildValidJpeg1x1(): Buffer {
   const scanData = Buffer.from([0x0f]); // '0000' (DC cat0 + AC EOB) + '1111' padding
   const eoi = Buffer.from([0xff, 0xd9]);
 
-  return toStandaloneBuffer(
-    Buffer.concat([soi, app0, dqt, sof0, dhtDc, dhtAc, sos, scanData, eoi]),
-  );
+  return Buffer.concat([soi, app0, dqt, sof0, dhtDc, dhtAc, sos, scanData, eoi]);
+}
+
+function buildValidJpeg1x1(): Buffer {
+  return toStandaloneBuffer(buildValidJpeg1x1Bytes());
+}
+
+/**
+ * Mesmo JPEG 1×1 válido, mas construído do jeito que uma leitura real do Prisma produz —
+ * `Buffer.concat` de um payload pequeno cai no pool interno do Node (`byteOffset !== 0`),
+ * SEM a normalização `toStandaloneBuffer` que as outras fixtures deste arquivo usam.
+ * Retry Wave 2, achado F3 do code-reviewer: prova que `embedFrameImage` normaliza o
+ * buffer sozinho antes do embed, em vez de depender de quem chama já ter normalizado —
+ * lança se a pré-condição (`byteOffset !== 0`) não se confirmar, para o teste nunca passar
+ * "por acidente" testando um buffer que não reproduz o bug.
+ */
+function buildValidJpeg1x1PoolBacked(): Buffer {
+  const poolBacked = Buffer.concat([buildValidJpeg1x1Bytes()]);
+  if (poolBacked.byteOffset === 0) {
+    throw new Error(
+      'Pré-condição do teste F3 falhou: buffer não ficou pool-backed (byteOffset === 0) — ' +
+        'a fixture não reproduz o cenário de produção que este teste precisa provar.',
+    );
+  }
+  return poolBacked;
 }
 
 /**
@@ -317,6 +339,14 @@ function pageImageDims(doc: PDFDocument, pageIndex: number): { width: number; he
 const META: { variant: 'RESUMO'; generatedAt: Date } = {
   variant: 'RESUMO',
   generatedAt: new Date('2026-03-17T08:05:00.000Z'), // "17/03/2026, 05:05:00" — sem "49"
+};
+
+/** Mesma data de `META`, Variante diferente — usada só pelo teste de F1 (retry Wave 2)
+ * abaixo, que precisa das DUAS variantes reais para provar que o rótulo lê `meta.variant`
+ * em vez de uma constante fixa. */
+const META_TIRA: { variant: 'TIRA'; generatedAt: Date } = {
+  variant: 'TIRA',
+  generatedAt: new Date('2026-03-17T08:05:00.000Z'),
 };
 
 describe('Fixtures locais são realmente decodíveis (pré-condição, TASK-025-007)', () => {
@@ -550,6 +580,39 @@ describe('buildStripPdf/buildSummaryPdf — AC-024-005 (rótulo de rascunho + ge
       expect(text).toContain(hexOfAscii('Gerado em:'));
     }
   });
+
+  it('retry Wave 2, achado F1: o rótulo nomeia a Variante lida de meta.variant — TIRA em buildStripPdf, RESUMO em buildSummaryPdf, PÁGINA A PÁGINA (mutante que fixasse uma constante morre)', async () => {
+    const stripBuffer = await buildStripPdf(
+      [
+        { text: 'QUADRO_UM', image: null },
+        { text: 'QUADRO_DOIS', image: null },
+      ],
+      META_TIRA,
+    );
+    const stripDoc = await PDFDocument.load(stripBuffer);
+    expect(stripDoc.getPageCount()).toBe(2);
+    for (let i = 0; i < stripDoc.getPageCount(); i++) {
+      const text = decodedPageContent(stripDoc, i);
+      expect(text).toContain(hexOfAscii('TIRA'));
+      expect(text).not.toContain(hexOfAscii('RESUMO'));
+    }
+
+    const summaryBuffer = await buildSummaryPdf(
+      {
+        concept: 'CONCEITO',
+        action: 'ACAO',
+        object: 'OBJETO',
+        condition: null,
+        exception: null,
+        essence: 'SINTESE',
+      },
+      META, // META.variant === 'RESUMO'
+    );
+    const summaryDoc = await PDFDocument.load(summaryBuffer);
+    const summaryText = decodedPageContent(summaryDoc, 0);
+    expect(summaryText).toContain(hexOfAscii('RESUMO'));
+    expect(summaryText).not.toContain(hexOfAscii('TIRA'));
+  });
 });
 
 describe('buildStripPdf/buildSummaryPdf — AC-024-010 (postura de segurança, comportamental)', () => {
@@ -618,6 +681,29 @@ describe('buildStripPdf — AC-024-011 (imagem usada exatamente como recebida, N
   });
 });
 
+describe('buildStripPdf — retry Wave 2, achado F3 do code-reviewer (buffer pool-backed não pode sumir silenciosamente)', () => {
+  it('JPEG construído do jeito que a produção constrói (pool-backed, byteOffset !== 0, NÃO normalizado a priori) ainda é embutido — 1 XObject, conteúdo byte-a-byte idêntico', async () => {
+    const poolBackedJpeg = buildValidJpeg1x1PoolBacked();
+    expect(poolBackedJpeg.byteOffset).not.toBe(0); // confirma a pré-condição do teste
+
+    const skipped: ImageSkippedInfo[] = [];
+    const buffer = await buildStripPdf(
+      [{ text: 'QUADRO_JPEG_POOL_BACKED', image: { buffer: poolBackedJpeg, format: 'JPEG' } }],
+      META,
+      (info) => skipped.push(info),
+    );
+    const doc = await PDFDocument.load(buffer);
+
+    expect(skipped).toEqual([]); // NÃO pode ter caído no caminho "só texto"
+    expect(pageXObjectCount(doc, 0)).toBe(1);
+
+    // NFR-024-004 continua valendo: o CONTEÚDO embutido é idêntico byte-a-byte ao
+    // original — só o ArrayBuffer subjacente do argumento mudou, nunca os bytes.
+    const embedded = pageImageRawBytes(doc, 0);
+    expect(Buffer.compare(embedded, poolBackedJpeg)).toBe(0);
+  });
+});
+
 describe('Postura estrutural de pdf-composer.ts (NFR-024-001/002/004, gate 1)', () => {
   const source = readFileSync(
     join(__dirname, '../../src/modules/publication/pdf-composer.ts'),
@@ -628,19 +714,60 @@ describe('Postura estrutural de pdf-composer.ts (NFR-024-001/002/004, gate 1)', 
     .filter((line) => !/^\s*(\*|\/\/)/.test(line))
     .join('\n');
 
-  it('nenhuma chamada/identificador de rede fora de comentário (NFR-024-001)', () => {
-    const networkPattern =
-      /fetch\(|axios|XMLHttpRequest|new WebSocket|require\([^)]*(http|https|net|dns)|from ['"](http|https|net|dns)/i;
-    expect(networkPattern.test(nonCommentLines)).toBe(false);
+  /** Presente de verdade no arquivo (`import { PageSizes, PDFDocument, StandardFonts }
+   * from 'pdf-lib'`) — controle positivo repetido em CADA prova de ausência abaixo: se
+   * `nonCommentLines` estivesse vazio/corrompido por um bug de path ou de filtro, toda
+   * prova de ausência passaria por acidente (grep vazio nunca acha nada). */
+  const POSITIVE_CONTROL = "from 'pdf-lib'";
+
+  /** `require('mod')`, `require('node:mod')`, `from 'mod'` e `from 'node:mod'` — as 4
+   * formas pelas quais um import da stdlib pode aparecer (retry Wave 2, achado F2 do
+   * code-reviewer: o grep anterior só cobria `http`/`https`/`net`/`dns` sem prefixo,
+   * plantar `from 'node:https'` continuava verde). */
+  function importsModule(text: string, moduleName: string): boolean {
+    const pattern = new RegExp(
+      `require\\(\\s*['"](?:node:)?${moduleName}['"]\\s*\\)|from\\s+['"](?:node:)?${moduleName}['"]`,
+    );
+    return pattern.test(text);
+  }
+
+  const NETWORK_MODULES = ['http', 'https', 'net', 'dns'];
+  const PROCESS_ESCAPE_MODULES = ['fs', 'child_process'];
+
+  it('nenhuma chamada/identificador de rede fora de comentário — cobre especificador node: (NFR-024-001)', () => {
+    expect(nonCommentLines).toContain(POSITIVE_CONTROL);
+
+    const networkCallPattern = /fetch\(|axios|XMLHttpRequest|new WebSocket/i;
+    expect(networkCallPattern.test(nonCommentLines)).toBe(false);
+    for (const moduleName of NETWORK_MODULES) {
+      expect(importsModule(nonCommentLines, moduleName)).toBe(false);
+    }
   });
 
-  it('nenhuma escrita de I/O parcial fora de comentário — Buffer só via PDFDocument.save() ao final', () => {
-    const partialWritePattern = /\bfs\.|createWriteStream|res\.write/;
+  it('nenhuma escrita de I/O parcial fora de comentário — Buffer só via PDFDocument.save() ao final, cobre especificador node: (fs/child_process)', () => {
+    expect(nonCommentLines).toContain(POSITIVE_CONTROL);
+
+    const partialWritePattern = /\bfs\.|createWriteStream|res\.write|child_process/;
     expect(partialWritePattern.test(nonCommentLines)).toBe(false);
+    for (const moduleName of PROCESS_ESCAPE_MODULES) {
+      expect(importsModule(nonCommentLines, moduleName)).toBe(false);
+    }
   });
 
   it('nenhum redimensionamento/recompressão de imagem fora de comentário (NFR-024-004)', () => {
+    expect(nonCommentLines).toContain(POSITIVE_CONTROL);
+
     const resizePattern = /\bsharp\(|\bjimp\b/i;
     expect(resizePattern.test(nonCommentLines)).toBe(false);
+  });
+
+  it('controle positivo do detector: importsModule() ACHA "node:https" quando plantado (mesma reprodução do code-reviewer, achado F2) — prova que o grep não está vazio por acidente', () => {
+    for (const moduleName of [...NETWORK_MODULES, ...PROCESS_ESCAPE_MODULES]) {
+      const planted = `import { x } from 'node:${moduleName}';\n${nonCommentLines}`;
+      expect(importsModule(planted, moduleName)).toBe(true);
+
+      const plantedRequire = `const x = require('node:${moduleName}');\n${nonCommentLines}`;
+      expect(importsModule(plantedRequire, moduleName)).toBe(true);
+    }
   });
 });

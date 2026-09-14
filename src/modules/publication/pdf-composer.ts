@@ -46,7 +46,7 @@ export interface ImageSkippedInfo {
 const [PAGE_WIDTH, PAGE_HEIGHT] = PageSizes.A4;
 
 const MARGIN_X = 50;
-const MARGIN_TOP = 70; // reserva o cabeçalho de rascunho (2 linhas) fora da área de conteúdo
+const MARGIN_TOP = 85; // reserva o cabeçalho de rascunho (3 linhas) fora da área de conteúdo
 const MARGIN_BOTTOM = 50;
 const CONTENT_WIDTH = PAGE_WIDTH - 2 * MARGIN_X;
 const CONTENT_TOP_Y = PAGE_HEIGHT - MARGIN_TOP;
@@ -58,7 +58,8 @@ const PARAGRAPH_GAP = LINE_HEIGHT;
 
 const LABEL_FONT_SIZE = 9;
 const LABEL_LINE_Y = PAGE_HEIGHT - 30;
-const GENERATED_AT_LINE_Y = PAGE_HEIGHT - 45;
+const VARIANT_LINE_Y = PAGE_HEIGHT - 45;
+const GENERATED_AT_LINE_Y = PAGE_HEIGHT - 60;
 
 /** Nunca "fechamento"/"aprovação" (AC-024-005) — é rótulo de RASCUNHO/geração, não de
  * decisão editorial sobre o conteúdo. */
@@ -72,12 +73,19 @@ function formatGeneratedAt(date: Date): string {
 }
 
 /**
- * Rótulo de rascunho + `meta.generatedAt` (FR-024-001/AC-024-005) — chamada uma vez por
- * página recém-criada, nunca só na 1ª (tanto no laço de `buildStripPdf` quanto na(s)
- * página(s) de `buildSummaryPdf`).
+ * Rótulo de rascunho + Variante (`meta.variant`, lida do valor — nunca hardcoded, AC-024-005
+ * exige que o rótulo diga TAMBÉM qual Variante a página representa) + `meta.generatedAt`
+ * (FR-024-001/AC-024-005) — chamada uma vez por página recém-criada, nunca só na 1ª (tanto
+ * no laço de `buildStripPdf` quanto na(s) página(s) de `buildSummaryPdf`).
  */
 function drawDraftHeader(page: PDFPage, font: PDFFont, meta: PublicationPdfMeta): void {
   page.drawText(DRAFT_LABEL, { x: MARGIN_X, y: LABEL_LINE_Y, size: LABEL_FONT_SIZE, font });
+  page.drawText(`Variante: ${meta.variant}`, {
+    x: MARGIN_X,
+    y: VARIANT_LINE_Y,
+    size: LABEL_FONT_SIZE,
+    font,
+  });
   page.drawText(`Gerado em: ${formatGeneratedAt(meta.generatedAt)}`, {
     x: MARGIN_X,
     y: GENERATED_AT_LINE_Y,
@@ -109,6 +117,27 @@ function createPage(doc: PDFDocument, font: PDFFont, meta: PublicationPdfMeta): 
   return page;
 }
 
+/**
+ * `pdf-lib@1.17.1` (`JpegEmbedder.for`) faz `new DataView(buffer.buffer)` SEM
+ * `byteOffset`/`length` — se o `ArrayBuffer` subjacente do `Buffer` for MAIOR que o
+ * próprio buffer (qualquer `Buffer` pequeno fatiado do pool interno do Node —
+ * `Buffer.concat`/`Buffer.from` para payload abaixo de `Buffer.poolSize >>> 1`, caso
+ * REALISTA de produção: `Buffer.from(row.imageData)` vindo do Prisma para uma imagem
+ * pequena — `Buffer.from(outroBuffer)` copia o CONTEÚDO mas não garante `ArrayBuffer`
+ * exato), a leitura fica deslocada e um JPEG genuinamente válido é rejeitado como
+ * corrompido ("SOI not found") — silenciosamente, pelo mesmo `catch` de AC-024-016.
+ * `buffer.buffer.byteLength === buffer.length` só é verdade quando `byteOffset === 0` E
+ * não sobra bytes do pool depois do fim do buffer (a condição implica as duas coisas);
+ * quando falha, copia para um `ArrayBuffer` de tamanho exato — o CONTEÚDO não muda
+ * (NFR-024-004 continua valendo, provado por `Buffer.compare` no teste), só o
+ * `ArrayBuffer` que o carrega. Buffer real do banco, tipicamente grande, não paga esse
+ * custo (`return buffer` direto).
+ */
+function toExactArrayBufferBuffer(buffer: Buffer): Buffer {
+  if (buffer.buffer.byteLength === buffer.length) return buffer;
+  return Buffer.from(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.length));
+}
+
 type EmbedFrameImageResult = { image: PDFImage } | { skipReason: ImageSkipReason };
 
 /**
@@ -133,8 +162,9 @@ async function embedFrameImage(
   if (exceedsPixelBudget(dimensions)) return { skipReason: 'pixel-budget-exceeded' };
 
   try {
+    const safeBuffer = toExactArrayBufferBuffer(image.buffer);
     const embedded =
-      image.format === 'PNG' ? await doc.embedPng(image.buffer) : await doc.embedJpg(image.buffer);
+      image.format === 'PNG' ? await doc.embedPng(safeBuffer) : await doc.embedJpg(safeBuffer);
     return { image: embedded };
   } catch {
     return { skipReason: 'decode-failed' };
