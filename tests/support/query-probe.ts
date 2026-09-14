@@ -9,11 +9,6 @@ import { TEST_DATABASE_URL } from '../integration/db-url';
  * evento `query` habilitado, roda `run` contra ele e devolve o SQL de cada statement
  * emitido. Usada para fixar em teste a contagem de round-trips ao Postgres real, não
  * presumida.
- *
- * Módulo compartilhado: consumido por `visual-associations.service.integration.test.ts`.
- * `contents.service.integration.test.ts`, `disciplines.integration.test.ts` e
- * `tira.service.integration.test.ts` mantêm cópias locais equivalentes, não
- * consolidadas neste módulo.
  */
 export async function withQueryProbe(
   run: (probe: PrismaClient) => Promise<unknown>,
