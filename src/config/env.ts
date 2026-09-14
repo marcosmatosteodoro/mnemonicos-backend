@@ -76,6 +76,11 @@ const envSchema = z.object({
   /// PLAN-023/F5). Só cobre o ARQUIVO — os limites de campo de texto (`fields`/`fieldSize`)
   /// do `multer` são literais em `visual-associations.routes.ts`, não afináveis por env.
   VISUAL_ASSOCIATIONS_MAX_FILE_SIZE_BYTES: z.coerce.number().int().positive().default(5242880),
+
+  /// Teto de duração interno da composição do PDF de publicação (DEC-025-002, PLAN-025/F6),
+  /// com folga abaixo do teto duro (`maxDuration: 15` em `vercel.json`) — o temporizador
+  /// vencendo lança `GenerationTimeoutError` ANTES do corte abrupto da function serverless.
+  PUBLICATION_PDF_TIMEOUT_MS: z.coerce.number().int().positive().default(12000),
 });
 
 /**

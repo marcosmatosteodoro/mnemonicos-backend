@@ -165,6 +165,32 @@ describe('config/env — VISUAL_ASSOCIATIONS_MAX_FILE_SIZE_BYTES (PLAN-023/F5)',
   });
 });
 
+describe('config/env — PUBLICATION_PDF_TIMEOUT_MS (F6/PLAN-025)', () => {
+  const originalEnv = { ...process.env };
+
+  afterEach(() => {
+    process.env = { ...originalEnv };
+  });
+
+  it('envSchema.safeParse sem a chave no ambiente usa o default 12000', () => {
+    delete process.env.PUBLICATION_PDF_TIMEOUT_MS;
+
+    const { envSchema } = loadEnvModule();
+    const result = envSchema.safeParse(process.env);
+
+    expect(result.success).toBe(true);
+    expect(result.data?.PUBLICATION_PDF_TIMEOUT_MS).toBe(12000);
+  });
+
+  it('coage o valor vindo do ambiente para número', () => {
+    process.env.PUBLICATION_PDF_TIMEOUT_MS = '5000';
+
+    const { env } = loadEnvModule();
+
+    expect(env.PUBLICATION_PDF_TIMEOUT_MS).toBe(5000);
+  });
+});
+
 describe('.env.example — chaves da fatia de acesso interno', () => {
   it('lista cada uma das 9 chaves novas do envSchema', () => {
     const content = readFileSync(join(__dirname, '..', '..', '.env.example'), 'utf8');
