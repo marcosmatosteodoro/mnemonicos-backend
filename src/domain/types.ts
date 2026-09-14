@@ -85,6 +85,7 @@ export const PRODUCTION_STAGE_TYPES = [
   'QUEBRA_DA_REGRA',
   'TIRA_MNEMONICA',
   'ASSOCIACAO_VISUAL',
+  'PUBLICACAO_PDF',
 ] as const;
 
 export type ProductionStageType = (typeof PRODUCTION_STAGE_TYPES)[number];

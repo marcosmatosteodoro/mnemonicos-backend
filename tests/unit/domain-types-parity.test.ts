@@ -146,6 +146,7 @@ describe('paridade de tipos de domínio backend ⇆ frontend (NFR-002-007 / AC-0
     expect(declaredStageTypes).toEqual([
       'ASSOCIACAO_VISUAL',
       'CONTEUDO_BRUTO',
+      'PUBLICACAO_PDF',
       'QUEBRA_DA_REGRA',
       'TIRA_MNEMONICA',
     ]);

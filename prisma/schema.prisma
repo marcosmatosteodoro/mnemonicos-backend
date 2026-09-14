@@ -76,15 +76,22 @@ enum ProductionStageType {
   // por linha e só descarta linha que comece com `//` — comentário colado ao
   // valor entraria como parte do próprio literal extraído.
   ASSOCIACAO_VISUAL
-  // Fatias futuras (F6 publicação, F8 versionamento, F9 QC) acrescentam
-  // valores aqui — migração aditiva, sem redesenho do mecanismo
-  // (NFR-009-001/DEC-010-001, agora também NFR-011-004).
+  // NOVO (F6) — aditivo, sem redesenho do mecanismo (NFR-009-001/DEC-010-001).
+  PUBLICACAO_PDF
+  // Fatias futuras (F8 versionamento, F9 QC) acrescentam valores aqui —
+  // migração aditiva, sem redesenho do mecanismo (NFR-009-001/DEC-010-001,
+  // agora também NFR-011-004).
 }
 
 enum ProductionEventTransition {
   ABERTURA
   CONCLUSAO
   RETRABALHO
+}
+
+enum PublicationVariant {
+  TIRA
+  RESUMO
 }
 
 model User {
@@ -489,4 +496,21 @@ model ProductionStageEvent {
   /// índice por EXPLAIN já usado em `RawContent` (schema.prisma:295-307).
   @@index([rawContentId, sequence])
   @@map("production_stage_events")
+}
+
+/// Log mínimo de instrumentação da métrica de §1.3(a) da SPEC-024 — mesmo padrão de
+/// VisualAssociationLinkEvent (DEC-023-011): o ProductionStageEvent genérico (acima) não
+/// carrega qual Variante foi exportada; esta tabela carrega. Sem relação/FK para
+/// RawContent (deliberado, mesma razão de TRISK-023-007) — sobrevive à remoção reversível
+/// do Conteúdo bruto, é indicador operacional, não trilha de auditoria formal. Uma linha
+/// por exportação CONCLUÍDA COM SUCESSO (nunca por tentativa falha — a falha é apurada por
+/// log de erro, fonte (b) de §1.3, fora desta tabela).
+model PublicationEvent {
+  id           String             @id @default(uuid(7))
+  rawContentId String
+  variant      PublicationVariant
+  occurredAt   DateTime           @default(now())
+
+  @@index([occurredAt])
+  @@map("publication_events")
 }
