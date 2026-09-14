@@ -97,25 +97,20 @@ export interface ImageDimensions {
 
 /** Assinatura PNG completa (8 bytes) — não só os 4 bytes que `detectImageSignature` usa
  * como magic number (aquilo é heurística de formato; isto é pré-condição de estrutura
- * antes de confiar em offset fixo). */
+ * antes de varrer chunks). */
 const PNG_FULL_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a] as const;
-/** Offset do campo `length` (4 bytes) do 1º chunk, logo após a assinatura. */
-const PNG_FIRST_CHUNK_LENGTH_OFFSET = 8;
-/** Offset do campo `type` (4 bytes ASCII) do 1º chunk. */
-const PNG_FIRST_CHUNK_TYPE_OFFSET = 12;
+/** Tamanho fixo dos campos `length`(4)+`type`(4) no início de cada chunk PNG. */
+const PNG_CHUNK_HEADER_SIZE = 8;
+/** Tamanho fixo do campo `crc`(4) ao final de cada chunk PNG. */
+const PNG_CHUNK_CRC_SIZE = 4;
+/** Spec PNG: o campo `length` é um inteiro sem sinal restrito a no máximo 2^31-1 — acima
+ * disso já é estruturalmente inválido, sem nem precisar comparar contra o buffer. */
+const PNG_MAX_CHUNK_DATA_LENGTH = 0x7fffffff;
 /** `IHDR` tem tamanho de payload fixo pelo spec PNG (width/height/bitDepth/colorType/
  * compression/filter/interlace = 4+4+1+1+1+1+1). */
 const PNG_IHDR_EXPECTED_LENGTH = 13;
-/** Offset do 1º byte de `width` no chunk `IHDR`: assinatura PNG (8) + tamanho do chunk (4)
- * + tipo "IHDR" (4) = 16; `height` começa 4 bytes depois. */
-const PNG_IHDR_WIDTH_OFFSET = 16;
-const PNG_IHDR_HEIGHT_OFFSET = 20;
-const PNG_IHDR_MIN_LENGTH = PNG_IHDR_HEIGHT_OFFSET + 4;
 
-/** `true` só se os 8 bytes bater exatamente com a assinatura PNG — pré-condição
- * compartilhada por qualquer leitura de offset fixo abaixo (`hasValidPngSignatureAndIhdr`,
- * `hasAnimatedPngChunk`): sem ela, "offset 8" não é necessariamente onde o 1º chunk
- * começa. */
+/** `true` só se os 8 bytes baterem exatamente com a assinatura PNG. */
 function hasValidPngSignature(buffer: Buffer): boolean {
   if (buffer.length < PNG_FULL_SIGNATURE.length) return false;
   for (let i = 0; i < PNG_FULL_SIGNATURE.length; i++) {
@@ -124,35 +119,83 @@ function hasValidPngSignature(buffer: Buffer): boolean {
   return true;
 }
 
-/**
- * `true` só se a assinatura PNG de 8 bytes bate E o 1º chunk é literalmente `IHDR` com o
- * tamanho de payload esperado (13) — as únicas 2 garantias que o spec PNG dá e que tornam
- * os offsets fixos 16/20 (usados por `readPngDimensions` abaixo) SEGUROS de ler direto,
- * sem variar chunk a chunk como o decoder real (`@pdf-lib/upng`) faz.
- *
- * Sem esta checagem, um PNG forjado com um chunk decoy (ex.: `tEXt`) ANTES do `IHDR`
- * verdadeiro faz um leitor de offset fixo ler os bytes ERRADOS (dentro do payload do
- * decoy) como se fossem width/height — enquanto o decoder real, que varre os chunks, acha
- * o `IHDR` de verdade mais adiante, com a dimensão real (possivelmente forjada acima do
- * teto). `detectImageSignature` (heurística de formato, só 4 bytes) não pega isso — é
- * outra camada, outro propósito.
- */
-function hasValidPngSignatureAndIhdr(buffer: Buffer): boolean {
-  if (buffer.length < PNG_IHDR_MIN_LENGTH) return false;
-  if (!hasValidPngSignature(buffer)) return false;
-  if (buffer.readUInt32BE(PNG_FIRST_CHUNK_LENGTH_OFFSET) !== PNG_IHDR_EXPECTED_LENGTH) return false;
-  const chunkType = buffer.toString(
-    'ascii',
-    PNG_FIRST_CHUNK_TYPE_OFFSET,
-    PNG_FIRST_CHUNK_TYPE_OFFSET + 4,
-  );
-  return chunkType === 'IHDR';
+interface PngChunkRecord {
+  /** Comparação sempre EXATA (case-sensitive), nunca normalizada — o case de cada letra
+   * do TYPE é significativo no spec PNG (codifica bits de propriedade do chunk); `"ihdr"`
+   * e `"IHDR"` são tipos DIFERENTES, nunca a mesma coisa, aqui ou no decoder real. */
+  type: string;
+  /** Offset (a partir do início do buffer) do 1º byte do PAYLOAD do chunk — já pulando
+   * `length`(4)+`type`(4). */
+  dataOffset: number;
+  /** `length` declarado do chunk (bytes de payload, sem contar `crc`). */
+  length: number;
 }
 
+/**
+ * Varre TODOS os chunks do PNG a partir do byte 8 (logo após a assinatura), parando em
+ * `IEND` ou quando o buffer acaba exatamente numa fronteira de chunk — devolve a lista
+ * completa encontrada até ali. Devolve `null` (fail-closed) se a estrutura for inválida
+ * em QUALQUER ponto: cabeçalho de chunk truncado no meio da varredura, `length` fora do
+ * intervalo válido do spec, ou `length` que faz o chunk (`length`+`crc`) ultrapassar o
+ * fim do buffer — nunca aceito silenciosamente.
+ *
+ * ÚNICA leitora de chunk deste arquivo: `readPngDimensions` e `hasAnimatedPngChunk`
+ * reusam esta função — os dois SEMPRE concordam sobre a estrutura real do arquivo, nunca
+ * duas leituras paralelas que possam divergir uma da outra (ou do decoder real, que
+ * também varre chunk a chunk).
+ *
+ * Fecha, numa função só, os vetores de bypass do teto de pixels encontrados até aqui: (a)
+ * chunk decoy ANTES do `IHDR` real (uma leitura de offset fixo lia o payload errado como
+ * se fosse width/height — `readPngDimensions` abaixo recusa quando o `IHDR` não é o 1º
+ * chunk da varredura); (b) `IHDR` DUPLICADO (o decoder real sobrescreve width/height a
+ * cada ocorrência — vence o ÚLTIMO IHDR, não o primeiro; ler só o 1º e nunca contar
+ * quantos existem deixa um `IHDR` pequeno "de fachada" esconder um 2º `IHDR` gigante —
+ * `readPngDimensions` abaixo exige exatamente 1); (c) chunk cujo `length` aponta além do
+ * buffer disponível.
+ */
+function walkPngChunks(buffer: Buffer): PngChunkRecord[] | null {
+  if (!hasValidPngSignature(buffer)) return null;
+
+  const chunks: PngChunkRecord[] = [];
+  let pos: number = PNG_FULL_SIGNATURE.length;
+
+  while (pos + PNG_CHUNK_HEADER_SIZE <= buffer.length) {
+    const chunkDataLength = buffer.readUInt32BE(pos);
+    if (chunkDataLength > PNG_MAX_CHUNK_DATA_LENGTH) return null;
+
+    const dataOffset = pos + PNG_CHUNK_HEADER_SIZE;
+    const chunkEnd = dataOffset + chunkDataLength + PNG_CHUNK_CRC_SIZE;
+    if (chunkEnd > buffer.length) return null;
+
+    const type = buffer.toString('ascii', pos + 4, dataOffset);
+    chunks.push({ type, dataOffset, length: chunkDataLength });
+
+    if (type === 'IEND') return chunks;
+    pos = chunkEnd;
+  }
+
+  return chunks; // buffer acabou exatamente numa fronteira de chunk — devolve o que já foi lido
+}
+
+/**
+ * Largura/altura do chunk `IHDR` — exige que a varredura completa (`walkPngChunks`) tenha
+ * EXATAMENTE 1 chunk `IHDR` (0 ou 2+ é recusado, fail-closed: ver a razão em
+ * `walkPngChunks` acima) e que esse único `IHDR` seja literalmente o 1º chunk do arquivo
+ * (spec PNG; mesma razão do vetor "decoy antes do IHDR").
+ */
 function readPngDimensions(buffer: Buffer): ImageDimensions | null {
-  if (!hasValidPngSignatureAndIhdr(buffer)) return null;
-  const width = buffer.readUInt32BE(PNG_IHDR_WIDTH_OFFSET);
-  const height = buffer.readUInt32BE(PNG_IHDR_HEIGHT_OFFSET);
+  const chunks = walkPngChunks(buffer);
+  if (chunks === null) return null;
+
+  const ihdrChunks = chunks.filter((chunk) => chunk.type === 'IHDR');
+  if (ihdrChunks.length !== 1) return null;
+  if (chunks[0]?.type !== 'IHDR') return null;
+
+  const ihdr = ihdrChunks[0]!;
+  if (ihdr.length !== PNG_IHDR_EXPECTED_LENGTH) return null;
+
+  const width = buffer.readUInt32BE(ihdr.dataOffset);
+  const height = buffer.readUInt32BE(ihdr.dataOffset + 4);
   if (width === 0 || height === 0) return null;
   return { width, height };
 }
@@ -240,38 +283,26 @@ export function exceedsPixelBudget(
  * "core", mas universalmente reconhecida pelos codecs) que marca um PNG como animado
  * (APNG, multi-frame). */
 const APNG_ANIMATION_CONTROL_CHUNK_TYPE = 'acTL';
-/** Tamanho fixo dos campos `length`(4)+`type`(4) no início de cada chunk PNG. */
-const PNG_CHUNK_HEADER_SIZE = 8;
-/** Tamanho fixo do campo `crc`(4) ao final de cada chunk PNG. */
-const PNG_CHUNK_CRC_SIZE = 4;
 
 /**
- * `true` só se o buffer contém um chunk cujo campo TYPE (em fronteira de chunk, nunca uma
- * substring solta em qualquer offset) é literalmente `acTL` — um APNG só é rejeitado pelo
- * decoder do `pdf-lib` DEPOIS de decodificar TODOS os frames da animação (o `IHDR` sozinho
- * não distingue PNG estático de APNG), então esta varredura acontece ANTES do decode, no
- * mesmo espírito do teto de pixels acima.
+ * `true` só se a varredura completa (`walkPngChunks`) encontra um chunk cujo campo TYPE é
+ * literalmente `acTL` — um APNG só é rejeitado pelo decoder do `pdf-lib` DEPOIS de
+ * decodificar TODOS os frames da animação (o `IHDR` sozinho não distingue PNG estático de
+ * APNG), então esta checagem acontece ANTES do decode, no mesmo espírito do teto de
+ * pixels acima. Reusa a MESMA varredura de `readPngDimensions` — nunca uma busca de
+ * SUBSTRING no buffer bruto (que seria insegura na direção oposta à do teto de pixels: um
+ * PNG ESTÁTICO legítimo pode conter os bytes `acTL` por acaso dentro do payload de um
+ * chunk de metadado ou do stream de pixel comprimido, e seria recusado como APNG mesmo
+ * sendo uma imagem que o `pdf-lib` embutiria sem problema).
  *
- * Busca de SUBSTRING no buffer bruto (a versão anterior desta função) é insegura na
- * direção oposta à do teto de pixels: um PNG ESTÁTICO legítimo pode conter os bytes
- * `acTL` por acaso dentro do payload de um chunk de metadado (`tEXt`/`iTXt`/`eXIf`) ou no
- * stream de pixel comprimido (`IDAT`), e seria recusado como APNG mesmo sendo uma imagem
- * que o `pdf-lib` embutiria sem problema — um falso positivo silencioso (a imagem some da
- * página), não uma falha de segurança, mas ainda assim uma leitura errada da estrutura
- * real do arquivo. A varredura abaixo avança de chunk em chunk pelo campo `length`
- * declarado (nunca por índice de substring), então só compara `acTL` contra o TYPE de
- * cada chunk de verdade.
+ * Estrutura inválida (`walkPngChunks` devolve `null`) devolve `false` aqui — quem recusa
+ * essa classe de arquivo é `readPngDimensions`/`readImageDimensions` (mesma varredura,
+ * chamada logo em seguida por `embedFrameImage`), com o motivo mais preciso
+ * (`'decode-failed'`); esta função só afirma "achei/não achei `acTL`", nunca "a estrutura
+ * é segura".
  */
 export function hasAnimatedPngChunk(buffer: Buffer): boolean {
-  if (!hasValidPngSignature(buffer)) return false;
-
-  let pos = PNG_FULL_SIGNATURE.length;
-  while (pos + PNG_CHUNK_HEADER_SIZE <= buffer.length) {
-    const chunkDataLength = buffer.readUInt32BE(pos);
-    const chunkType = buffer.toString('ascii', pos + 4, pos + PNG_CHUNK_HEADER_SIZE);
-    if (chunkType === APNG_ANIMATION_CONTROL_CHUNK_TYPE) return true;
-    if (chunkType === 'IEND') return false; // fim oficial da cadeia de chunks
-    pos += PNG_CHUNK_HEADER_SIZE + chunkDataLength + PNG_CHUNK_CRC_SIZE;
-  }
-  return false;
+  const chunks = walkPngChunks(buffer);
+  if (chunks === null) return false;
+  return chunks.some((chunk) => chunk.type === APNG_ANIMATION_CONTROL_CHUNK_TYPE);
 }

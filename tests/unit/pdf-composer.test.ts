@@ -275,12 +275,42 @@ function buildPngWithDecoyChunkBeforeIhdr(fakeWidth: number, fakeHeight: number)
   return toStandaloneBuffer(Buffer.concat([signature, decoyChunk, ihdrChunk]));
 }
 
+/**
+ * PNG com 2 chunks `IHDR` — `width1`×`height1` primeiro, `width2`×`height2` depois. O
+ * decoder real (`@pdf-lib/upng`) sobrescreve width/height a cada `IHDR` que encontra —
+ * vence o ÚLTIMO, não o primeiro — então um `IHDR` pequeno seguido de um `IHDR` gigante
+ * engana qualquer leitura que confie só no 1º. `readImageDimensions` tem que devolver
+ * `null` para o arquivo inteiro, e `embedFrameImage` nunca pode chegar a chamar
+ * `embedPng` com isto.
+ */
+function buildPngWithDuplicateIhdr(
+  width1: number,
+  height1: number,
+  width2: number,
+  height2: number,
+): Buffer {
+  const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+  const ihdr1Data = Buffer.alloc(13);
+  ihdr1Data.writeUInt32BE(width1, 0);
+  ihdr1Data.writeUInt32BE(height1, 4);
+  const ihdr1 = pngChunk('IHDR', ihdr1Data);
+
+  const ihdr2Data = Buffer.alloc(13);
+  ihdr2Data.writeUInt32BE(width2, 0);
+  ihdr2Data.writeUInt32BE(height2, 4);
+  const ihdr2 = pngChunk('IHDR', ihdr2Data);
+
+  return toStandaloneBuffer(Buffer.concat([signature, ihdr1, ihdr2]));
+}
+
 const VALID_PNG_1X1 = buildValidPng1x1();
 const VALID_JPEG_1X1 = buildValidJpeg1x1();
 const PNG_WITH_OVERSIZED_HEADER = buildPngWithOversizedHeader();
 const PNG_WITH_ACTL_CHUNK = buildPngWithActlChunk();
 const PNG_WITH_CORRUPT_IDAT = buildPngWithCorruptIdat();
 const PNG_WITH_DECOY_CHUNK_BEFORE_IHDR = buildPngWithDecoyChunkBeforeIhdr(5000, 5000);
+const PNG_WITH_DUPLICATE_IHDR = buildPngWithDuplicateIhdr(1, 1, 20_000, 20_000);
 
 /** Codificação hex (maiúscula) que `showText`/`PDFHexString` grava no operador `Tj` para
  * texto puramente ASCII sob fonte padrão WinAnsi — nessa faixa (0x20-0x7E), WinAnsi
@@ -543,6 +573,27 @@ describe('buildStripPdf — teto de pixels/APNG recusados ANTES do decode (NFR-0
     // 'decode-failed': readImageDimensions recusou o arquivo inteiro (null) ANTES de
     // qualquer teto de pixels ser calculado — nem a leitura por offset (decoy = "1×1")
     // nem o IHDR forjado (5000×5000) chegam a produzir um resultado "pixel-budget-exceeded".
+    expect(skipped).toEqual([{ frameIndex: 0, format: 'PNG', reason: 'decode-failed' }]);
+    expect(embedPngSpy).not.toHaveBeenCalled();
+
+    embedPngSpy.mockRestore();
+  });
+
+  it('PNG com IHDR DUPLICADO (1×1 seguido de 20000×20000) cai no caminho só-texto — NUNCA chega a CHAMAR embedPng', async () => {
+    const embedPngSpy = jest.spyOn(PDFDocument.prototype, 'embedPng');
+
+    const frames: StripFrameForPdf[] = [
+      { text: 'QUADRO_IHDR_DUPLICADO', image: { buffer: PNG_WITH_DUPLICATE_IHDR, format: 'PNG' } },
+    ];
+    const skipped: ImageSkippedInfo[] = [];
+
+    const buffer = await buildStripPdf(frames, META, (info) => skipped.push(info)); // NÃO deve lançar, NÃO deve estourar heap
+
+    const doc = await PDFDocument.load(buffer);
+    expect(pageXObjectCount(doc, 0)).toBe(0);
+    // 'decode-failed': readImageDimensions recusou o arquivo inteiro (null, 2 IHDR não é
+    // válido) — nem o 1×1 (1º IHDR) nem o 20000×20000 (2º IHDR, o que o decoder real
+    // usaria) chegam a produzir uma dimensão aceita.
     expect(skipped).toEqual([{ frameIndex: 0, format: 'PNG', reason: 'decode-failed' }]);
     expect(embedPngSpy).not.toHaveBeenCalled();
 

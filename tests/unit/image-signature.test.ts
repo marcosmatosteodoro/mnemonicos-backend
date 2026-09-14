@@ -121,6 +121,68 @@ function pngWithDecoyChunkBeforeIhdr(fakeWidth: number, fakeHeight: number): Buf
   return Buffer.concat([signature, decoyChunk, ihdrChunk]);
 }
 
+/**
+ * PNG com 2 chunks `IHDR` — `width1`×`height1` primeiro, `width2`×`height2` depois. O
+ * decoder real (`@pdf-lib/upng`) sobrescreve width/height a cada `IHDR` que encontra —
+ * vence o ÚLTIMO, não o primeiro — então um `IHDR` pequeno seguido de um `IHDR` gigante
+ * engana qualquer leitura que confie só no 1º. `readImageDimensions` precisa devolver
+ * `null` para o arquivo inteiro (0 ou 2+ `IHDR` é inválido pelo spec PNG).
+ */
+function pngWithDuplicateIhdr(
+  width1: number,
+  height1: number,
+  width2: number,
+  height2: number,
+): Buffer {
+  const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+  const ihdr1Data = Buffer.alloc(13);
+  ihdr1Data.writeUInt32BE(width1, 0);
+  ihdr1Data.writeUInt32BE(height1, 4);
+  const ihdr1 = pngChunk('IHDR', ihdr1Data);
+
+  const ihdr2Data = Buffer.alloc(13);
+  ihdr2Data.writeUInt32BE(width2, 0);
+  ihdr2Data.writeUInt32BE(height2, 4);
+  const ihdr2 = pngChunk('IHDR', ihdr2Data);
+
+  return Buffer.concat([signature, ihdr1, ihdr2]);
+}
+
+/** PNG cujo 1º (e único) chunk usa o TYPE `"ihdr"` (minúsculo) em vez de `"IHDR"` — o case
+ * de cada letra é significativo no spec PNG (nunca normalizado); isto NÃO é um `IHDR`
+ * válido, então `readImageDimensions` tem que devolver `null` (0 chunks `IHDR` de
+ * verdade), nunca ler width/height como se `"ihdr"` fosse a mesma coisa. */
+function pngWithLowercaseIhdrType(width: number, height: number): Buffer {
+  const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const ihdrData = Buffer.alloc(13);
+  ihdrData.writeUInt32BE(width, 0);
+  ihdrData.writeUInt32BE(height, 4);
+  return Buffer.concat([signature, pngChunk('ihdr', ihdrData)]);
+}
+
+/**
+ * PNG cujo `IHDR` declara `length=13` (correto) e tem os 13 bytes de payload REAIS
+ * presentes — com `width`/`height` plausíveis e não-zero (4000×3000) — mas o `crc`
+ * obrigatório de 4 bytes está AUSENTE (buffer termina logo após o payload). O
+ * width/height em si seriam lidos corretamente SE a validação de limite não existisse —
+ * de propósito, para que este teste prove o guard de "comprimento aponta além do
+ * buffer" isoladamente, sem se confundir com o guard (já existente) de "width/height
+ * zero".
+ */
+function pngWithChunkMissingCrc(): Buffer {
+  const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const length = Buffer.alloc(4);
+  length.writeUInt32BE(13, 0);
+  const type = Buffer.from('IHDR', 'ascii');
+  const ihdrData = Buffer.alloc(13);
+  ihdrData.writeUInt32BE(4000, 0);
+  ihdrData.writeUInt32BE(3000, 4);
+  // Sem CRC: o chunk declara precisar de mais 4 bytes (comprimento + crc) do que o
+  // buffer realmente tem.
+  return Buffer.concat([signature, length, type, ihdrData]);
+}
+
 /** SOI + (opcional) 1 segmento genérico antes do SOF0 + SOF0 com `width`/`height` — só o
  * necessário para `readImageDimensions` achar o marcador; sem DQT/DHT/SOS/dado
  * codificado (esta suíte testa leitura de cabeçalho, não decodificação via `pdf-lib`). */
@@ -283,6 +345,36 @@ describe('readImageDimensions (lê SÓ o cabeçalho)', () => {
     expect(result).not.toEqual({ width: 1, height: 1 }); // não "vaza" a leitura por offset fixo do decoy
     expect(result).not.toEqual({ width: 5000, height: 5000 }); // não "vaza" o IHDR forjado sem validar posição
     expect(result).toBeNull();
+  });
+
+  it('PNG: devolve null (nunca a dimensão do 1º NEM a do 2º IHDR) quando o arquivo tem 2 chunks IHDR', () => {
+    const forged = pngWithDuplicateIhdr(1, 1, 20_000, 20_000);
+
+    const result = readImageDimensions(forged, 'PNG');
+
+    expect(result).not.toEqual({ width: 1, height: 1 }); // não vaza o 1º IHDR (o que uma leitura ingênua pegaria)
+    expect(result).not.toEqual({ width: 20_000, height: 20_000 }); // não vaza o 2º IHDR (o que o decoder real usaria)
+    expect(result).toBeNull();
+  });
+
+  it('PNG: 1 único IHDR legítimo continua lido normalmente (controle positivo pós-varredura unificada)', () => {
+    const buffer = pngWithDuplicateIhdr(4000, 3000, 4000, 3000).subarray(0, 8 + 8 + 13 + 4); // só o 1º IHDR
+
+    expect(readImageDimensions(buffer, 'PNG')).toEqual({ width: 4000, height: 3000 });
+  });
+
+  it('PNG: "ihdr" (minúsculo) NÃO é reconhecido como IHDR — case do TYPE é significativo, nunca normalizado', () => {
+    const buffer = pngWithLowercaseIhdrType(1, 1);
+
+    expect(readImageDimensions(buffer, 'PNG')).toBeNull();
+  });
+
+  it('PNG: devolve null quando o length do chunk aponta além do buffer disponível (mesmo com width/height plausíveis dentro dos bytes presentes)', () => {
+    const buffer = pngWithChunkMissingCrc();
+
+    expect(() => readImageDimensions(buffer, 'PNG')).not.toThrow();
+    expect(readImageDimensions(buffer, 'PNG')).not.toEqual({ width: 4000, height: 3000 });
+    expect(readImageDimensions(buffer, 'PNG')).toBeNull();
   });
 
   it('JPEG: lê width/height do marcador SOF0, pulando um segmento genérico antes dele', () => {
