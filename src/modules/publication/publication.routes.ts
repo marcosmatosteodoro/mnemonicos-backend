@@ -25,8 +25,9 @@ import { exportPublication } from './publication.service';
  * para `POST`.
  *
  * Sem `try/catch`: o Express 5 encaminha a rejeição ao `errorHandler` —
- * `NotFoundError`/`ConflictError`/`GenerationTimeoutError` do service viram
- * 404/409/503 automaticamente.
+ * `NotFoundError`/`GenerationTimeoutError` do service viram 404/503 automaticamente
+ * (o único caminho para `ConflictError`, via `openMnemonicStrip`, é inalcançável
+ * aqui: a Quebra da regra já foi confirmada no Passo 2 de `exportPublication`).
  */
 export const publicationRoutes = Router();
 
