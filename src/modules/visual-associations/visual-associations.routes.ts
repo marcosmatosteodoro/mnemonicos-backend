@@ -70,10 +70,10 @@ const upload = multer({
 /**
  * Allowlist fechada dos `Content-Type` que `GET /visual-associations/:id/image` pode
  * responder (TASK-023-016) — derivada de `mimeTypeForFormat` (`image-signature.ts`,
- * COMP-023-002) sobre os 3
- * formatos raster, nunca um literal duplicado à mão: `mimeType` é coluna `String`
- * livre no schema (não um enum de banco), então o `Content-Type` da resposta NUNCA
- * ecoa a coluna diretamente — só um valor deste conjunto fechado sai no header.
+ * COMP-023-002) sobre os 3 formatos raster, nunca um literal duplicado à mão: `mimeType`
+ * é coluna `String` livre no schema (não um enum de banco), então o `Content-Type` da
+ * resposta NUNCA ecoa a coluna diretamente — só um valor deste conjunto fechado sai no
+ * header.
  */
 const IMAGE_RASTER_FORMATS: readonly RasterImageFormat[] = ['PNG', 'JPEG', 'WEBP'];
 const IMAGE_MIME_TYPE_ALLOWLIST: ReadonlySet<string> = new Set(
