@@ -95,6 +95,18 @@ export const PRODUCTION_EVENT_TRANSITIONS = ['ABERTURA', 'CONCLUSAO', 'RETRABALH
 export type ProductionEventTransition = (typeof PRODUCTION_EVENT_TRANSITIONS)[number];
 
 /**
+ * Variante do artefato exportado pelo pipeline de publicação em PDF (F6,
+ * SPEC-024). Fonte canônica: `mnemonicos-backend/prisma/schema.prisma` (enum
+ * `PublicationVariant`). Espelhado em
+ * `mnemonicos-frontend/src/types/domain.ts` (só `type` + mapa de rótulos,
+ * COMP-025-009) — o teste de divergência cross-repo é
+ * `mnemonicos-backend/tests/unit/domain-types-parity.test.ts`.
+ */
+export const PUBLICATION_VARIANTS = ['TIRA', 'RESUMO'] as const;
+
+export type PublicationVariant = (typeof PUBLICATION_VARIANTS)[number];
+
+/**
  * Conteúdo bruto de produção — espelha o model `RawContent` de
  * `prisma/schema.prisma`. Espelhado em
  * `mnemonicos-frontend/src/types/domain.ts`: mudança de um lado entra no
