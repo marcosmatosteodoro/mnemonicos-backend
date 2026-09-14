@@ -39,23 +39,38 @@ export interface MnemonicStripDetail {
 }
 
 /**
- * Ordem canônica do método (FR-011-001): 1 item por Bloco não-vazio, posições
- * 1..N sem lacuna. Pura, sem I/O — testável isoladamente (mesmo espírito de
- * `decideStageTransition`). `condition`/`exception` em branco ("não se
- * aplica", `null` ou `''`) não geram Quadro (AC-011-002).
+ * Ordem canônica dos Blocos da Quebra da regra (FR-011-001): CONCEITO → AÇÃO
+ * → OBJETO → CONDIÇÃO → EXCEÇÃO. Exportada (COMP-025-007, DEC-025-003) para
+ * reuso por `pdf-composer.ts`/`publication.service.ts` (Variante "resumo")
+ * sem duplicar o array num 2º arquivo (lição [DRY], já reincidente 3× em
+ * F5/PLAN-023).
+ */
+export const CANONICAL_RULE_BREAKDOWN_ORDER: ReadonlyArray<{
+  originBlock: 'concept' | 'action' | 'object' | 'condition' | 'exception';
+}> = [
+  { originBlock: 'concept' },
+  { originBlock: 'action' },
+  { originBlock: 'object' },
+  { originBlock: 'condition' },
+  { originBlock: 'exception' },
+];
+
+/**
+ * 1 item por Bloco não-vazio (mapeado de `CANONICAL_RULE_BREAKDOWN_ORDER`
+ * acima), posições 1..N sem lacuna. Pura, sem I/O — testável isoladamente
+ * (mesmo espírito de `decideStageTransition`). `condition`/`exception` em
+ * branco ("não se aplica", `null` ou `''`) não geram Quadro (AC-011-002).
  */
 export function buildInitialFrames(
   breakdown: Pick<RuleBreakdownDetail, 'concept' | 'action' | 'object' | 'condition' | 'exception'>,
 ): Array<{ text: string; position: number; originBlock: string }> {
-  const canonicalOrder: Array<{ originBlock: string; text: string | null }> = [
-    { originBlock: 'concept', text: breakdown.concept },
-    { originBlock: 'action', text: breakdown.action },
-    { originBlock: 'object', text: breakdown.object },
-    { originBlock: 'condition', text: breakdown.condition },
-    { originBlock: 'exception', text: breakdown.exception },
-  ];
+  const withText: Array<{ originBlock: string; text: string | null }> =
+    CANONICAL_RULE_BREAKDOWN_ORDER.map((item) => ({
+      originBlock: item.originBlock,
+      text: breakdown[item.originBlock],
+    }));
 
-  const nonEmpty = canonicalOrder.filter(
+  const nonEmpty = withText.filter(
     (block): block is { originBlock: string; text: string } =>
       block.text !== null && block.text !== undefined && block.text !== '',
   );
@@ -184,13 +199,26 @@ export async function getMnemonicStrip(
 /**
  * Abre a Tira mnemônica de uma Quebra da regra — get-or-generate idempotente
  * (FR-011-001/FR-011-002): gera a Tira + 1 Quadro por Bloco não-vazio na 1ª
- * abertura (emite só ABERTURA, DEC-012-006); reabre a Tira já existente sem
- * gerar de novo nem emitir evento novo (AC-011-003, AC-011-013, AC-011-021).
- * 409 (`ConflictError`) se a Quebra da regra do `rawContentId` ainda não foi
+ * abertura, emitindo ABERTURA salvo supressão explícita (`options` abaixo,
+ * DEC-012-006); reabre a Tira já existente sem gerar de novo (AC-011-003,
+ * AC-011-012), mas confirma ABERTURA quando o histórico do par
+ * (`rawContentId`, `'TIRA_MNEMONICA'`) está VAZIO — único caso possível
+ * quando a criação anterior suprimiu o evento (FR-024-013, DEC-025-003);
+ * histórico não-vazio (fluxo humano normal, que já emitiu ABERTURA na
+ * criação) não emite nada extra (AC-011-013, AC-011-021). 409
+ * (`ConflictError`) se a Quebra da regra do `rawContentId` ainda não foi
  * salva (AC-011-023, parte — regra recusa; o mapeamento HTTP é da TASK de
- * rotas). Chamada só por `POST /contents/:id/strip` (EMENDA Wave 5/DEC-012-011
+ * rotas). Chamada por `POST /contents/:id/strip` (EMENDA Wave 5/DEC-012-011
  * — a geração deixou de ser responsabilidade do `GET`, ver `getMnemonicStrip`
- * acima).
+ * acima) e por `publication.service.ts` (auto-geração via exportação,
+ * FR-024-006, com `options.suppressOpeningEvent: true`).
+ *
+ * `options?.suppressOpeningEvent` (default `false`, COMP-025-007,
+ * DEC-025-003): parâmetro aditivo — omitido ou `false`, o comportamento é
+ * idêntico ao de qualquer chamador anterior a esta EMENDA. `true` só se
+ * aplica ao ramo de CRIAÇÃO: a Tira e os Quadros são gravados normalmente,
+ * mas a emissão de ABERTURA é pulada, ficando para a 1ª reabertura
+ * subsequente confirmar.
  *
  * **Alcance por autoria** (NFR-011-001, NFR-011-006): `assertStripPrerequisites`
  * chama `assertRawContentReachable` como 1ª guarda, sempre — herda a mesma
@@ -218,6 +246,7 @@ export async function openMnemonicStrip(
   rawContentId: string,
   actor: ContentActor,
   db: MnemonicStripClient = prisma,
+  options?: { suppressOpeningEvent?: boolean },
 ): Promise<MnemonicStripDetail> {
   let ruleBreakdownId: string | undefined;
 
@@ -231,11 +260,28 @@ export async function openMnemonicStrip(
         relationLoadStrategy: 'join',
         select: MNEMONIC_STRIP_DETAIL_SELECT,
       });
-      // Reabertura simples (FR-011-007, AC-011-003, AC-011-012): a Tira já
-      // existe — devolve os Quadros na ordem de `position` persistida, sem
-      // tentar `create` nem emitir evento novo (3º ramo da árvore de decisão,
-      // §4 F-1.6 do PLAN-012).
-      if (existing !== null) return existing;
+      // Reabertura (FR-011-007, AC-011-003, AC-011-012): a Tira já existe —
+      // devolve os Quadros na ordem de `position` persistida, sem tentar
+      // `create` de novo. FR-024-013/DEC-025-003: o histórico real do par
+      // pode estar vazio quando a criação anterior suprimiu o evento
+      // (`options.suppressOpeningEvent`, ramo de CRIAÇÃO abaixo) — só nesse
+      // caso ABERTURA é confirmada agora; histórico não-vazio não emite nada
+      // extra.
+      if (existing !== null) {
+        const priorTransitions = await tx.productionStageEvent.findMany({
+          where: { rawContentId, stageType: 'TIRA_MNEMONICA' },
+          select: { transitionType: true },
+        });
+        if (priorTransitions.length === 0) {
+          await recordProductionStageEvent(tx, {
+            rawContentId,
+            stageType: 'TIRA_MNEMONICA',
+            actorId: actor.id,
+            now: new Date(),
+          });
+        }
+        return existing;
+      }
 
       const created = await tx.mnemonicStrip.create({
         data: {
@@ -250,13 +296,18 @@ export async function openMnemonicStrip(
       // decide ABERTURA (FR-011-008/AC-011-013) — nunca conclusão no mesmo
       // instante (correção do PO, DEC-012-006): a conclusão só ocorre na 1ª
       // mutação humana de Quadro (`addMnemonicFrame`/`updateMnemonicFrameText`/
-      // `removeMnemonicFrame`, TASK-012-007).
-      await recordProductionStageEvent(tx, {
-        rawContentId,
-        stageType: 'TIRA_MNEMONICA',
-        actorId: actor.id,
-        now: new Date(),
-      });
+      // `removeMnemonicFrame`, TASK-012-007). `options?.suppressOpeningEvent
+      // === true` (FR-024-013/DEC-025-003) pula esta emissão — a Tira é
+      // criada sem evento, e a reabertura acima confirma ABERTURA na 1ª
+      // interação humana.
+      if (options?.suppressOpeningEvent !== true) {
+        await recordProductionStageEvent(tx, {
+          rawContentId,
+          stageType: 'TIRA_MNEMONICA',
+          actorId: actor.id,
+          now: new Date(),
+        });
+      }
 
       return created;
     });
