@@ -151,7 +151,7 @@ afterAll(async () => {
 });
 
 describe('fonte de medição da métrica §1.3 — censo das rotas montadas', () => {
-  it('a árvore montada é exatamente estes 33 pares método+caminho (tripwire: rota nova sem atualizar a suíte falha aqui — TASK-023-016 somou GET /visual-associations/:id/image, 32→33)', () => {
+  it('a árvore montada é exatamente estes 34 pares método+caminho (tripwire: rota nova sem atualizar a suíte falha aqui — TASK-025-009 somou POST /contents/:id/publication, 33→34)', () => {
     expect(ROUTES.map(key).sort()).toEqual(
       [
         'GET /health',
@@ -187,6 +187,7 @@ describe('fonte de medição da métrica §1.3 — censo das rotas montadas', ()
         'POST /visual-associations',
         'PATCH /visual-associations/:id',
         'DELETE /visual-associations/:id',
+        'POST /contents/:id/publication',
       ].sort(),
     );
   });
@@ -259,6 +260,7 @@ describe('AC-002-018 — nenhuma capacidade de auto-registro na superfície mont
       '/auth/change-password',
       '/auth/logout',
       '/contents',
+      '/contents/:id/publication',
       '/contents/:id/strip',
       '/contents/:id/strip/frames',
       '/contents/:id/strip/frames/:frameId/visual-association',
@@ -427,10 +429,14 @@ describe('TASK-006-011 — as 7 rotas de /contents sob a barreira (topologia adv
   });
 
   it('STUDENT recusado (403) nas 7 rotas — (i) a rota irmã estática GET /contents não "vaza" a permissividade para GET /contents/:id, nem vice-versa; (v) todas as 7 recusam STUDENT', async () => {
-    // As 6 rotas da Tira (TASK-012-008) têm bloco de topologia próprio.
+    // As 8 rotas da Tira (TASK-012-008/023-011) têm bloco de topologia próprio; a rota
+    // de exportação (TASK-025-009, `/contents/:id/publication`) também é excluída aqui
+    // — cobertura própria em `publication.routes.integration.test.ts` (AC-024-009).
     const contentRoutes = NON_PUBLIC.filter(
       (route) =>
-        route.path.startsWith('/contents') && !route.path.startsWith('/contents/:id/strip'),
+        route.path.startsWith('/contents') &&
+        !route.path.startsWith('/contents/:id/strip') &&
+        !route.path.startsWith('/contents/:id/publication'),
     );
     expect(contentRoutes.map(key).sort()).toEqual([...CONTENT_ROUTE_KEYS].sort());
 
