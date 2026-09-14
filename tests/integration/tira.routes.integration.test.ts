@@ -13,6 +13,7 @@ import {
   createUser,
   seedRuleBreakdown,
 } from '../support/production-events-fixtures';
+import { createVisualAssociation } from '../support/visual-association-fixtures';
 import { closeTestDb, resetDb, testPrisma } from './db';
 
 /**
@@ -306,5 +307,82 @@ describe('Confused deputy no :frameId, faceta HTTP (achado do security-engineer,
     const untouched = await testPrisma.mnemonicFrame.findUnique({ where: { id: frameIdFromA } });
     expect(untouched).not.toBeNull();
     expect(untouched?.text).not.toBe('Tentativa de confused deputy.');
+  });
+
+  it('rejeita :frameId fora da cadeia do :id da URL nas 2 rotas de vínculo de associação visual (TASK-023-011, mesma amarração)', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const rawContentA = await createRawContent(editor.id, topicId);
+    const rawContentB = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdown(rawContentA.id);
+    await seedRuleBreakdown(rawContentB.id);
+    const access = await seedSession(editor.id);
+
+    const stripA = await request(app)
+      .post(`/api/v1/contents/${rawContentA.id}/strip`)
+      .set(...withCookie(access));
+    expect(stripA.status).toBe(200);
+    const frameIdFromA: string = stripA.body.frames[0].id;
+
+    const stripB = await request(app)
+      .post(`/api/v1/contents/${rawContentB.id}/strip`)
+      .set(...withCookie(access));
+    expect(stripB.status).toBe(200);
+
+    const association = await createVisualAssociation(editor.id);
+
+    const linkRes = await request(app)
+      .post(`/api/v1/contents/${rawContentB.id}/strip/frames/${frameIdFromA}/visual-association`)
+      .set(...withCookie(access))
+      .send({ visualAssociationId: association.id });
+    expect(linkRes.status).toBe(404);
+    expect(linkRes.body.error.message).toBe('Quadro não encontrado.');
+
+    const unlinkRes = await request(app)
+      .delete(`/api/v1/contents/${rawContentB.id}/strip/frames/${frameIdFromA}/visual-association`)
+      .set(...withCookie(access));
+    expect(unlinkRes.status).toBe(404);
+    expect(unlinkRes.body.error.message).toBe('Quadro não encontrado.');
+
+    const untouched = await testPrisma.mnemonicFrame.findUnique({ where: { id: frameIdFromA } });
+    expect(untouched?.visualAssociationId).toBeNull();
+  });
+});
+
+describe('POST/DELETE .../visual-association — vincular e desvincular via HTTP (COMP-023-009, AC-022-011/012/013)', () => {
+  it('POST vincula (200, visualAssociationId no corpo); DELETE desvincula (200, visualAssociationId volta a null)', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const rawContent = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdown(rawContent.id);
+    const access = await seedSession(editor.id);
+
+    const opened = await request(app)
+      .post(`/api/v1/contents/${rawContent.id}/strip`)
+      .set(...withCookie(access));
+    expect(opened.status).toBe(200);
+    const frameId: string = opened.body.frames[0].id;
+
+    const association = await createVisualAssociation(editor.id);
+
+    const linked = await request(app)
+      .post(`/api/v1/contents/${rawContent.id}/strip/frames/${frameId}/visual-association`)
+      .set(...withCookie(access))
+      .send({ visualAssociationId: association.id });
+    expect(linked.status).toBe(200);
+    const linkedFrames = linked.body.frames as { id: string; visualAssociationId: string | null }[];
+    const linkedFrame = linkedFrames.find((frame) => frame.id === frameId);
+    expect(linkedFrame?.visualAssociationId).toBe(association.id);
+
+    const unlinked = await request(app)
+      .delete(`/api/v1/contents/${rawContent.id}/strip/frames/${frameId}/visual-association`)
+      .set(...withCookie(access));
+    expect(unlinked.status).toBe(200);
+    const unlinkedFrames = unlinked.body.frames as {
+      id: string;
+      visualAssociationId: string | null;
+    }[];
+    const unlinkedFrame = unlinkedFrames.find((frame) => frame.id === frameId);
+    expect(unlinkedFrame?.visualAssociationId).toBeNull();
   });
 });

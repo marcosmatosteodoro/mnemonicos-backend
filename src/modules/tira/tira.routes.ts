@@ -8,13 +8,16 @@ import type { ContentActor } from '../contents/contents.service';
 import {
   addMnemonicFrame,
   getMnemonicStrip,
+  linkVisualAssociationToFrame,
   openMnemonicStrip,
   removeMnemonicFrame,
   reorderMnemonicFrames,
+  unlinkVisualAssociationFromFrame,
   updateMnemonicFrameText,
 } from './tira.service';
 import {
   addMnemonicFrameSchema,
+  linkVisualAssociationSchema,
   mnemonicFrameIdParamSchema,
   reorderMnemonicFramesSchema,
   updateMnemonicFrameSchema,
@@ -38,14 +41,17 @@ import {
  * A rota estática `PUT /contents/:id/strip/frames/order` monta ao lado da
  * rota com `:frameId` (`PATCH`/`DELETE /contents/:id/strip/frames/:frameId`)
  * — topologia adversarial mínima (lição [Segurança] "topologia adversarial"):
- * cada uma das 6 chaves abaixo é uma entrada INDEPENDENTE em `ROUTE_ROLES`,
+ * cada uma das 8 chaves abaixo é uma entrada INDEPENDENTE em `ROUTE_ROLES`,
  * nenhuma herda a declaração da vizinha — inclusive o par `GET`/`POST` no
  * MESMO caminho (`/contents/:id/strip`), mesma topologia adversarial de "2º
- * método no mesmo path".
+ * método no mesmo path". As 2 últimas (`POST`/`DELETE
+ * .../frames/:frameId/visual-association`, COMP-023-009) somam-se sem herdar
+ * a declaração de `PATCH`/`DELETE .../frames/:frameId`, mesmo caminho-base.
  *
- * `verifyOrigin` (COMP-003-010) é o **1º handler** nas 5 mutações (`POST
- * /contents/:id/strip`, `POST .../frames`, `PATCH`, `DELETE`, `PUT`) —
- * ausente na leitura (`GET /contents/:id/strip`).
+ * `verifyOrigin` (COMP-003-010) é o **1º handler** nas 7 mutações (`POST
+ * /contents/:id/strip`, `POST .../frames`, `PATCH`, `DELETE`, `PUT`, `POST`
+ * `.../visual-association`, `DELETE .../visual-association`) — ausente na
+ * leitura (`GET /contents/:id/strip`).
  *
  * **EMENDA Wave 5/DEC-012-011 (achado de CSRF do security-engineer, gate
  * 8)**: `GET /contents/:id/strip` deixou de ser get-or-generate — o cookie de
@@ -173,6 +179,53 @@ tiraRoutes.put(
     const { id } = rawContentIdParamSchema.parse(req.params);
     const input = reorderMnemonicFramesSchema.parse(req.body);
     const strip = await reorderMnemonicFrames(id, input, actorOf(req));
+    res.json(strip);
+  },
+);
+
+/**
+ * POST /contents/:id/strip/frames/:frameId/visual-association — vincula uma
+ * associação visual ao Quadro (COMP-023-009). Mesma amarração de `:frameId` à
+ * cadeia do `:id` de PATCH/DELETE acima — chave própria em `ROUTE_ROLES`,
+ * nunca herdada da vizinha. Idempotente se já vinculada à MESMA associação;
+ * substitui se já vinculada a outra (confirmação explícita já dada pela UI).
+ */
+tiraRoutes.post(
+  '/contents/:id/strip/frames/:frameId/visual-association',
+  verifyOrigin,
+  requireRole('POST', '/contents/:id/strip/frames/:frameId/visual-association', 'EDITOR', 'ADMIN'),
+  async (req, res) => {
+    const { id } = rawContentIdParamSchema.parse(req.params);
+    const { frameId } = mnemonicFrameIdParamSchema.parse(req.params);
+    const { visualAssociationId } = linkVisualAssociationSchema.parse(req.body);
+    const strip = await linkVisualAssociationToFrame(
+      id,
+      frameId,
+      visualAssociationId,
+      actorOf(req),
+    );
+    res.json(strip);
+  },
+);
+
+/**
+ * DELETE /contents/:id/strip/frames/:frameId/visual-association — desvincula
+ * a associação visual do Quadro (COMP-023-009). Mesma amarração de
+ * `:frameId`; chave própria em `ROUTE_ROLES`.
+ */
+tiraRoutes.delete(
+  '/contents/:id/strip/frames/:frameId/visual-association',
+  verifyOrigin,
+  requireRole(
+    'DELETE',
+    '/contents/:id/strip/frames/:frameId/visual-association',
+    'EDITOR',
+    'ADMIN',
+  ),
+  async (req, res) => {
+    const { id } = rawContentIdParamSchema.parse(req.params);
+    const { frameId } = mnemonicFrameIdParamSchema.parse(req.params);
+    const strip = await unlinkVisualAssociationFromFrame(id, frameId, actorOf(req));
     res.json(strip);
   },
 );

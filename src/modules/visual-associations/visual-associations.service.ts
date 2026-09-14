@@ -82,6 +82,32 @@ export function assertVisualAssociationWritable(
   }
 }
 
+/** Cliente Prisma injetável exigido só por `assertVisualAssociationExists`. */
+type VisualAssociationExistenceClient = Pick<typeof prisma, 'visualAssociation'>;
+
+/**
+ * Confirma que a associação visual existe — leitura comum a todo EDITOR/ADMIN
+ * (FR-022-023, 2ª cláusula: leitura/busca/vínculo do acervo são comuns,
+ * independente de quem criou a associação; só a ESCRITA sobre a associação em
+ * si é restrita ao autor, guarda que é `assertVisualAssociationWritable`
+ * acima — não esta). Chamada por `tira.service.ts` antes de vincular uma
+ * associação a um Quadro (DEC-023-009: `tira.service.ts` importa deste
+ * módulo, nunca o inverso). `NotFoundError` — mesma mensagem de
+ * `updateVisualAssociation`/`removeVisualAssociation` para o id inexistente.
+ */
+export async function assertVisualAssociationExists(
+  id: string,
+  db: VisualAssociationExistenceClient = prisma,
+): Promise<void> {
+  const existing = await db.visualAssociation.findUnique({
+    where: { id },
+    select: { id: true },
+  });
+  if (existing === null) {
+    throw new NotFoundError('Associação visual não encontrada.');
+  }
+}
+
 /**
  * Detecta o formato raster por assinatura de bytes (`image-signature.ts`, COMP-023-002)
  * e devolve o `mimeType` correspondente — nunca o `Content-Type` declarado pelo cliente

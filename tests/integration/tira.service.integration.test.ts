@@ -14,11 +14,19 @@ import type { ContentActor } from '../../src/modules/contents/contents.service';
 import * as productionEventsService from '../../src/modules/production-events/production-events.service';
 import {
   addMnemonicFrame,
+  getMnemonicStrip,
+  linkVisualAssociationToFrame,
   openMnemonicStrip,
   removeMnemonicFrame,
   reorderMnemonicFrames,
+  unlinkVisualAssociationFromFrame,
   updateMnemonicFrameText,
 } from '../../src/modules/tira/tira.service';
+import {
+  createVisualAssociation,
+  removeVisualAssociation,
+  updateVisualAssociation,
+} from '../../src/modules/visual-associations/visual-associations.service';
 import {
   BREAKDOWN_FIELDS,
   createRawContent,
@@ -26,6 +34,15 @@ import {
   createUser,
   seedRuleBreakdown,
 } from '../support/production-events-fixtures';
+// Fixture única de `VisualAssociation` (TASK-023-005/008/010/014/016) — não
+// recriada aqui (perfil node-22.md §7, "Fixtures compartilhadas"); renomeada
+// para não colidir com o `createVisualAssociation` do SERVICE importado acima
+// (mesmo nome, papéis distintos: fixture grava direto via `testPrisma`, o
+// service roda a regra de negócio real de CRUD do acervo).
+import {
+  createVisualAssociation as seedVisualAssociation,
+  PNG_FIXTURE_BUFFER,
+} from '../support/visual-association-fixtures';
 import { closeTestDb, resetDb, testPrisma } from './db';
 import { TEST_DATABASE_URL } from './db-url';
 
@@ -1610,5 +1627,711 @@ describe('removeMnemonicFrame — round-trips fixados (NFR-011-002, lição [Per
     // fixo medido em `addMnemonicFrame`/`updateMnemonicFrameText` acima)
     // = 17.
     expect(queries).toHaveLength(17);
+  });
+});
+
+/**
+ * `linkVisualAssociationToFrame`/`unlinkVisualAssociationFromFrame`
+ * (COMP-023-008/TASK-023-011) — vínculo/desvínculo de associação visual a um
+ * Quadro. Reusa `assertRawContentReachable`/`findStripId` (F4, sem alteração)
+ * e a fixture única de `VisualAssociation` (`seedVisualAssociation`,
+ * TASK-023-005/008/010).
+ */
+describe('linkVisualAssociationToFrame — vínculo efetivo, sem duplicar a associação no acervo (AC-022-011, FR-022-014)', () => {
+  it('a MESMA associação vinculada a 2 Quadros de Tiras diferentes: ambos passam a apontar para ela, contagem de VisualAssociation permanece 1', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+
+    const rawContentA = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdown(rawContentA.id);
+    const stripA = await openMnemonicStrip(rawContentA.id, actorOf(editor), testPrisma);
+
+    const rawContentB = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdown(rawContentB.id);
+    const stripB = await openMnemonicStrip(rawContentB.id, actorOf(editor), testPrisma);
+
+    const association = await seedVisualAssociation(editor.id);
+
+    await linkVisualAssociationToFrame(
+      rawContentA.id,
+      stripA.frames[0]!.id,
+      association.id,
+      actorOf(editor),
+      testPrisma,
+    );
+
+    const countBeforeSecondLink = await testPrisma.visualAssociation.count();
+    expect(countBeforeSecondLink).toBe(1);
+
+    const linked = await linkVisualAssociationToFrame(
+      rawContentB.id,
+      stripB.frames[0]!.id,
+      association.id,
+      actorOf(editor),
+      testPrisma,
+    );
+
+    expect(
+      linked.frames.find((frame) => frame.id === stripB.frames[0]!.id)?.visualAssociationId,
+    ).toBe(association.id);
+
+    // Mutante-alvo: um `create` no lugar do `update` duplicaria a linha do
+    // acervo — esta contagem reprova esse mutante.
+    const countAfterSecondLink = await testPrisma.visualAssociation.count();
+    expect(countAfterSecondLink).toBe(1);
+
+    const frameOfA = await testPrisma.mnemonicFrame.findUniqueOrThrow({
+      where: { id: stripA.frames[0]!.id },
+      select: { visualAssociationId: true },
+    });
+    expect(frameOfA.visualAssociationId).toBe(association.id);
+  });
+});
+
+describe('linkVisualAssociationToFrame — idempotência (FR-022-021, 2ª cláusula, AC-022-018)', () => {
+  it('vincular a MESMA associação já vinculada ao Quadro é no-op: sem VisualAssociationLinkEvent nem ProductionStageEvent novo', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const rawContent = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdown(rawContent.id);
+    const opened = await openMnemonicStrip(rawContent.id, actorOf(editor), testPrisma);
+    const frame = opened.frames[0]!;
+    const association = await seedVisualAssociation(editor.id);
+
+    await linkVisualAssociationToFrame(
+      rawContent.id,
+      frame.id,
+      association.id,
+      actorOf(editor),
+      testPrisma,
+    );
+
+    const linkEventsBefore = await testPrisma.visualAssociationLinkEvent.count();
+    const stageEventsBefore = await testPrisma.productionStageEvent.count({
+      where: { rawContentId: rawContent.id, stageType: 'ASSOCIACAO_VISUAL' },
+    });
+
+    // Mutante-alvo: remover/inverter a checagem de idempotência faria este 2º
+    // link contar como substituição — `wasReuse` recalculado e um 2º evento
+    // de cada tabela apareceria.
+    await linkVisualAssociationToFrame(
+      rawContent.id,
+      frame.id,
+      association.id,
+      actorOf(editor),
+      testPrisma,
+    );
+
+    const linkEventsAfter = await testPrisma.visualAssociationLinkEvent.count();
+    const stageEventsAfter = await testPrisma.productionStageEvent.count({
+      where: { rawContentId: rawContent.id, stageType: 'ASSOCIACAO_VISUAL' },
+    });
+    expect(linkEventsAfter).toBe(linkEventsBefore);
+    expect(stageEventsAfter).toBe(stageEventsBefore);
+  });
+
+  it('[Testes] árvore de decisão com precedência — vínculo concorrente pré-existente à MESMA associação (outro Quadro) NÃO reabre a idempotência nem recalcula `wasReuse` (mutante: reordenar a checagem de idempotência para DEPOIS do cálculo de wasReuse)', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+
+    const rawContentFirst = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdown(rawContentFirst.id);
+    const stripFirst = await openMnemonicStrip(rawContentFirst.id, actorOf(editor), testPrisma);
+    const frameFirst = stripFirst.frames[0]!;
+
+    const rawContentConcurrent = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdown(rawContentConcurrent.id);
+    const stripConcurrent = await openMnemonicStrip(
+      rawContentConcurrent.id,
+      actorOf(editor),
+      testPrisma,
+    );
+    const frameConcurrent = stripConcurrent.frames[0]!;
+
+    const association = await seedVisualAssociation(editor.id);
+
+    // frameFirst vincula PRIMEIRO (wasReuse: false — único vínculo até aqui).
+    await linkVisualAssociationToFrame(
+      rawContentFirst.id,
+      frameFirst.id,
+      association.id,
+      actorOf(editor),
+      testPrisma,
+    );
+    // frameConcurrent vincula à MESMA associação — agora 2 Quadros distintos
+    // já apontam para ela (vínculo concorrente pré-existente).
+    await linkVisualAssociationToFrame(
+      rawContentConcurrent.id,
+      frameConcurrent.id,
+      association.id,
+      actorOf(editor),
+      testPrisma,
+    );
+
+    const linkEventsBefore = await testPrisma.visualAssociationLinkEvent.count();
+    const stageEventsBefore = await testPrisma.productionStageEvent.count({
+      where: { rawContentId: rawContentFirst.id, stageType: 'ASSOCIACAO_VISUAL' },
+    });
+
+    // Vincular a MESMA associação de novo ao 1º Quadro (já vinculado a ela)
+    // permanece no-op, MESMO com o vínculo concorrente do 2º Quadro presente.
+    await linkVisualAssociationToFrame(
+      rawContentFirst.id,
+      frameFirst.id,
+      association.id,
+      actorOf(editor),
+      testPrisma,
+    );
+
+    const linkEventsAfter = await testPrisma.visualAssociationLinkEvent.count();
+    const stageEventsAfter = await testPrisma.productionStageEvent.count({
+      where: { rawContentId: rawContentFirst.id, stageType: 'ASSOCIACAO_VISUAL' },
+    });
+    expect(linkEventsAfter).toBe(linkEventsBefore);
+    expect(stageEventsAfter).toBe(stageEventsBefore);
+  });
+});
+
+describe('linkVisualAssociationToFrame — substituição (AC-022-018, FR-022-021 1ª cláusula)', () => {
+  it('Quadro já vinculado a A → vincular B: A é desvinculada, B passa a ser a ÚNICA associação vinculada; A permanece no acervo', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const rawContent = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdown(rawContent.id);
+    const opened = await openMnemonicStrip(rawContent.id, actorOf(editor), testPrisma);
+    const frame = opened.frames[0]!;
+
+    const associationA = await seedVisualAssociation(editor.id);
+    const associationB = await seedVisualAssociation(editor.id);
+
+    await linkVisualAssociationToFrame(
+      rawContent.id,
+      frame.id,
+      associationA.id,
+      actorOf(editor),
+      testPrisma,
+    );
+
+    const afterSubstitution = await linkVisualAssociationToFrame(
+      rawContent.id,
+      frame.id,
+      associationB.id,
+      actorOf(editor),
+      testPrisma,
+    );
+
+    const updatedFrame = afterSubstitution.frames.find((candidate) => candidate.id === frame.id);
+    expect(updatedFrame?.visualAssociationId).toBe(associationB.id);
+
+    const stillExistsA = await testPrisma.visualAssociation.findUnique({
+      where: { id: associationA.id },
+    });
+    expect(stillExistsA).not.toBeNull();
+
+    const persistedFrame = await testPrisma.mnemonicFrame.findUniqueOrThrow({
+      where: { id: frame.id },
+      select: { visualAssociationId: true },
+    });
+    expect(persistedFrame.visualAssociationId).toBe(associationB.id);
+  });
+});
+
+describe('linkVisualAssociationToFrame — recusa quando a associação visual não existe (assertVisualAssociationExists, DEC-023-009)', () => {
+  it('visualAssociationId inexistente → NotFoundError "Associação visual não encontrada."; nenhum vínculo é gravado', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const rawContent = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdown(rawContent.id);
+    const opened = await openMnemonicStrip(rawContent.id, actorOf(editor), testPrisma);
+    const frame = opened.frames[0]!;
+
+    const message = await captureMessage(() =>
+      linkVisualAssociationToFrame(
+        rawContent.id,
+        frame.id,
+        randomUUID(),
+        actorOf(editor),
+        testPrisma,
+      ),
+    );
+    expect(message).toBe('Associação visual não encontrada.');
+
+    const persisted = await testPrisma.mnemonicFrame.findUniqueOrThrow({
+      where: { id: frame.id },
+      select: { visualAssociationId: true },
+    });
+    expect(persisted.visualAssociationId).toBeNull();
+  });
+});
+
+describe('linkVisualAssociationToFrame — fail-secure: falha na emissão do evento reverte vínculo e log de reuso (NFR-011-003 herdado)', () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('recordProductionStageEvent rejeitando dentro da transação → linkVisualAssociationToFrame rejeita; nenhum vínculo nem VisualAssociationLinkEvent persiste', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const rawContent = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdown(rawContent.id);
+    const opened = await openMnemonicStrip(rawContent.id, actorOf(editor), testPrisma);
+    const frame = opened.frames[0]!;
+    const association = await seedVisualAssociation(editor.id);
+
+    jest
+      .spyOn(productionEventsService, 'recordProductionStageEvent')
+      .mockRejectedValueOnce(new Error('falha simulada na emissão'));
+
+    await expect(
+      linkVisualAssociationToFrame(
+        rawContent.id,
+        frame.id,
+        association.id,
+        actorOf(editor),
+        testPrisma,
+      ),
+    ).rejects.toThrow('falha simulada na emissão');
+
+    const persisted = await testPrisma.mnemonicFrame.findUniqueOrThrow({
+      where: { id: frame.id },
+      select: { visualAssociationId: true },
+    });
+    expect(persisted.visualAssociationId).toBeNull();
+
+    const linkEvents = await testPrisma.visualAssociationLinkEvent.count();
+    expect(linkEvents).toBe(0);
+  });
+});
+
+describe('unlinkVisualAssociationFromFrame — desvínculo efetivo, associação preservada no acervo (AC-022-012)', () => {
+  it('Quadro com vínculo → desvincula: visualAssociationId volta a null, VisualAssociation permanece no acervo', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const rawContent = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdown(rawContent.id);
+    const opened = await openMnemonicStrip(rawContent.id, actorOf(editor), testPrisma);
+    const frame = opened.frames[0]!;
+    const association = await seedVisualAssociation(editor.id);
+
+    await linkVisualAssociationToFrame(
+      rawContent.id,
+      frame.id,
+      association.id,
+      actorOf(editor),
+      testPrisma,
+    );
+
+    const unlinked = await unlinkVisualAssociationFromFrame(
+      rawContent.id,
+      frame.id,
+      actorOf(editor),
+      testPrisma,
+    );
+
+    const updatedFrame = unlinked.frames.find((candidate) => candidate.id === frame.id);
+    expect(updatedFrame?.visualAssociationId).toBeNull();
+
+    const stillExists = await testPrisma.visualAssociation.findUnique({
+      where: { id: association.id },
+    });
+    expect(stillExists).not.toBeNull();
+  });
+
+  it('Quadro já sem vínculo → desvincular é no-op: sem ProductionStageEvent novo (mutante: remover a checagem de idempotência)', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const rawContent = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdown(rawContent.id);
+    const opened = await openMnemonicStrip(rawContent.id, actorOf(editor), testPrisma);
+    const frame = opened.frames[0]!;
+
+    const stageEventsBefore = await testPrisma.productionStageEvent.count({
+      where: { rawContentId: rawContent.id, stageType: 'ASSOCIACAO_VISUAL' },
+    });
+
+    const result = await unlinkVisualAssociationFromFrame(
+      rawContent.id,
+      frame.id,
+      actorOf(editor),
+      testPrisma,
+    );
+
+    expect(
+      result.frames.find((candidate) => candidate.id === frame.id)?.visualAssociationId,
+    ).toBeNull();
+
+    const stageEventsAfter = await testPrisma.productionStageEvent.count({
+      where: { rawContentId: rawContent.id, stageType: 'ASSOCIACAO_VISUAL' },
+    });
+    expect(stageEventsAfter).toBe(stageEventsBefore);
+  });
+});
+
+describe('getMnemonicStrip — visualAssociationId no payload (AC-022-013)', () => {
+  it('Quadro sem vínculo → visualAssociationId: null; após vincular → o id da associação; após desvincular → null de novo', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const rawContent = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdown(rawContent.id);
+    const opened = await openMnemonicStrip(rawContent.id, actorOf(editor), testPrisma);
+    const frame = opened.frames[0]!;
+
+    const beforeLink = await getMnemonicStrip(rawContent.id, actorOf(editor), testPrisma);
+    expect(
+      beforeLink.frames.find((candidate) => candidate.id === frame.id)?.visualAssociationId,
+    ).toBeNull();
+
+    const association = await seedVisualAssociation(editor.id);
+    await linkVisualAssociationToFrame(
+      rawContent.id,
+      frame.id,
+      association.id,
+      actorOf(editor),
+      testPrisma,
+    );
+
+    const afterLink = await getMnemonicStrip(rawContent.id, actorOf(editor), testPrisma);
+    expect(
+      afterLink.frames.find((candidate) => candidate.id === frame.id)?.visualAssociationId,
+    ).toBe(association.id);
+
+    await unlinkVisualAssociationFromFrame(rawContent.id, frame.id, actorOf(editor), testPrisma);
+
+    const afterUnlink = await getMnemonicStrip(rawContent.id, actorOf(editor), testPrisma);
+    expect(
+      afterUnlink.frames.find((candidate) => candidate.id === frame.id)?.visualAssociationId,
+    ).toBeNull();
+  });
+});
+
+/**
+ * Alcance por autoria nos 2 métodos NOVOS desta TASK, sobre os 3 casos que
+ * FR-022-018/AC-022-015 nomeia (vincular, desvincular, consultar) — lição
+ * [Segurança] "Guarda reusada continua exigindo prova comportamental própria
+ * por novo método de escrita": fechamento contável (2 métodos × guarda de
+ * alcance = 2 provas). `getMnemonicStrip` já tem prova própria herdada de F4
+ * (bloco `openMnemonicStrip — alcance por autoria` acima) — aqui a faceta
+ * nova é "consultar o vínculo" no mesmo caso de uso desta TASK, não uma 3ª
+ * prova redundante da guarda em si.
+ */
+describe('linkVisualAssociationToFrame/unlinkVisualAssociationFromFrame/getMnemonicStrip — alcance por autoria (AC-022-015, AC-022-020, gate 8)', () => {
+  it('EDITOR B não alcança o Quadro de A em NENHUM dos 3 casos (vincular, desvincular, consultar) — mesma mensagem literal de um rawContentId inexistente; ADMIN realiza as 3 operações normalmente', async () => {
+    const editorA = await createUser('EDITOR');
+    const editorB = await createUser('EDITOR');
+    const admin = await createUser('ADMIN');
+    const topicId = await createTopic();
+
+    const rawContentOfA = await createRawContent(editorA.id, topicId);
+    await seedRuleBreakdown(rawContentOfA.id);
+    const stripOfA = await openMnemonicStrip(rawContentOfA.id, actorOf(editorA), testPrisma);
+    const frameOfA = stripOfA.frames[0]!;
+    const association = await seedVisualAssociation(editorA.id);
+
+    // (a) vincular — EDITOR B recusado com a MESMA mensagem de um id aleatório.
+    const linkMessageForOtherAuthor = await captureMessage(() =>
+      linkVisualAssociationToFrame(
+        rawContentOfA.id,
+        frameOfA.id,
+        association.id,
+        actorOf(editorB),
+        testPrisma,
+      ),
+    );
+    const linkMessageForRandomId = await captureMessage(() =>
+      linkVisualAssociationToFrame(
+        randomUUID(),
+        frameOfA.id,
+        association.id,
+        actorOf(editorB),
+        testPrisma,
+      ),
+    );
+    expect(linkMessageForOtherAuthor).toBe(linkMessageForRandomId);
+    expect(linkMessageForOtherAuthor).toBe('Conteúdo bruto não encontrado.');
+
+    // Nenhuma escrita atravessou a tentativa recusada de B.
+    const untouchedAfterLinkAttempt = await testPrisma.mnemonicFrame.findUniqueOrThrow({
+      where: { id: frameOfA.id },
+      select: { visualAssociationId: true },
+    });
+    expect(untouchedAfterLinkAttempt.visualAssociationId).toBeNull();
+
+    // ADMIN alcança e vincula normalmente.
+    const linkedByAdmin = await linkVisualAssociationToFrame(
+      rawContentOfA.id,
+      frameOfA.id,
+      association.id,
+      actorOf(admin),
+      testPrisma,
+    );
+    expect(
+      linkedByAdmin.frames.find((candidate) => candidate.id === frameOfA.id)?.visualAssociationId,
+    ).toBe(association.id);
+
+    // (b) desvincular — mesma recusa para B, ADMIN desvincula normalmente.
+    const unlinkMessageForOtherAuthor = await captureMessage(() =>
+      unlinkVisualAssociationFromFrame(rawContentOfA.id, frameOfA.id, actorOf(editorB), testPrisma),
+    );
+    const unlinkMessageForRandomId = await captureMessage(() =>
+      unlinkVisualAssociationFromFrame(randomUUID(), frameOfA.id, actorOf(editorB), testPrisma),
+    );
+    expect(unlinkMessageForOtherAuthor).toBe(unlinkMessageForRandomId);
+    expect(unlinkMessageForOtherAuthor).toBe('Conteúdo bruto não encontrado.');
+
+    const unlinkedByAdmin = await unlinkVisualAssociationFromFrame(
+      rawContentOfA.id,
+      frameOfA.id,
+      actorOf(admin),
+      testPrisma,
+    );
+    expect(
+      unlinkedByAdmin.frames.find((candidate) => candidate.id === frameOfA.id)?.visualAssociationId,
+    ).toBeNull();
+
+    // (c) consultar o vínculo (getMnemonicStrip) — mesma recusa para B, ADMIN lê normalmente.
+    const consultMessageForOtherAuthor = await captureMessage(() =>
+      getMnemonicStrip(rawContentOfA.id, actorOf(editorB), testPrisma),
+    );
+    const consultMessageForRandomId = await captureMessage(() =>
+      getMnemonicStrip(randomUUID(), actorOf(editorB), testPrisma),
+    );
+    expect(consultMessageForOtherAuthor).toBe(consultMessageForRandomId);
+    expect(consultMessageForOtherAuthor).toBe('Conteúdo bruto não encontrado.');
+
+    const consultedByAdmin = await getMnemonicStrip(rawContentOfA.id, actorOf(admin), testPrisma);
+    expect(consultedByAdmin.id).toBe(stripOfA.id);
+  });
+});
+
+describe('linkVisualAssociationToFrame/unlinkVisualAssociationFromFrame — guarda de pertencimento frameId→stripId (confused deputy, A01, gate 8)', () => {
+  it('rejeita frameId que não pertence à cadeia do rawContentId da URL, nos 2 métodos', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+
+    const rawContentA = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdown(rawContentA.id);
+    await openMnemonicStrip(rawContentA.id, actorOf(editor), testPrisma);
+
+    const rawContentB = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdown(rawContentB.id);
+    const stripB = await openMnemonicStrip(rawContentB.id, actorOf(editor), testPrisma);
+    const frameOfB = stripB.frames[0]!;
+
+    const association = await seedVisualAssociation(editor.id);
+
+    const linkMessage = await captureMessage(() =>
+      linkVisualAssociationToFrame(
+        rawContentA.id,
+        frameOfB.id,
+        association.id,
+        actorOf(editor),
+        testPrisma,
+      ),
+    );
+    expect(linkMessage).toBe('Quadro não encontrado.');
+
+    const unlinkMessage = await captureMessage(() =>
+      unlinkVisualAssociationFromFrame(rawContentA.id, frameOfB.id, actorOf(editor), testPrisma),
+    );
+    expect(unlinkMessage).toBe('Quadro não encontrado.');
+
+    const persisted = await testPrisma.mnemonicFrame.findUniqueOrThrow({
+      where: { id: frameOfB.id },
+      select: { visualAssociationId: true },
+    });
+    expect(persisted.visualAssociationId).toBeNull();
+  });
+});
+
+describe('linkVisualAssociationToFrame — wasReuse desconsidera Quadro cujo Conteúdo bruto de origem foi soft-deleted (AC-022-016, FR-022-019)', () => {
+  it('associação já vinculada a um Quadro cujo RawContent está soft-deleted → um NOVO vínculo a ela conta wasReuse: false (nenhum "outro Quadro" ATIVO)', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+
+    const rawContentSoftDeleted = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdown(rawContentSoftDeleted.id);
+    const stripSoftDeleted = await openMnemonicStrip(
+      rawContentSoftDeleted.id,
+      actorOf(editor),
+      testPrisma,
+    );
+    const frameSoftDeleted = stripSoftDeleted.frames[0]!;
+
+    const association = await seedVisualAssociation(editor.id);
+    await linkVisualAssociationToFrame(
+      rawContentSoftDeleted.id,
+      frameSoftDeleted.id,
+      association.id,
+      actorOf(editor),
+      testPrisma,
+    );
+
+    await testPrisma.rawContent.update({
+      where: { id: rawContentSoftDeleted.id },
+      data: { deletedAt: new Date() },
+    });
+
+    const rawContentNew = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdown(rawContentNew.id);
+    const stripNew = await openMnemonicStrip(rawContentNew.id, actorOf(editor), testPrisma);
+    const frameNew = stripNew.frames[0]!;
+
+    await linkVisualAssociationToFrame(
+      rawContentNew.id,
+      frameNew.id,
+      association.id,
+      actorOf(editor),
+      testPrisma,
+    );
+
+    const events = await testPrisma.visualAssociationLinkEvent.findMany({
+      where: { visualAssociationId: association.id },
+      orderBy: { occurredAt: 'asc' },
+    });
+    // 2 eventos reais: o 1º vínculo (sem "outro Quadro" ainda, wasReuse
+    // false) e o 2º (o único "outro Quadro" que existia estava soft-deleted —
+    // não conta, wasReuse permanece false).
+    expect(events).toHaveLength(2);
+    expect(events.map((event) => event.wasReuse)).toEqual([false, false]);
+  });
+});
+
+describe('linkVisualAssociationToFrame — emissão do evento de etapa (AC-022-021, FR-022-024)', () => {
+  it('Quadro SEM vínculo → 1º link emite exatamente 1 ProductionStageEvent (ASSOCIACAO_VISUAL, ABERTURA) para o rawContentId correspondente', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const rawContent = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdown(rawContent.id);
+    const opened = await openMnemonicStrip(rawContent.id, actorOf(editor), testPrisma);
+    const frame = opened.frames[0]!;
+    const association = await seedVisualAssociation(editor.id);
+
+    await linkVisualAssociationToFrame(
+      rawContent.id,
+      frame.id,
+      association.id,
+      actorOf(editor),
+      testPrisma,
+    );
+
+    const events = await productionEventsService.listProductionStageEvents(
+      rawContent.id,
+      testPrisma,
+    );
+    const associationEvents = events.filter((event) => event.stageType === 'ASSOCIACAO_VISUAL');
+    expect(associationEvents).toHaveLength(1);
+    expect(associationEvents[0]?.transitionType).toBe('ABERTURA');
+  });
+
+  it('CRUD isolado do acervo (criar, editar, remover associação visual fora de uma ação de vínculo) nunca emite ProductionStageEvent(ASSOCIACAO_VISUAL)', async () => {
+    const editor = await createUser('EDITOR');
+
+    const created = await createVisualAssociation(
+      { category: 'Categoria CRUD isolado', cognitiveDescription: 'Descrição CRUD isolado.' },
+      { buffer: PNG_FIXTURE_BUFFER, sizeBytes: PNG_FIXTURE_BUFFER.length },
+      actorOf(editor),
+      testPrisma,
+    );
+    await updateVisualAssociation(
+      created.id,
+      { category: 'Categoria CRUD isolado editada' },
+      undefined,
+      actorOf(editor),
+      testPrisma,
+    );
+    await removeVisualAssociation(created.id, actorOf(editor), testPrisma);
+
+    const associationEvents = await testPrisma.productionStageEvent.count({
+      where: { stageType: 'ASSOCIACAO_VISUAL' },
+    });
+    expect(associationEvents).toBe(0);
+  });
+});
+
+describe('Consulta da razão wasReuse/total sobre um período (DoD, métrica §1.3 da SPEC-022)', () => {
+  it('COUNT(*) FILTER (WHERE wasReuse) / COUNT(*) sobre occurredAt >= desde devolve a razão esperada, ignorando eventos fora do período', async () => {
+    const editor = await createUser('EDITOR');
+    const associationReused = await seedVisualAssociation(editor.id);
+    const associationNotReused = await seedVisualAssociation(editor.id);
+
+    const now = Date.now();
+    const daysAgo = (days: number): Date => new Date(now - days * 24 * 60 * 60 * 1000);
+
+    // 3 eventos DENTRO do período (60 dias): 2 wasReuse=true, 1 wasReuse=false — razão 2/3.
+    await testPrisma.visualAssociationLinkEvent.createMany({
+      data: [
+        { visualAssociationId: associationReused.id, wasReuse: true, occurredAt: daysAgo(1) },
+        { visualAssociationId: associationReused.id, wasReuse: true, occurredAt: daysAgo(2) },
+        { visualAssociationId: associationNotReused.id, wasReuse: false, occurredAt: daysAgo(3) },
+        // Fora do período — não deve entrar na razão.
+        { visualAssociationId: associationNotReused.id, wasReuse: true, occurredAt: daysAgo(90) },
+      ],
+    });
+
+    const since = daysAgo(60);
+    const rows = await testPrisma.$queryRaw<Array<{ ratio: number | null }>>`
+      SELECT
+        (COUNT(*) FILTER (WHERE "wasReuse"))::float / NULLIF(COUNT(*), 0) AS ratio
+      FROM visual_association_link_events
+      WHERE "occurredAt" >= ${since}
+    `;
+
+    expect(rows[0]?.ratio).toBeCloseTo(2 / 3, 6);
+  });
+});
+
+describe('linkVisualAssociationToFrame — round-trips ESTÁVEIS, independente do nº de Quadros já vinculados à associação (lição [Performance], TRISK-023-005)', () => {
+  it('vincular um Quadro NOVO a uma associação já vinculada a 3 outros Quadros custa o MESMO número de queries que vincular a uma associação sem nenhum vínculo prévio', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const associationWithManyLinks = await seedVisualAssociation(editor.id);
+
+    for (let i = 0; i < 3; i += 1) {
+      const rawContentPrior = await createRawContent(editor.id, topicId);
+      await seedRuleBreakdown(rawContentPrior.id);
+      const stripPrior = await openMnemonicStrip(rawContentPrior.id, actorOf(editor), testPrisma);
+      await linkVisualAssociationToFrame(
+        rawContentPrior.id,
+        stripPrior.frames[0]!.id,
+        associationWithManyLinks.id,
+        actorOf(editor),
+        testPrisma,
+      );
+    }
+
+    const associationWithNoLinks = await seedVisualAssociation(editor.id);
+
+    const rawContentA = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdown(rawContentA.id);
+    const stripA = await openMnemonicStrip(rawContentA.id, actorOf(editor), testPrisma);
+
+    const rawContentB = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdown(rawContentB.id);
+    const stripB = await openMnemonicStrip(rawContentB.id, actorOf(editor), testPrisma);
+
+    const queriesAgainstManyLinks = await withQueryProbe((probe) =>
+      linkVisualAssociationToFrame(
+        rawContentA.id,
+        stripA.frames[0]!.id,
+        associationWithManyLinks.id,
+        actorOf(editor),
+        probe,
+      ),
+    );
+    const queriesAgainstNoLinks = await withQueryProbe((probe) =>
+      linkVisualAssociationToFrame(
+        rawContentB.id,
+        stripB.frames[0]!.id,
+        associationWithNoLinks.id,
+        actorOf(editor),
+        probe,
+      ),
+    );
+
+    // `count()` do cálculo de `wasReuse` é 1 round-trip único, independente de
+    // QUANTAS linhas casam o filtro — a contagem NÃO cresce com o nº de
+    // Quadros já vinculados à mesma associação (mutante-alvo: um `findMany`
+    // de todos os vínculos, em vez de `count`, faria este número crescer).
+    expect(queriesAgainstManyLinks).toHaveLength(queriesAgainstNoLinks.length);
   });
 });

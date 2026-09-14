@@ -92,9 +92,11 @@ describe('reorderMnemonicFrames — assertRawContentReachable é a 1ª chamada (
 });
 
 /**
- * TASK-012-007 (AC-011-020, AC-011-022, estrutural): as 3 funções de CRUD de
- * Quadro são NOVOS pontos de entrada de escrita sobre tabela escopada por
- * autoria herdada — cada uma exige a MESMA prova estrutural de
+ * TASK-012-007/TASK-023-011 (AC-011-020, AC-011-022, estrutural): 5 funções
+ * são pontos de entrada de escrita sobre tabela escopada por autoria herdada
+ * — as 3 de CRUD de Quadro (TASK-012-007) e as 2 de vínculo de associação
+ * visual (`linkVisualAssociationToFrame`/`unlinkVisualAssociationFromFrame`,
+ * TASK-023-011) — cada uma exige a MESMA prova estrutural de
  * `reorderMnemonicFrames` acima (mesma régua, "[Segurança] Guarda reusada
  * continua exigindo prova comportamental própria por novo método de
  * escrita" — a prova COMPORTAMENTAL vive em
@@ -104,6 +106,8 @@ describe.each([
   ['addMnemonicFrame', 'export async function addMnemonicFrame'],
   ['updateMnemonicFrameText', 'export async function updateMnemonicFrameText'],
   ['removeMnemonicFrame', 'export async function removeMnemonicFrame'],
+  ['linkVisualAssociationToFrame', 'export async function linkVisualAssociationToFrame'],
+  ['unlinkVisualAssociationFromFrame', 'export async function unlinkVisualAssociationFromFrame'],
 ])(
   '%s — assertRawContentReachable é a 1ª chamada (AC-011-020, AC-011-022, estrutural)',
   (_name, signatureAnchor) => {
