@@ -1,3 +1,5 @@
+import { deflateSync } from 'node:zlib';
+
 import {
   IMAGE_PIXEL_BUDGET_PX,
   detectImageSignature,
@@ -9,8 +11,69 @@ import {
   type RasterImageFormat,
 } from '../../src/modules/visual-associations/image-signature';
 
+function crc32(bytes: Buffer): number {
+  let crc = 0xffffffff;
+  for (let i = 0; i < bytes.length; i++) {
+    crc ^= bytes[i]!;
+    for (let bit = 0; bit < 8; bit++) {
+      crc = crc & 1 ? (crc >>> 1) ^ 0xedb88320 : crc >>> 1;
+    }
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+/** Chunk PNG REAL (length + type + data + crc) — usado pelos PoCs de `hasAnimatedPngChunk`
+ * abaixo, que precisam de fronteiras de chunk corretas (não só um IHDR solto). */
+function pngChunk(type: string, data: Buffer): Buffer {
+  const typeBuf = Buffer.from(type, 'ascii');
+  const length = Buffer.alloc(4);
+  length.writeUInt32BE(data.length, 0);
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(crc32(Buffer.concat([typeBuf, data])), 0);
+  return Buffer.concat([length, typeBuf, data, crc]);
+}
+
+/**
+ * PNG 1×1 estático (sem `acTL` nenhum) genuinamente válido — `IHDR`+`IDAT`+`IEND`, todos
+ * com CRC real — usado como base pelos 2 casos abaixo, em que os bytes `acTL` aparecem
+ * DENTRO do payload de um chunk (nunca como TYPE de um chunk de verdade); `hasAnimatedPngChunk`
+ * tem que devolver `false` nos dois — o `pdf-lib` real embutiria esta imagem sem problema.
+ */
+function buildStaticPngWithAcTLBytesInPayload(location: 'text-chunk' | 'pixel-data'): Buffer {
+  const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const ihdrData = Buffer.alloc(13);
+  ihdrData.writeUInt32BE(1, 0);
+  ihdrData.writeUInt32BE(1, 4);
+  ihdrData.writeUInt8(8, 8);
+  ihdrData.writeUInt8(2, 9);
+  const ihdr = pngChunk('IHDR', ihdrData);
+
+  const middleChunks: Buffer[] = [];
+  if (location === 'text-chunk') {
+    // "acTL" aparece dentro do DADO de um chunk tEXt real — nunca como TYPE de chunk.
+    const textPayload = Buffer.from('Comment: acTL is not a chunk type here', 'ascii');
+    middleChunks.push(pngChunk('tEXt', textPayload));
+  }
+
+  const rawScanline =
+    location === 'pixel-data'
+      ? Buffer.concat([Buffer.from([0x00]), Buffer.from('XXacTLXX', 'ascii')]) // filtro 0 + payload com "acTL" embutido
+      : Buffer.from([0x00, 0xff, 0x00, 0x00]); // filtro 0 + 1 pixel RGB qualquer
+
+  // `level: 0` (STORED block) garante que os bytes crus (incl. "acTL", no caso
+  // 'pixel-data') sobrevivem literalmente dentro do IDAT comprimido — prova mais forte
+  // que compressão real, que poderia (ou não) preservar a sequência por acaso.
+  const idat = pngChunk('IDAT', deflateSync(rawScanline, { level: 0 }));
+  const iend = pngChunk('IEND', Buffer.alloc(0));
+
+  return Buffer.concat([signature, ihdr, ...middleChunks, idat, iend]);
+}
+
 /** `IHDR` de um PNG com `width`/`height` arbitrários — só o cabeçalho (sem `IDAT`/`IEND`),
- * suficiente para `readImageDimensions`, que nunca olha além dos primeiros 24 bytes. */
+ * suficiente para `readImageDimensions`, que nunca olha além dos primeiros 24 bytes. Inclui
+ * o CRC (4 bytes, valor dummy — ninguém aqui o valida) para que o chunk fique com o
+ * tamanho REAL de um chunk PNG: `hasAnimatedPngChunk` (varredura por fronteira de chunk)
+ * precisa disso para achar corretamente o próximo chunk depois do IHDR. */
 function pngHeaderWithDimensions(width: number, height: number): Buffer {
   const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
   const chunkLength = Buffer.alloc(4);
@@ -19,12 +82,12 @@ function pngHeaderWithDimensions(width: number, height: number): Buffer {
   const ihdrData = Buffer.alloc(13);
   ihdrData.writeUInt32BE(width, 0);
   ihdrData.writeUInt32BE(height, 4);
-  return Buffer.concat([signature, chunkLength, chunkType, ihdrData]); // CRC irrelevante aqui
+  const crc = Buffer.alloc(4);
+  return Buffer.concat([signature, chunkLength, chunkType, ihdrData, crc]);
 }
 
 /**
- * PoC do security-engineer (retry Wave 2, re-check do teto de pixels — achado ALTA): PNG
- * com um chunk decoy (`tEXt`, 20 bytes de payload) ANTES do `IHDR` real. Uma leitura de
+ * PNG com um chunk decoy (`tEXt`, 20 bytes de payload) ANTES do `IHDR` real. Uma leitura de
  * OFFSET FIXO (16/20, sem validar o que está ali) leria os bytes 16-23 — que caem DENTRO
  * do payload do decoy, construído de propósito para decodificar como `width=1,height=1`
  * — e liberaria a imagem como inofensiva; o decoder real (`@pdf-lib/upng`) VARRE os
@@ -198,7 +261,7 @@ describe('mimeTypeForFormat', () => {
   });
 });
 
-describe('readImageDimensions (retry Wave 2, gate 8 achado ALTA — lê SÓ o cabeçalho)', () => {
+describe('readImageDimensions (lê SÓ o cabeçalho)', () => {
   it('PNG: lê width/height do IHDR sem exigir IDAT/IEND', () => {
     const buffer = pngHeaderWithDimensions(800, 600);
 
@@ -212,7 +275,7 @@ describe('readImageDimensions (retry Wave 2, gate 8 achado ALTA — lê SÓ o ca
     expect(readImageDimensions(truncated, 'PNG')).toBeNull();
   });
 
-  it('PNG: devolve null (nunca a dimensão do decoy NEM a forjada) quando um chunk decoy antecede o IHDR real — PoC do security-engineer, retry Wave 2', () => {
+  it('PNG: devolve null (nunca a dimensão do decoy NEM a forjada) quando um chunk decoy antecede o IHDR real', () => {
     const forged = pngWithDecoyChunkBeforeIhdr(5000, 5000);
 
     const result = readImageDimensions(forged, 'PNG');
@@ -266,7 +329,7 @@ describe('readImageDimensions (retry Wave 2, gate 8 achado ALTA — lê SÓ o ca
   });
 });
 
-describe('exceedsPixelBudget (retry Wave 2, gate 8 achado ALTA)', () => {
+describe('exceedsPixelBudget', () => {
   it('width × height igual ao teto NÃO excede (fronteira inclusiva)', () => {
     expect(exceedsPixelBudget({ width: IMAGE_PIXEL_BUDGET_PX, height: 1 })).toBe(false);
   });
@@ -281,14 +344,10 @@ describe('exceedsPixelBudget (retry Wave 2, gate 8 achado ALTA)', () => {
   });
 });
 
-describe('hasAnimatedPngChunk (retry Wave 2, gate 8 achado ALTA)', () => {
-  it('detecta o chunk acTL em qualquer posição do buffer', () => {
-    const withActl = Buffer.concat([
-      pngHeaderWithDimensions(1, 1),
-      Buffer.from([0x00, 0x00, 0x00, 0x08]),
-      Buffer.from('acTL', 'ascii'),
-      Buffer.from([0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00]),
-    ]);
+describe('hasAnimatedPngChunk', () => {
+  it('detecta o chunk acTL quando ele é o TYPE de um chunk real, em fronteira de chunk', () => {
+    const actlData = Buffer.from([0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00]);
+    const withActl = Buffer.concat([pngHeaderWithDimensions(1, 1), pngChunk('acTL', actlData)]);
 
     expect(hasAnimatedPngChunk(withActl)).toBe(true);
   });
@@ -297,5 +356,17 @@ describe('hasAnimatedPngChunk (retry Wave 2, gate 8 achado ALTA)', () => {
     const withoutActl = pngHeaderWithDimensions(1, 1);
 
     expect(hasAnimatedPngChunk(withoutActl)).toBe(false);
+  });
+
+  it('devolve false quando os bytes "acTL" aparecem DENTRO do payload de um chunk tEXt, nunca como TYPE de chunk — imagem estática legítima não pode ser recusada por coincidência de bytes', () => {
+    const png = buildStaticPngWithAcTLBytesInPayload('text-chunk');
+
+    expect(hasAnimatedPngChunk(png)).toBe(false);
+  });
+
+  it('devolve false quando os bytes "acTL" aparecem DENTRO do stream de pixel comprimido (IDAT) — mesma razão, formato diferente de payload', () => {
+    const png = buildStaticPngWithAcTLBytesInPayload('pixel-data');
+
+    expect(hasAnimatedPngChunk(png)).toBe(false);
   });
 });

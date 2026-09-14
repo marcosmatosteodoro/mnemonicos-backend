@@ -143,11 +143,11 @@ type EmbedFrameImageResult = { image: PDFImage } | { skipReason: ImageSkipReason
 /**
  * Embute a imagem de 1 Quadro, ou devolve o motivo da recusa — nunca lança (AC-024-016: a
  * falha de 1 Quadro nunca derruba o documento inteiro). 3 recusas ANTES de qualquer
- * decode pesado (`exceedsPixelBudget`/`hasAnimatedPngChunk` só leem cabeçalho — achado do
- * security-engineer, gate 8: o decoder de `embedPng`/`embedJpg` aloca memória proporcional
- * à dimensão DECODIFICADA, não ao tamanho comprimido do arquivo, então o teto tem que
- * vir antes da chamada, não dentro do `catch`), mais o `try/catch` em torno do embed em si
- * para qualquer outra falha de decodificação (buffer corrompido/irrenderizável).
+ * decode pesado (`exceedsPixelBudget`/`hasAnimatedPngChunk` só leem cabeçalho — o decoder
+ * de `embedPng`/`embedJpg` aloca memória proporcional à dimensão DECODIFICADA, não ao
+ * tamanho comprimido do arquivo, então o teto tem que vir antes da chamada, não dentro do
+ * `catch`), mais o `try/catch` em torno do embed em si para qualquer outra falha de
+ * decodificação (buffer corrompido/irrenderizável).
  */
 async function embedFrameImage(
   doc: PDFDocument,

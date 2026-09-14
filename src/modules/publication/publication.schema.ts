@@ -8,8 +8,7 @@ import { PUBLICATION_VARIANTS } from '../../domain/types';
  * `domain/types.ts` (TASK-025-002), nunca redeclarado como array literal aqui (lição
  * [Código] DRY). O param `:id` NÃO tem schema próprio aqui — `publication.routes.ts`
  * importa `rawContentIdParamSchema` direto de `../contents/contents.schema` (mesmo campo,
- * mesma mensagem pt-BR; retry Wave 2, achado F4 do code-reviewer, gate 7 DRY — mesmo
- * padrão já usado por `tira.routes.ts`).
+ * mesma mensagem pt-BR; mesmo padrão já usado por `tira.routes.ts`).
  */
 export const exportPublicationBodySchema = z.object({
   variant: z.enum(PUBLICATION_VARIANTS),

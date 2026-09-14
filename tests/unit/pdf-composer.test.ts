@@ -166,16 +166,16 @@ function buildValidJpeg1x1(): Buffer {
  * Mesmo JPEG 1×1 válido, mas construído do jeito que uma leitura real do Prisma produz —
  * `Buffer.concat` de um payload pequeno cai no pool interno do Node (`byteOffset !== 0`),
  * SEM a normalização `toStandaloneBuffer` que as outras fixtures deste arquivo usam.
- * Retry Wave 2, achado F3 do code-reviewer: prova que `embedFrameImage` normaliza o
- * buffer sozinho antes do embed, em vez de depender de quem chama já ter normalizado —
- * lança se a pré-condição (`byteOffset !== 0`) não se confirmar, para o teste nunca passar
- * "por acidente" testando um buffer que não reproduz o bug.
+ * Prova que `embedFrameImage` normaliza o buffer sozinho antes do embed, em vez de
+ * depender de quem chama já ter normalizado — lança se a pré-condição (`byteOffset !== 0`)
+ * não se confirmar, para o teste nunca passar "por acidente" testando um buffer que não
+ * reproduz o bug.
  */
 function buildValidJpeg1x1PoolBacked(): Buffer {
   const poolBacked = Buffer.concat([buildValidJpeg1x1Bytes()]);
   if (poolBacked.byteOffset === 0) {
     throw new Error(
-      'Pré-condição do teste F3 falhou: buffer não ficou pool-backed (byteOffset === 0) — ' +
+      'Pré-condição do teste falhou: buffer não ficou pool-backed (byteOffset === 0) — ' +
         'a fixture não reproduz o cenário de produção que este teste precisa provar.',
     );
   }
@@ -185,11 +185,10 @@ function buildValidJpeg1x1PoolBacked(): Buffer {
 /**
  * PNG cujo `IHDR` declara uma dimensão astronômica (`width × height` muito acima de
  * `IMAGE_PIXEL_BUDGET_PX`), mas sem `IDAT`/`IEND` de verdade — arquivo pequeno o
- * suficiente para nunca ter existido de fato como imagem real (retry Wave 2, achado ALTA
- * do gate 8: prova que a recusa acontece por LEITURA DE CABEÇALHO, antes de qualquer
- * tentativa de decodificação pesada — se o teto fosse removido, `embedPng` receberia este
- * buffer INCOMPLETO e o motivo mudaria para `'decode-failed'`, nunca
- * `'pixel-budget-exceeded'`).
+ * suficiente para nunca ter existido de fato como imagem real. Prova que a recusa
+ * acontece por LEITURA DE CABEÇALHO, antes de qualquer tentativa de decodificação pesada
+ * — se o teto fosse removido, `embedPng` receberia este buffer INCOMPLETO e o motivo
+ * mudaria para `'decode-failed'`, nunca `'pixel-budget-exceeded'`.
  */
 function buildPngWithOversizedHeader(): Buffer {
   const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
@@ -205,7 +204,7 @@ function buildPngWithOversizedHeader(): Buffer {
 
 /** PNG 1×1 válido (mesma estrutura de `buildValidPng1x1`) com um chunk `acTL` (Animation
  * Control) inserido entre `IHDR` e `IDAT` — marca de APNG que `hasAnimatedPngChunk` deve
- * detectar ANTES do decode (retry Wave 2, achado ALTA). */
+ * detectar ANTES do decode. */
 function buildPngWithActlChunk(): Buffer {
   const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
   const ihdrData = Buffer.alloc(13);
@@ -252,8 +251,7 @@ function buildPngWithCorruptIdat(): Buffer {
 }
 
 /**
- * PoC do security-engineer (retry Wave 2, re-check do teto de pixels — achado ALTA): PNG
- * com um chunk decoy (`tEXt`, 20 bytes de payload) ANTES do `IHDR` real. O payload do
+ * PNG com um chunk decoy (`tEXt`, 20 bytes de payload) ANTES do `IHDR` real. O payload do
  * decoy é construído para que uma leitura de OFFSET FIXO (16/20, sem validar o que está
  * ali) decodifique como `width=1,height=1` — inofensivo — enquanto o `IHDR` verdadeiro,
  * mais adiante (achado pelo decoder real, que VARRE os chunks), declara uma dimensão
@@ -368,9 +366,9 @@ const META: { variant: 'RESUMO'; generatedAt: Date } = {
   generatedAt: new Date('2026-03-17T08:05:00.000Z'), // "17/03/2026, 05:05:00" — sem "49"
 };
 
-/** Mesma data de `META`, Variante diferente — usada só pelo teste de F1 (retry Wave 2)
- * abaixo, que precisa das DUAS variantes reais para provar que o rótulo lê `meta.variant`
- * em vez de uma constante fixa. */
+/** Mesma data de `META`, Variante diferente — usada pelo teste abaixo que precisa das
+ * DUAS variantes reais para provar que o rótulo lê `meta.variant` em vez de uma
+ * constante fixa. */
 const META_TIRA: { variant: 'TIRA'; generatedAt: Date } = {
   variant: 'TIRA',
   generatedAt: new Date('2026-03-17T08:05:00.000Z'),
@@ -476,7 +474,7 @@ describe('buildStripPdf — AC-024-016 (falha de decodificação de imagem não 
   });
 });
 
-describe('buildStripPdf — retry Wave 2, gate 8 achado ALTA (teto de pixels/APNG ANTES do decode)', () => {
+describe('buildStripPdf — teto de pixels/APNG recusados ANTES do decode (NFR-024-004, gate 8)', () => {
   it('PNG com cabeçalho declarando dimensão acima do teto (~20MP) é recusado por LEITURA DE CABEÇALHO — nunca chega a embedPng', async () => {
     const frames: StripFrameForPdf[] = [
       {
@@ -522,7 +520,7 @@ describe('buildStripPdf — retry Wave 2, gate 8 achado ALTA (teto de pixels/APN
     await expect(buildStripPdf(frames, META)).resolves.toBeInstanceOf(Buffer);
   });
 
-  it('PoC do security-engineer (re-check): PNG com chunk decoy (tEXt) antes do IHDR real cai no caminho só-texto — NUNCA chega a CHAMAR embedPng, mesmo com o teto de pixels no lugar', async () => {
+  it('PNG com chunk decoy (tEXt) antes do IHDR real cai no caminho só-texto — NUNCA chega a CHAMAR embedPng, mesmo com o teto de pixels no lugar', async () => {
     // Espiona o método real de `pdf-lib` (sem mockImplementation — o spy só observa,
     // continua chamando através) para provar "nunca chamado" de forma direta, em vez de
     // inferir isso indiretamente pelo resultado — um fixture incompleto por outro motivo
@@ -637,7 +635,7 @@ describe('buildStripPdf/buildSummaryPdf — AC-024-005 (rótulo de rascunho + ge
     }
   });
 
-  it('retry Wave 2, achado F1: o rótulo nomeia a Variante lida de meta.variant — TIRA em buildStripPdf, RESUMO em buildSummaryPdf, PÁGINA A PÁGINA (mutante que fixasse uma constante morre)', async () => {
+  it('o rótulo nomeia a Variante lida de meta.variant — TIRA em buildStripPdf, RESUMO em buildSummaryPdf, PÁGINA A PÁGINA (mutante que fixasse uma constante morre)', async () => {
     const stripBuffer = await buildStripPdf(
       [
         { text: 'QUADRO_UM', image: null },
@@ -737,7 +735,7 @@ describe('buildStripPdf — AC-024-011 (imagem usada exatamente como recebida, N
   });
 });
 
-describe('buildStripPdf — retry Wave 2, achado F3 do code-reviewer (buffer pool-backed não pode sumir silenciosamente)', () => {
+describe('buildStripPdf — buffer pool-backed não pode sumir silenciosamente (AC-024-003, ArrayBuffer não-exato do pdf-lib)', () => {
   it('JPEG construído do jeito que a produção constrói (pool-backed, byteOffset !== 0, NÃO normalizado a priori) ainda é embutido — 1 XObject, conteúdo byte-a-byte idêntico', async () => {
     const poolBackedJpeg = buildValidJpeg1x1PoolBacked();
     expect(poolBackedJpeg.byteOffset).not.toBe(0); // confirma a pré-condição do teste
@@ -777,9 +775,9 @@ describe('Postura estrutural de pdf-composer.ts (NFR-024-001/002/004, gate 1)', 
   const POSITIVE_CONTROL = "from 'pdf-lib'";
 
   /** `require('mod')`, `require('node:mod')`, `from 'mod'` e `from 'node:mod'` — as 4
-   * formas pelas quais um import da stdlib pode aparecer (retry Wave 2, achado F2 do
-   * code-reviewer: o grep anterior só cobria `http`/`https`/`net`/`dns` sem prefixo,
-   * plantar `from 'node:https'` continuava verde). */
+   * formas pelas quais um import da stdlib pode aparecer; um grep que só cobrisse
+   * `http`/`https`/`net`/`dns` sem o prefixo `node:` deixaria `from 'node:https'` passar
+   * despercebido. */
   function importsModule(text: string, moduleName: string): boolean {
     const pattern = new RegExp(
       `require\\(\\s*['"](?:node:)?${moduleName}['"]\\s*\\)|from\\s+['"](?:node:)?${moduleName}['"]`,
@@ -817,7 +815,7 @@ describe('Postura estrutural de pdf-composer.ts (NFR-024-001/002/004, gate 1)', 
     expect(resizePattern.test(nonCommentLines)).toBe(false);
   });
 
-  it('controle positivo do detector: importsModule() ACHA "node:https" quando plantado (mesma reprodução do code-reviewer, achado F2) — prova que o grep não está vazio por acidente', () => {
+  it('controle positivo do detector: importsModule() ACHA "node:https" (e as demais) quando plantado — prova que o grep não está vazio por acidente', () => {
     for (const moduleName of [...NETWORK_MODULES, ...PROCESS_ESCAPE_MODULES]) {
       const planted = `import { x } from 'node:${moduleName}';\n${nonCommentLines}`;
       expect(importsModule(planted, moduleName)).toBe(true);

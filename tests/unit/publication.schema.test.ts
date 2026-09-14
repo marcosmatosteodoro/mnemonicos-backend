@@ -8,9 +8,8 @@ import {
  * `publication.schema.ts` (TASK-025-006 / COMP-025-001) — item do Inclui sem AC
  * vinculado: o oráculo é o contrato do próprio schema — as 4 combinações de
  * `exportPublicationBodySchema` (2 válidas, 2 inválidas) exigidas pela TASK. O param
- * `:id` não tem schema próprio neste módulo (retry Wave 2, achado F4 — reusa
- * `rawContentIdParamSchema` de `contents.schema.ts`, testado por completo lá); o smoke
- * test abaixo só confirma o reuso, mesmo padrão de
+ * `:id` não tem schema próprio neste módulo — reusa `rawContentIdParamSchema` de
+ * `contents.schema.ts`; o smoke test abaixo só confirma o reuso, mesmo padrão de
  * `tira.schema.test.ts` ("rawContentIdParamSchema — reusado (não redeclarado)").
  */
 

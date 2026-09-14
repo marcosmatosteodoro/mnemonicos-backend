@@ -112,6 +112,18 @@ const PNG_IHDR_WIDTH_OFFSET = 16;
 const PNG_IHDR_HEIGHT_OFFSET = 20;
 const PNG_IHDR_MIN_LENGTH = PNG_IHDR_HEIGHT_OFFSET + 4;
 
+/** `true` só se os 8 bytes bater exatamente com a assinatura PNG — pré-condição
+ * compartilhada por qualquer leitura de offset fixo abaixo (`hasValidPngSignatureAndIhdr`,
+ * `hasAnimatedPngChunk`): sem ela, "offset 8" não é necessariamente onde o 1º chunk
+ * começa. */
+function hasValidPngSignature(buffer: Buffer): boolean {
+  if (buffer.length < PNG_FULL_SIGNATURE.length) return false;
+  for (let i = 0; i < PNG_FULL_SIGNATURE.length; i++) {
+    if (buffer[i] !== PNG_FULL_SIGNATURE[i]) return false;
+  }
+  return true;
+}
+
 /**
  * `true` só se a assinatura PNG de 8 bytes bate E o 1º chunk é literalmente `IHDR` com o
  * tamanho de payload esperado (13) — as únicas 2 garantias que o spec PNG dá e que tornam
@@ -123,15 +135,11 @@ const PNG_IHDR_MIN_LENGTH = PNG_IHDR_HEIGHT_OFFSET + 4;
  * decoy) como se fossem width/height — enquanto o decoder real, que varre os chunks, acha
  * o `IHDR` de verdade mais adiante, com a dimensão real (possivelmente forjada acima do
  * teto). `detectImageSignature` (heurística de formato, só 4 bytes) não pega isso — é
- * outra camada, outro propósito. Achado do security-engineer, retry Wave 2 (re-check do
- * teto de pixels): PoC de ~100 bytes enganava a leitura por offset fixo para "1×1"
- * enquanto o `IHDR` real declarava `5000×5000`.
+ * outra camada, outro propósito.
  */
 function hasValidPngSignatureAndIhdr(buffer: Buffer): boolean {
   if (buffer.length < PNG_IHDR_MIN_LENGTH) return false;
-  for (let i = 0; i < PNG_FULL_SIGNATURE.length; i++) {
-    if (buffer[i] !== PNG_FULL_SIGNATURE[i]) return false;
-  }
+  if (!hasValidPngSignature(buffer)) return false;
   if (buffer.readUInt32BE(PNG_FIRST_CHUNK_LENGTH_OFFSET) !== PNG_IHDR_EXPECTED_LENGTH) return false;
   const chunkType = buffer.toString(
     'ascii',
@@ -200,9 +208,8 @@ function readJpegDimensions(buffer: Buffer): ImageDimensions | null {
  * alocar nada). `null` se o buffer não tiver bytes suficientes para o cabeçalho, ou (JPEG)
  * se nenhum marcador SOF for encontrado — nunca lança. Usada por `pdf-composer.ts` como
  * teto ANTES de `embedPng`/`embedJpg` (o decoder interno do `pdf-lib` aloca memória
- * proporcional à dimensão decodificada, não ao tamanho comprimido do arquivo — achado do
- * security-engineer, gate 8: um PNG de poucos KB com `IHDR` gigante pode estourar heap
- * antes de qualquer byte chegar ao PDF).
+ * proporcional à dimensão decodificada, não ao tamanho comprimido do arquivo: um PNG de
+ * poucos KB com `IHDR` gigante pode estourar heap antes de qualquer byte chegar ao PDF).
  */
 export function readImageDimensions(
   buffer: Buffer,
@@ -232,16 +239,39 @@ export function exceedsPixelBudget(
 /** Tipo de chunk `acTL` ("Animation Control") — extensão de fato (não registrada no PNG
  * "core", mas universalmente reconhecida pelos codecs) que marca um PNG como animado
  * (APNG, multi-frame). */
-const APNG_ANIMATION_CONTROL_CHUNK_TYPE = Buffer.from('acTL', 'ascii');
+const APNG_ANIMATION_CONTROL_CHUNK_TYPE = 'acTL';
+/** Tamanho fixo dos campos `length`(4)+`type`(4) no início de cada chunk PNG. */
+const PNG_CHUNK_HEADER_SIZE = 8;
+/** Tamanho fixo do campo `crc`(4) ao final de cada chunk PNG. */
+const PNG_CHUNK_CRC_SIZE = 4;
 
 /**
- * `true` se o buffer PNG contém o chunk `acTL` — um APNG só é rejeitado pelo decoder do
- * `pdf-lib` DEPOIS de decodificar TODOS os frames da animação (o `IHDR` sozinho não
- * distingue PNG estático de APNG), então a varredura por este chunk acontece ANTES do
- * decode, no mesmo espírito do teto de pixels acima. Busca de substring de bytes — não é
- * um parser de chunk completo, e não precisa ser: falso positivo só custa 1 imagem
- * degradada a texto (fail-secure), nunca aceita algo perigoso por engano.
+ * `true` só se o buffer contém um chunk cujo campo TYPE (em fronteira de chunk, nunca uma
+ * substring solta em qualquer offset) é literalmente `acTL` — um APNG só é rejeitado pelo
+ * decoder do `pdf-lib` DEPOIS de decodificar TODOS os frames da animação (o `IHDR` sozinho
+ * não distingue PNG estático de APNG), então esta varredura acontece ANTES do decode, no
+ * mesmo espírito do teto de pixels acima.
+ *
+ * Busca de SUBSTRING no buffer bruto (a versão anterior desta função) é insegura na
+ * direção oposta à do teto de pixels: um PNG ESTÁTICO legítimo pode conter os bytes
+ * `acTL` por acaso dentro do payload de um chunk de metadado (`tEXt`/`iTXt`/`eXIf`) ou no
+ * stream de pixel comprimido (`IDAT`), e seria recusado como APNG mesmo sendo uma imagem
+ * que o `pdf-lib` embutiria sem problema — um falso positivo silencioso (a imagem some da
+ * página), não uma falha de segurança, mas ainda assim uma leitura errada da estrutura
+ * real do arquivo. A varredura abaixo avança de chunk em chunk pelo campo `length`
+ * declarado (nunca por índice de substring), então só compara `acTL` contra o TYPE de
+ * cada chunk de verdade.
  */
 export function hasAnimatedPngChunk(buffer: Buffer): boolean {
-  return buffer.includes(APNG_ANIMATION_CONTROL_CHUNK_TYPE);
+  if (!hasValidPngSignature(buffer)) return false;
+
+  let pos = PNG_FULL_SIGNATURE.length;
+  while (pos + PNG_CHUNK_HEADER_SIZE <= buffer.length) {
+    const chunkDataLength = buffer.readUInt32BE(pos);
+    const chunkType = buffer.toString('ascii', pos + 4, pos + PNG_CHUNK_HEADER_SIZE);
+    if (chunkType === APNG_ANIMATION_CONTROL_CHUNK_TYPE) return true;
+    if (chunkType === 'IEND') return false; // fim oficial da cadeia de chunks
+    pos += PNG_CHUNK_HEADER_SIZE + chunkDataLength + PNG_CHUNK_CRC_SIZE;
+  }
+  return false;
 }
