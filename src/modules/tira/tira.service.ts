@@ -6,7 +6,10 @@ import {
   type ContentActor,
   type RuleBreakdownDetail,
 } from '../contents/contents.service';
-import { recordProductionStageEvent } from '../production-events/production-events.service';
+import {
+  decideStageTransition,
+  recordProductionStageEvent,
+} from '../production-events/production-events.service';
 // DEC-023-009: `tira.service.ts` importa de `visual-associations.service.ts` (confirmar
 // existência da associação), NUNCA o inverso — o vínculo mora na árvore de recursos do
 // Quadro, `visual-associations` nunca resolve `rawContentId`/`frameId`.
@@ -42,8 +45,7 @@ export interface MnemonicStripDetail {
  * Ordem canônica dos Blocos da Quebra da regra (FR-011-001): CONCEITO → AÇÃO
  * → OBJETO → CONDIÇÃO → EXCEÇÃO. Exportada (COMP-025-007, DEC-025-003) para
  * reuso por `pdf-composer.ts`/`publication.service.ts` (Variante "resumo")
- * sem duplicar o array num 2º arquivo (lição [DRY], já reincidente 3× em
- * F5/PLAN-023).
+ * sem duplicar o array num 2º arquivo.
  */
 export const CANONICAL_RULE_BREAKDOWN_ORDER: ReadonlyArray<{
   originBlock: 'concept' | 'action' | 'object' | 'condition' | 'exception';
@@ -272,7 +274,16 @@ export async function openMnemonicStrip(
           where: { rawContentId, stageType: 'TIRA_MNEMONICA' },
           select: { transitionType: true },
         });
-        if (priorTransitions.length === 0) {
+        // `decideStageTransition` usada só como PREDICADO da guarda — NUNCA a
+        // transição que ela devolve: com histórico não-vazio ela devolveria
+        // CONCLUSAO/RETRABALHO (DEC-012-006), que não se aplica aqui (a
+        // conclusão só é decidida pela 1ª mutação humana de Quadro,
+        // TASK-012-007); o que importa nesta guarda é só se o histórico está
+        // VAZIO (ABERTURA).
+        const nextTransition = decideStageTransition(
+          priorTransitions.map((event) => event.transitionType),
+        );
+        if (nextTransition === 'ABERTURA') {
           await recordProductionStageEvent(tx, {
             rawContentId,
             stageType: 'TIRA_MNEMONICA',

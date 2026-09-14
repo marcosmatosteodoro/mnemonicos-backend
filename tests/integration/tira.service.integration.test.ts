@@ -365,9 +365,8 @@ describe('openMnemonicStrip — round-trips fixados para a relação de lista `f
  * ganha um 4º parâmetro opcional (`options?: { suppressOpeningEvent?:
  * boolean }`) e o ramo de REABERTURA passa a decidir a emissão de ABERTURA
  * pelo histórico real do par, em vez de só devolver a Tira. Par de cenários
- * no MESMO teste (lição [Testes] "Árvore de decisão com precedência: um caso
- * por PAR de ramos que coincide") — mutante que reordena/funde os dois ramos
- * (emitir já na criação, ou nunca emitir na reabertura) reprova este par.
+ * no MESMO teste — mutante que reordena/funde os dois ramos (emitir já na
+ * criação, ou nunca emitir na reabertura) reprova este par.
  */
 describe('openMnemonicStrip — supressão do evento de abertura na criação + confirmação na 1ª reabertura (FR-024-013, AC-024-015, DEC-025-003)', () => {
   it('criação com suppressOpeningEvent:true grava a Tira mas emite 0 eventos; reabertura SEGUINTE (histórico vazio) emite exatamente 1 ABERTURA', async () => {

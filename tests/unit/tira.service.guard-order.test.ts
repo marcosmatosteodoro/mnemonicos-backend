@@ -24,14 +24,52 @@ function readSource(path: string): string {
  * contrário de `extractInterfaceFields` (corpo flat, sem chave aninhada),
  * corpo de função contém `{`/`}` aninhados (bloco da `$transaction`, `if`),
  * então a extração precisa contar profundidade em vez de parar na 1ª `\n}`.
+ *
+ * A busca pela `{` do corpo salta a LISTA DE PARÂMETROS por parênteses
+ * balanceados a partir do 1º `(` após a âncora — um parâmetro com tipo
+ * inline (ex.: `options?: { suppressOpeningEvent?: boolean }`,
+ * COMP-025-007) contém uma `{` que NÃO é o corpo da função; procurar a 1ª
+ * `{` "crua" após a âncora (sem pular os parênteses) pegaria essa `{` errada.
+ *
+ * `requiredAnchor`, quando informado, é um CONTROLE POSITIVO: o corpo
+ * extraído precisa contê-lo — se o extrator mirar o alvo errado de novo no
+ * futuro (outra âncora textual coincidente antes do corpo real), a extração
+ * falha alto em vez de devolver um trecho vazio/errado sobre o qual as
+ * asserções de ordem abaixo passariam verdes sem provar nada.
  */
-function extractFunctionBody(source: string, signatureAnchor: string): string {
+function extractFunctionBody(
+  source: string,
+  signatureAnchor: string,
+  requiredAnchor?: string,
+): string {
   const anchorIndex = source.indexOf(signatureAnchor);
   if (anchorIndex === -1) {
     throw new Error(`assinatura não encontrada: ${signatureAnchor}`);
   }
 
-  const openBraceIndex = source.indexOf('{', anchorIndex);
+  const openParenIndex = source.indexOf('(', anchorIndex);
+  if (openParenIndex === -1) {
+    throw new Error(`lista de parâmetros não encontrada: ${signatureAnchor}`);
+  }
+
+  let parenDepth = 0;
+  let afterParamsIndex = -1;
+  for (let i = openParenIndex; i < source.length; i += 1) {
+    const char = source[i];
+    if (char === '(') parenDepth += 1;
+    else if (char === ')') {
+      parenDepth -= 1;
+      if (parenDepth === 0) {
+        afterParamsIndex = i + 1;
+        break;
+      }
+    }
+  }
+  if (afterParamsIndex === -1) {
+    throw new Error(`lista de parâmetros não fechada: ${signatureAnchor}`);
+  }
+
+  const openBraceIndex = source.indexOf('{', afterParamsIndex);
   if (openBraceIndex === -1) {
     throw new Error(`corpo da função não encontrado: ${signatureAnchor}`);
   }
@@ -43,7 +81,14 @@ function extractFunctionBody(source: string, signatureAnchor: string): string {
     else if (char === '}') {
       depth -= 1;
       if (depth === 0) {
-        return source.slice(openBraceIndex + 1, i);
+        const body = source.slice(openBraceIndex + 1, i);
+        if (requiredAnchor !== undefined && !body.includes(requiredAnchor)) {
+          throw new Error(
+            `controle positivo falhou: corpo extraído de "${signatureAnchor}" não contém ` +
+              `"${requiredAnchor}" — o extrator pode ter mirado o alvo errado`,
+          );
+        }
+        return body;
       }
     }
   }
@@ -85,7 +130,11 @@ function firstExecutableLine(body: string): string {
 describe('reorderMnemonicFrames — assertRawContentReachable é a 1ª chamada (AC-011-020, AC-011-022, estrutural)', () => {
   it('a 1ª linha executável do corpo (ignorando comentário e a abertura de `$transaction`) contém `assertRawContentReachable(`', () => {
     const source = readSource(TIRA_SERVICE);
-    const body = extractFunctionBody(source, 'export async function reorderMnemonicFrames');
+    const body = extractFunctionBody(
+      source,
+      'export async function reorderMnemonicFrames',
+      '.$transaction(',
+    );
     const line = firstExecutableLine(body);
 
     // Mutante: mover a validação do `order` (ou a busca de `stripId`) para
@@ -117,7 +166,7 @@ describe.each([
   (_name, signatureAnchor) => {
     it('a 1ª linha executável do corpo (ignorando comentário e a abertura de `$transaction`) contém `assertRawContentReachable(`', () => {
       const source = readSource(TIRA_SERVICE);
-      const body = extractFunctionBody(source, signatureAnchor);
+      const body = extractFunctionBody(source, signatureAnchor, '.$transaction(');
       const line = firstExecutableLine(body);
 
       // Mutante: mover `findStripId`/a guarda de pertencimento para ANTES de
@@ -154,8 +203,15 @@ describe.each([
   (_name, signatureAnchor) => {
     it('a 1ª linha executável do corpo da transação contém `assertStripPrerequisites(`', () => {
       const source = readSource(TIRA_SERVICE);
-      const outerBody = extractFunctionBody(source, signatureAnchor);
-      const transactionBody = extractFunctionBody(outerBody, 'async (tx) => {');
+      const outerBody = extractFunctionBody(source, signatureAnchor, '.$transaction(');
+      // Âncora do controle positivo (`mnemonicStrip.findUnique(`) é distinta
+      // de `assertStripPrerequisites(` — a própria asserção da linha abaixo —
+      // para o controle não ficar circular com o que está sendo provado.
+      const transactionBody = extractFunctionBody(
+        outerBody,
+        'async (tx) => {',
+        'mnemonicStrip.findUnique(',
+      );
       const line = firstExecutableLine(transactionBody);
 
       // Mutante: ler `mnemonicStrip.findUnique` (ou qualquer outra coisa)
@@ -200,7 +256,7 @@ describe.each([
   (_name, signatureAnchor) => {
     it('o preâmbulo (antes de `db.$transaction(`) não contém nenhuma chamada `<cliente>.<model>.<método>(`', () => {
       const source = readSource(TIRA_SERVICE);
-      const outerBody = extractFunctionBody(source, signatureAnchor);
+      const outerBody = extractFunctionBody(source, signatureAnchor, '.$transaction(');
       const preamble = extractPreamble(outerBody);
 
       // Mutante: plantar, ANTES de `db.$transaction(`, algo como
@@ -220,7 +276,14 @@ describe.each([
 describe('assertStripPrerequisites — assertRawContentReachable é a 1ª chamada (guarda compartilhada por getMnemonicStrip e openMnemonicStrip, EMENDA Wave 5/DEC-012-011)', () => {
   it('a 1ª linha executável do corpo contém `assertRawContentReachable(`', () => {
     const source = readSource(TIRA_SERVICE);
-    const body = extractFunctionBody(source, 'async function assertStripPrerequisites');
+    // Âncora do controle positivo (`ruleBreakdown.findUnique(`) é distinta de
+    // `assertRawContentReachable(` — a própria asserção da linha abaixo —
+    // para o controle não ficar circular com o que está sendo provado.
+    const body = extractFunctionBody(
+      source,
+      'async function assertStripPrerequisites',
+      'ruleBreakdown.findUnique(',
+    );
     const line = firstExecutableLine(body);
 
     // Mutante: mover a checagem da Quebra da regra (`ruleBreakdown.findUnique`

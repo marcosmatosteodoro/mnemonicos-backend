@@ -76,7 +76,7 @@ enum ProductionStageType {
   // por linha e só descarta linha que comece com `//` — comentário colado ao
   // valor entraria como parte do próprio literal extraído.
   ASSOCIACAO_VISUAL
-  // NOVO (F6) — aditivo, sem redesenho do mecanismo (NFR-009-001/DEC-010-001).
+  // Aditivo, sem redesenho do mecanismo (NFR-009-001/DEC-010-001).
   PUBLICACAO_PDF
   // Fatias futuras (F8 versionamento, F9 QC) acrescentam valores aqui —
   // migração aditiva, sem redesenho do mecanismo (NFR-009-001/DEC-010-001,
