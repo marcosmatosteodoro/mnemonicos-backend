@@ -13,7 +13,10 @@ import {
 } from 'pdf-lib';
 
 import { buildStripPdf, buildSummaryPdf } from '../../src/modules/publication/pdf-composer';
-import type { StripFrameForPdf } from '../../src/modules/publication/pdf-composer';
+import type {
+  ImageSkippedInfo,
+  StripFrameForPdf,
+} from '../../src/modules/publication/pdf-composer';
 
 /**
  * Fixtures de imagem NOVAS, mínimas e REALMENTE decodíveis (1×1) — só para este arquivo
@@ -157,8 +160,80 @@ function buildValidJpeg1x1(): Buffer {
   );
 }
 
+/**
+ * PNG cujo `IHDR` declara uma dimensão astronômica (`width × height` muito acima de
+ * `IMAGE_PIXEL_BUDGET_PX`), mas sem `IDAT`/`IEND` de verdade — arquivo pequeno o
+ * suficiente para nunca ter existido de fato como imagem real (retry Wave 2, achado ALTA
+ * do gate 8: prova que a recusa acontece por LEITURA DE CABEÇALHO, antes de qualquer
+ * tentativa de decodificação pesada — se o teto fosse removido, `embedPng` receberia este
+ * buffer INCOMPLETO e o motivo mudaria para `'decode-failed'`, nunca
+ * `'pixel-budget-exceeded'`).
+ */
+function buildPngWithOversizedHeader(): Buffer {
+  const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const ihdrData = Buffer.alloc(13);
+  ihdrData.writeUInt32BE(100_000, 0); // width
+  ihdrData.writeUInt32BE(100_000, 4); // height — 10 bilhões de px, bem acima do teto
+  ihdrData.writeUInt8(8, 8);
+  ihdrData.writeUInt8(2, 9);
+  const ihdr = pngChunk('IHDR', ihdrData);
+
+  return toStandaloneBuffer(Buffer.concat([signature, ihdr])); // sem IDAT/IEND, de propósito
+}
+
+/** PNG 1×1 válido (mesma estrutura de `buildValidPng1x1`) com um chunk `acTL` (Animation
+ * Control) inserido entre `IHDR` e `IDAT` — marca de APNG que `hasAnimatedPngChunk` deve
+ * detectar ANTES do decode (retry Wave 2, achado ALTA). */
+function buildPngWithActlChunk(): Buffer {
+  const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const ihdrData = Buffer.alloc(13);
+  ihdrData.writeUInt32BE(1, 0);
+  ihdrData.writeUInt32BE(1, 4);
+  ihdrData.writeUInt8(8, 8);
+  ihdrData.writeUInt8(2, 9);
+  const ihdr = pngChunk('IHDR', ihdrData);
+
+  const actlData = Buffer.alloc(8);
+  actlData.writeUInt32BE(2, 0); // num_frames (valor arbitrário — só a presença importa)
+  actlData.writeUInt32BE(0, 4); // num_plays
+  const actl = pngChunk('acTL', actlData);
+
+  const rawScanline = Buffer.from([0x00, 0xff, 0x00, 0x00]);
+  const idat = pngChunk('IDAT', deflateSync(rawScanline));
+  const iend = pngChunk('IEND', Buffer.alloc(0));
+
+  return toStandaloneBuffer(Buffer.concat([signature, ihdr, actl, idat, iend]));
+}
+
+/**
+ * PNG com `IHDR` 1×1 válido (passa longe do teto de pixels, sem `acTL`) mas `IDAT` lixo
+ * (não é um stream `zlib` válido) — o `embedPng` real do `pdf-lib` só lança ao tentar
+ * DECODIFICAR esse payload, nunca na leitura de cabeçalho. Prova que o `try/catch` em
+ * torno do `embedPng`/`embedJpg` (dentro de `embedFrameImage`) continua vivo mesmo depois
+ * das checagens novas — sem esta fixture, `TRUNCATED_JPEG_STUB` (curto demais para passar
+ * de `readImageDimensions`) nunca alcançaria esse `catch`, e um mutante que o removesse
+ * passaria despercebido.
+ */
+function buildPngWithCorruptIdat(): Buffer {
+  const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const ihdrData = Buffer.alloc(13);
+  ihdrData.writeUInt32BE(1, 0);
+  ihdrData.writeUInt32BE(1, 4);
+  ihdrData.writeUInt8(8, 8);
+  ihdrData.writeUInt8(2, 9);
+  const ihdr = pngChunk('IHDR', ihdrData);
+
+  const garbageIdat = pngChunk('IDAT', Buffer.from([0xde, 0xad, 0xbe, 0xef, 0x00, 0x11, 0x22]));
+  const iend = pngChunk('IEND', Buffer.alloc(0));
+
+  return toStandaloneBuffer(Buffer.concat([signature, ihdr, garbageIdat, iend]));
+}
+
 const VALID_PNG_1X1 = buildValidPng1x1();
 const VALID_JPEG_1X1 = buildValidJpeg1x1();
+const PNG_WITH_OVERSIZED_HEADER = buildPngWithOversizedHeader();
+const PNG_WITH_ACTL_CHUNK = buildPngWithActlChunk();
+const PNG_WITH_CORRUPT_IDAT = buildPngWithCorruptIdat();
 
 /** Codificação hex (maiúscula) que `showText`/`PDFHexString` grava no operador `Tj` para
  * texto puramente ASCII sob fonte padrão WinAnsi — nessa faixa (0x20-0x7E), WinAnsi
@@ -341,6 +416,69 @@ describe('buildStripPdf — AC-024-016 (falha de decodificação de imagem não 
     expect(pageXObjectCount(doc, 2)).toBe(0); // Quadro C: já era "sem imagem"
 
     expect(decodedPageContent(doc, 1)).toContain(hexOfAscii('QUADRO_B_IMAGEM_CORROMPIDA'));
+  });
+});
+
+describe('buildStripPdf — retry Wave 2, gate 8 achado ALTA (teto de pixels/APNG ANTES do decode)', () => {
+  it('PNG com cabeçalho declarando dimensão acima do teto (~20MP) é recusado por LEITURA DE CABEÇALHO — nunca chega a embedPng', async () => {
+    const frames: StripFrameForPdf[] = [
+      {
+        text: 'QUADRO_CABECALHO_GIGANTE',
+        image: { buffer: PNG_WITH_OVERSIZED_HEADER, format: 'PNG' },
+      },
+    ];
+    const skipped: ImageSkippedInfo[] = [];
+
+    const buffer = await buildStripPdf(frames, META, (info) => skipped.push(info)); // NÃO deve lançar
+
+    const doc = await PDFDocument.load(buffer);
+    expect(doc.getPageCount()).toBe(1);
+    expect(pageXObjectCount(doc, 0)).toBe(0); // caminho "só texto"
+    expect(decodedPageContent(doc, 0)).toContain(hexOfAscii('QUADRO_CABECALHO_GIGANTE'));
+
+    // O motivo prova QUAL checagem recusou: se o teto de pixels não tivesse rodado antes
+    // do embed, este buffer (sem IDAT/IEND) teria sido rejeitado por `embedPng` mesmo
+    // assim, mas com reason 'decode-failed' — nunca 'pixel-budget-exceeded'.
+    expect(skipped).toEqual([{ frameIndex: 0, format: 'PNG', reason: 'pixel-budget-exceeded' }]);
+  });
+
+  it('PNG com chunk acTL (APNG) é recusado antes do decode, mesmo sendo um PNG 1×1 válido no restante', async () => {
+    const frames: StripFrameForPdf[] = [
+      { text: 'QUADRO_ANTES', image: null },
+      { text: 'QUADRO_APNG', image: { buffer: PNG_WITH_ACTL_CHUNK, format: 'PNG' } },
+    ];
+    const skipped: ImageSkippedInfo[] = [];
+
+    const buffer = await buildStripPdf(frames, META, (info) => skipped.push(info));
+
+    const doc = await PDFDocument.load(buffer);
+    expect(doc.getPageCount()).toBe(2);
+    expect(pageXObjectCount(doc, 1)).toBe(0);
+    expect(skipped).toEqual([{ frameIndex: 1, format: 'PNG', reason: 'apng-not-supported' }]);
+  });
+
+  it('onImageSkipped é opcional — omitir o 3º argumento mantém o comportamento idêntico (retrocompatível)', async () => {
+    const frames: StripFrameForPdf[] = [
+      { text: 'QUADRO_SEM_CALLBACK', image: { buffer: PNG_WITH_OVERSIZED_HEADER, format: 'PNG' } },
+    ];
+
+    await expect(buildStripPdf(frames, META)).resolves.toBeInstanceOf(Buffer);
+  });
+
+  it('PNG com IHDR válido (dentro do teto, sem acTL) mas IDAT corrompido ainda cai no caminho só-texto — o try/catch em torno de embedPng continua vivo depois das checagens novas', async () => {
+    const frames: StripFrameForPdf[] = [
+      { text: 'QUADRO_IDAT_CORROMPIDO', image: { buffer: PNG_WITH_CORRUPT_IDAT, format: 'PNG' } },
+    ];
+    const skipped: ImageSkippedInfo[] = [];
+
+    const buffer = await buildStripPdf(frames, META, (info) => skipped.push(info)); // NÃO deve lançar
+
+    const doc = await PDFDocument.load(buffer);
+    expect(pageXObjectCount(doc, 0)).toBe(0);
+    // Mesma string 'decode-failed' do stub truncado, mas alcançada por um caminho
+    // DIFERENTE (o `catch` do embed em si, não a checagem de dimensão) — a prova real é
+    // de mutação: remover o `try/catch` faz ESTE caso (não o do stub truncado) rejeitar.
+    expect(skipped).toEqual([{ frameIndex: 0, format: 'PNG', reason: 'decode-failed' }]);
   });
 });
 

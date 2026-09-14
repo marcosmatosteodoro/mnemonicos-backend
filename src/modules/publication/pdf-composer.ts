@@ -1,8 +1,13 @@
 import { PageSizes, PDFDocument, StandardFonts } from 'pdf-lib';
-import type { PDFFont, PDFPage } from 'pdf-lib';
+import type { PDFFont, PDFImage, PDFPage } from 'pdf-lib';
 
 import type { RuleBreakdownDetail } from '../contents/contents.service';
 import { CANONICAL_RULE_BREAKDOWN_ORDER } from '../tira/tira.service';
+import {
+  exceedsPixelBudget,
+  hasAnimatedPngChunk,
+  readImageDimensions,
+} from '../visual-associations/image-signature';
 import type { PublicationVariant } from '../../domain/types';
 import { wrapTextToLines } from './pdf-layout';
 
@@ -25,6 +30,17 @@ export interface StripFrameForPdf {
    * falha de decodificação — os 3 casos renderizam só o texto (decisão de
    * `publication.service.ts`, TASK-025-008, para os 2 primeiros; o 3º é tratado aqui). */
   image: { buffer: Buffer; format: 'PNG' | 'JPEG' } | null;
+}
+
+/** Motivo pelo qual um Quadro perdeu a imagem e caiu no caminho "só texto" — reportado por
+ * `onImageSkipped` (`buildStripPdf`), nunca logado aqui dentro (o módulo continua sem I/O;
+ * quem loga é o chamador, COMP-025-005/TASK-025-008). */
+export type ImageSkipReason = 'decode-failed' | 'pixel-budget-exceeded' | 'apng-not-supported';
+
+export interface ImageSkippedInfo {
+  frameIndex: number;
+  format: 'PNG' | 'JPEG';
+  reason: ImageSkipReason;
 }
 
 const [PAGE_WIDTH, PAGE_HEIGHT] = PageSizes.A4;
@@ -93,6 +109,38 @@ function createPage(doc: PDFDocument, font: PDFFont, meta: PublicationPdfMeta): 
   return page;
 }
 
+type EmbedFrameImageResult = { image: PDFImage } | { skipReason: ImageSkipReason };
+
+/**
+ * Embute a imagem de 1 Quadro, ou devolve o motivo da recusa — nunca lança (AC-024-016: a
+ * falha de 1 Quadro nunca derruba o documento inteiro). 3 recusas ANTES de qualquer
+ * decode pesado (`exceedsPixelBudget`/`hasAnimatedPngChunk` só leem cabeçalho — achado do
+ * security-engineer, gate 8: o decoder de `embedPng`/`embedJpg` aloca memória proporcional
+ * à dimensão DECODIFICADA, não ao tamanho comprimido do arquivo, então o teto tem que
+ * vir antes da chamada, não dentro do `catch`), mais o `try/catch` em torno do embed em si
+ * para qualquer outra falha de decodificação (buffer corrompido/irrenderizável).
+ */
+async function embedFrameImage(
+  doc: PDFDocument,
+  image: NonNullable<StripFrameForPdf['image']>,
+): Promise<EmbedFrameImageResult> {
+  if (image.format === 'PNG' && hasAnimatedPngChunk(image.buffer)) {
+    return { skipReason: 'apng-not-supported' };
+  }
+
+  const dimensions = readImageDimensions(image.buffer, image.format);
+  if (dimensions === null) return { skipReason: 'decode-failed' };
+  if (exceedsPixelBudget(dimensions)) return { skipReason: 'pixel-budget-exceeded' };
+
+  try {
+    const embedded =
+      image.format === 'PNG' ? await doc.embedPng(image.buffer) : await doc.embedJpg(image.buffer);
+    return { image: embedded };
+  } catch {
+    return { skipReason: 'decode-failed' };
+  }
+}
+
 /**
  * Variante "resumo" (FR-024-003/A-024-006): texto corrido na ordem canônica
  * `CANONICAL_RULE_BREAKDOWN_ORDER` (CONCEITO→AÇÃO→OBJETO→CONDIÇÃO→EXCEÇÃO), Blocos vazios
@@ -142,55 +190,53 @@ export async function buildSummaryPdf(
 
 /**
  * Variante "tira" (FR-024-004/016): 1 página por `StripFrameForPdf`, na ordem recebida
- * (nunca reordenada). Falha de decodificação de imagem (`embedJpg`/`embedPng` lançando
- * por buffer corrompido/irrenderizável) é capturada POR Quadro e cai no mesmo caminho "só
- * texto" de um Quadro sem imagem — nunca propaga (FR-024-014/AC-024-016). O `try/catch` é
- * escopado só à chamada de embed: uma exceção de `page.drawText(...)` sobre o texto do
- * Quadro (ex.: caractere fora de WinAnsi, TRISK-025-007) fica FORA desse bloco e propaga
- * normalmente (FR-024-009 — falha do documento inteiro é distinta de falha isolada de
- * Associação visual).
+ * (nunca reordenada). Falha de imagem — decodificação (`embedJpg`/`embedPng` lançando por
+ * buffer corrompido/irrenderizável), estouro do teto de pixels ou APNG (`embedFrameImage`
+ * acima) — é resolvida POR Quadro e cai no mesmo caminho "só texto" de um Quadro sem
+ * imagem — nunca propaga (FR-024-014/AC-024-016). Esse tratamento é escopado só à
+ * resolução da imagem: uma exceção de `page.drawText(...)` sobre o texto do Quadro (ex.:
+ * caractere fora de WinAnsi, TRISK-025-007) fica FORA desse caminho e propaga normalmente
+ * (FR-024-009 — falha do documento inteiro é distinta de falha isolada de Associação
+ * visual). `onImageSkipped` é só notificação (sem I/O aqui dentro) — quem loga é o
+ * chamador (COMP-025-005/TASK-025-008).
  */
 export async function buildStripPdf(
   frames: readonly StripFrameForPdf[],
   meta: PublicationPdfMeta,
+  onImageSkipped?: (info: ImageSkippedInfo) => void,
 ): Promise<Buffer> {
   const doc = await PDFDocument.create();
   const font = await doc.embedFont(StandardFonts.Helvetica);
   const measureWidth = measureWidthFor(font);
 
-  for (const frame of frames) {
+  for (const [frameIndex, frame] of frames.entries()) {
     const page = createPage(doc, font, meta);
 
     let y = CONTENT_TOP_Y;
     const lines = wrapTextToLines(frame.text, CONTENT_WIDTH, measureWidth);
     for (const line of lines) {
-      // Fora do try/catch de imagem, de propósito: exceção aqui (WinAnsi) DEVE propagar.
+      // Fora do caminho de imagem, de propósito: exceção aqui (WinAnsi) DEVE propagar.
       page.drawText(line, { x: MARGIN_X, y, size: BODY_FONT_SIZE, font });
       y -= LINE_HEIGHT;
     }
 
     if (frame.image !== null) {
-      try {
-        const embeddedImage =
-          frame.image.format === 'PNG'
-            ? await doc.embedPng(frame.image.buffer)
-            : await doc.embedJpg(frame.image.buffer);
-
+      const result = await embedFrameImage(doc, frame.image);
+      if ('skipReason' in result) {
+        onImageSkipped?.({ frameIndex, format: frame.image.format, reason: result.skipReason });
+      } else {
         const { width, height } = fitWithinBox(
-          embeddedImage.width,
-          embeddedImage.height,
+          result.image.width,
+          result.image.height,
           IMAGE_MAX_WIDTH,
           IMAGE_MAX_HEIGHT,
         );
-        page.drawImage(embeddedImage, {
+        page.drawImage(result.image, {
           x: MARGIN_X,
           y: Math.max(CONTENT_BOTTOM_Y, y - height - LINE_HEIGHT),
           width,
           height,
         });
-      } catch {
-        // AC-024-016: decodificação falhou (buffer corrompido/irrenderizável) — este
-        // Quadro cai no caminho "só texto", já desenhado acima; o documento continua.
       }
     }
   }
