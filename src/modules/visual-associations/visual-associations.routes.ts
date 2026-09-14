@@ -69,8 +69,8 @@ const upload = multer({
 
 /**
  * Allowlist fechada dos `Content-Type` que `GET /visual-associations/:id/image` pode
- * responder (TASK-023-016, achado do `security-engineer` no gate 8 da Wave 1) —
- * derivada de `mimeTypeForFormat` (`image-signature.ts`, COMP-023-002) sobre os 3
+ * responder (TASK-023-016) — derivada de `mimeTypeForFormat` (`image-signature.ts`,
+ * COMP-023-002) sobre os 3
  * formatos raster, nunca um literal duplicado à mão: `mimeType` é coluna `String`
  * livre no schema (não um enum de banco), então o `Content-Type` da resposta NUNCA
  * ecoa a coluna diretamente — só um valor deste conjunto fechado sai no header.
