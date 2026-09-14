@@ -1,0 +1,200 @@
+import { PageSizes, PDFDocument, StandardFonts } from 'pdf-lib';
+import type { PDFFont, PDFPage } from 'pdf-lib';
+
+import type { RuleBreakdownDetail } from '../contents/contents.service';
+import { CANONICAL_RULE_BREAKDOWN_ORDER } from '../tira/tira.service';
+import type { PublicationVariant } from '../../domain/types';
+import { wrapTextToLines } from './pdf-layout';
+
+/**
+ * Motor de composição do PDF (COMP-025-003, DEC-025-001 — `pdf-lib`): desenha texto e
+ * imagem por coordenada explícita, sem template/HTML e sem I/O de rede — as duas
+ * superfícies que NFR-024-001/002 pedem para mitigar somem por construção (a biblioteca
+ * não abre socket, e não existe camada de interpolação entre o dado e a página:
+ * `page.drawText(...)` sempre recebe a string do usuário literal).
+ */
+
+export interface PublicationPdfMeta {
+  variant: PublicationVariant;
+  generatedAt: Date;
+}
+
+export interface StripFrameForPdf {
+  text: string;
+  /** `null` = sem Associação visual vinculada, formato não suportado (ex.: WEBP) OU
+   * falha de decodificação — os 3 casos renderizam só o texto (decisão de
+   * `publication.service.ts`, TASK-025-008, para os 2 primeiros; o 3º é tratado aqui). */
+  image: { buffer: Buffer; format: 'PNG' | 'JPEG' } | null;
+}
+
+const [PAGE_WIDTH, PAGE_HEIGHT] = PageSizes.A4;
+
+const MARGIN_X = 50;
+const MARGIN_TOP = 70; // reserva o cabeçalho de rascunho (2 linhas) fora da área de conteúdo
+const MARGIN_BOTTOM = 50;
+const CONTENT_WIDTH = PAGE_WIDTH - 2 * MARGIN_X;
+const CONTENT_TOP_Y = PAGE_HEIGHT - MARGIN_TOP;
+const CONTENT_BOTTOM_Y = MARGIN_BOTTOM;
+
+const BODY_FONT_SIZE = 12;
+const LINE_HEIGHT = 16;
+const PARAGRAPH_GAP = LINE_HEIGHT;
+
+const LABEL_FONT_SIZE = 9;
+const LABEL_LINE_Y = PAGE_HEIGHT - 30;
+const GENERATED_AT_LINE_Y = PAGE_HEIGHT - 45;
+
+/** Nunca "fechamento"/"aprovação" (AC-024-005) — é rótulo de RASCUNHO/geração, não de
+ * decisão editorial sobre o conteúdo. */
+const DRAFT_LABEL = 'RASCUNHO — documento gerado automaticamente, sujeito a revisão.';
+
+const IMAGE_MAX_WIDTH = 300;
+const IMAGE_MAX_HEIGHT = 300;
+
+function formatGeneratedAt(date: Date): string {
+  return new Intl.DateTimeFormat('pt-BR', { dateStyle: 'short', timeStyle: 'medium' }).format(date);
+}
+
+/**
+ * Rótulo de rascunho + `meta.generatedAt` (FR-024-001/AC-024-005) — chamada uma vez por
+ * página recém-criada, nunca só na 1ª (tanto no laço de `buildStripPdf` quanto na(s)
+ * página(s) de `buildSummaryPdf`).
+ */
+function drawDraftHeader(page: PDFPage, font: PDFFont, meta: PublicationPdfMeta): void {
+  page.drawText(DRAFT_LABEL, { x: MARGIN_X, y: LABEL_LINE_Y, size: LABEL_FONT_SIZE, font });
+  page.drawText(`Gerado em: ${formatGeneratedAt(meta.generatedAt)}`, {
+    x: MARGIN_X,
+    y: GENERATED_AT_LINE_Y,
+    size: LABEL_FONT_SIZE,
+    font,
+  });
+}
+
+function measureWidthFor(font: PDFFont): (word: string) => number {
+  return (word: string) => font.widthOfTextAtSize(`${word} `, BODY_FONT_SIZE);
+}
+
+/** Escala (sem nunca ampliar além do tamanho intrínseco) para caber numa caixa máxima,
+ * preservando proporção — só afeta o TAMANHO DESENHADO na página; o XObject embutido
+ * mantém os pixels/bytes originais (NFR-024-004 é sobre a fonte da imagem, não o layout). */
+function fitWithinBox(
+  width: number,
+  height: number,
+  maxWidth: number,
+  maxHeight: number,
+): { width: number; height: number } {
+  const scale = Math.min(maxWidth / width, maxHeight / height, 1);
+  return { width: width * scale, height: height * scale };
+}
+
+function createPage(doc: PDFDocument, font: PDFFont, meta: PublicationPdfMeta): PDFPage {
+  const page = doc.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
+  drawDraftHeader(page, font, meta);
+  return page;
+}
+
+/**
+ * Variante "resumo" (FR-024-003/A-024-006): texto corrido na ordem canônica
+ * `CANONICAL_RULE_BREAKDOWN_ORDER` (CONCEITO→AÇÃO→OBJETO→CONDIÇÃO→EXCEÇÃO), Blocos vazios
+ * pulados, mais a Síntese ao final. Transborda para nova página (com o mesmo cabeçalho de
+ * rascunho) quando o texto não cabe numa só — nunca um-Quadro-por-página, que é o
+ * diagrama da Variante "tira".
+ */
+export async function buildSummaryPdf(
+  breakdown: Pick<
+    RuleBreakdownDetail,
+    'concept' | 'action' | 'object' | 'condition' | 'exception' | 'essence'
+  >,
+  meta: PublicationPdfMeta,
+): Promise<Buffer> {
+  const doc = await PDFDocument.create();
+  const font = await doc.embedFont(StandardFonts.Helvetica);
+  const measureWidth = measureWidthFor(font);
+
+  let page = createPage(doc, font, meta);
+  let y = CONTENT_TOP_Y;
+
+  const paragraphs: string[] = [];
+  for (const item of CANONICAL_RULE_BREAKDOWN_ORDER) {
+    const text = breakdown[item.originBlock];
+    if (text === null || text === undefined || text === '') continue;
+    paragraphs.push(text);
+  }
+  paragraphs.push(breakdown.essence);
+
+  for (const paragraph of paragraphs) {
+    const lines = wrapTextToLines(paragraph, CONTENT_WIDTH, measureWidth);
+    for (const line of lines) {
+      if (y < CONTENT_BOTTOM_Y) {
+        page = createPage(doc, font, meta);
+        y = CONTENT_TOP_Y;
+      }
+      // Texto do usuário literal (NFR-024-002) — nenhuma interpolação/template envolvido.
+      page.drawText(line, { x: MARGIN_X, y, size: BODY_FONT_SIZE, font });
+      y -= LINE_HEIGHT;
+    }
+    y -= PARAGRAPH_GAP;
+  }
+
+  const bytes = await doc.save();
+  return Buffer.from(bytes);
+}
+
+/**
+ * Variante "tira" (FR-024-004/016): 1 página por `StripFrameForPdf`, na ordem recebida
+ * (nunca reordenada). Falha de decodificação de imagem (`embedJpg`/`embedPng` lançando
+ * por buffer corrompido/irrenderizável) é capturada POR Quadro e cai no mesmo caminho "só
+ * texto" de um Quadro sem imagem — nunca propaga (FR-024-014/AC-024-016). O `try/catch` é
+ * escopado só à chamada de embed: uma exceção de `page.drawText(...)` sobre o texto do
+ * Quadro (ex.: caractere fora de WinAnsi, TRISK-025-007) fica FORA desse bloco e propaga
+ * normalmente (FR-024-009 — falha do documento inteiro é distinta de falha isolada de
+ * Associação visual).
+ */
+export async function buildStripPdf(
+  frames: readonly StripFrameForPdf[],
+  meta: PublicationPdfMeta,
+): Promise<Buffer> {
+  const doc = await PDFDocument.create();
+  const font = await doc.embedFont(StandardFonts.Helvetica);
+  const measureWidth = measureWidthFor(font);
+
+  for (const frame of frames) {
+    const page = createPage(doc, font, meta);
+
+    let y = CONTENT_TOP_Y;
+    const lines = wrapTextToLines(frame.text, CONTENT_WIDTH, measureWidth);
+    for (const line of lines) {
+      // Fora do try/catch de imagem, de propósito: exceção aqui (WinAnsi) DEVE propagar.
+      page.drawText(line, { x: MARGIN_X, y, size: BODY_FONT_SIZE, font });
+      y -= LINE_HEIGHT;
+    }
+
+    if (frame.image !== null) {
+      try {
+        const embeddedImage =
+          frame.image.format === 'PNG'
+            ? await doc.embedPng(frame.image.buffer)
+            : await doc.embedJpg(frame.image.buffer);
+
+        const { width, height } = fitWithinBox(
+          embeddedImage.width,
+          embeddedImage.height,
+          IMAGE_MAX_WIDTH,
+          IMAGE_MAX_HEIGHT,
+        );
+        page.drawImage(embeddedImage, {
+          x: MARGIN_X,
+          y: Math.max(CONTENT_BOTTOM_Y, y - height - LINE_HEIGHT),
+          width,
+          height,
+        });
+      } catch {
+        // AC-024-016: decodificação falhou (buffer corrompido/irrenderizável) — este
+        // Quadro cai no caminho "só texto", já desenhado acima; o documento continua.
+      }
+    }
+  }
+
+  const bytes = await doc.save();
+  return Buffer.from(bytes);
+}
