@@ -349,12 +349,66 @@ describe('openMnemonicStrip — round-trips fixados para a relação de lista `f
       openMnemonicStrip(rawContent.id, actorOf(editor), probe),
     );
 
-    // Reabertura simples, medido contra o Postgres real: assertRawContentReachable
+    // Reabertura, medido contra o Postgres real: assertRawContentReachable
     // (1 SELECT) + ruleBreakdown.findUnique (1 SELECT) + mnemonicStrip.findUnique
     // com relationLoadStrategy: 'join' (1 SELECT — LATERAL JOIN + JSONB_AGG, não
-    // N+1 pelos 5 Quadros) + o COMMIT da `$transaction` — 4 eventos de query, não
-    // 5 (que uma consulta N+1 por Quadro produziria).
-    expect(queries).toHaveLength(4);
+    // N+1 pelos 5 Quadros) + productionStageEvent.findMany (1 SELECT — checagem
+    // de histórico do par, FR-024-013/DEC-025-003/COMP-025-007) + o COMMIT da
+    // `$transaction` — 5 eventos de query, não 6 (que uma consulta N+1 por
+    // Quadro produziria).
+    expect(queries).toHaveLength(5);
+  });
+});
+
+/**
+ * FR-024-013/AC-024-015 (COMP-025-007, DEC-025-003): `openMnemonicStrip`
+ * ganha um 4º parâmetro opcional (`options?: { suppressOpeningEvent?:
+ * boolean }`) e o ramo de REABERTURA passa a decidir a emissão de ABERTURA
+ * pelo histórico real do par, em vez de só devolver a Tira. Par de cenários
+ * no MESMO teste — mutante que reordena/funde os dois ramos (emitir já na
+ * criação, ou nunca emitir na reabertura) reprova este par.
+ */
+describe('openMnemonicStrip — supressão do evento de abertura na criação + confirmação na 1ª reabertura (FR-024-013, AC-024-015, DEC-025-003)', () => {
+  it('criação com suppressOpeningEvent:true grava a Tira mas emite 0 eventos; reabertura SEGUINTE (histórico vazio) emite exatamente 1 ABERTURA', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const rawContent = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdown(rawContent.id);
+
+    const created = await openMnemonicStrip(rawContent.id, actorOf(editor), testPrisma, {
+      suppressOpeningEvent: true,
+    });
+    expect(created.frames).toHaveLength(5);
+
+    const eventsAfterCreation = await testPrisma.productionStageEvent.findMany({
+      where: { rawContentId: rawContent.id, stageType: 'TIRA_MNEMONICA' },
+    });
+    expect(eventsAfterCreation).toHaveLength(0);
+
+    const reopened = await openMnemonicStrip(rawContent.id, actorOf(editor), testPrisma);
+    expect(reopened.id).toBe(created.id);
+    expect(reopened.frames).toEqual(created.frames);
+
+    const eventsAfterReopen = await testPrisma.productionStageEvent.findMany({
+      where: { rawContentId: rawContent.id, stageType: 'TIRA_MNEMONICA' },
+    });
+    expect(eventsAfterReopen).toHaveLength(1);
+    expect(eventsAfterReopen[0]?.transitionType).toBe('ABERTURA');
+  });
+
+  it('chamador SEM options (assinatura retrocompatível, tira.routes.ts) — 1ª abertura emite ABERTURA imediatamente, sem supressão', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const rawContent = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdown(rawContent.id);
+
+    await openMnemonicStrip(rawContent.id, actorOf(editor), testPrisma);
+
+    const eventsAfterCreation = await testPrisma.productionStageEvent.findMany({
+      where: { rawContentId: rawContent.id, stageType: 'TIRA_MNEMONICA' },
+    });
+    expect(eventsAfterCreation).toHaveLength(1);
+    expect(eventsAfterCreation[0]?.transitionType).toBe('ABERTURA');
   });
 });
 

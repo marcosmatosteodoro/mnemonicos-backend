@@ -1,4 +1,7 @@
-import { buildInitialFrames } from '../../src/modules/tira/tira.service';
+import {
+  buildInitialFrames,
+  CANONICAL_RULE_BREAKDOWN_ORDER,
+} from '../../src/modules/tira/tira.service';
 
 /**
  * `buildInitialFrames` (TASK-012-005 / COMP-012-004) — regra pura de geração
@@ -69,5 +72,20 @@ describe('buildInitialFrames — Blocos opcionais vazios não geram Quadro (AC-0
 
     expect(frames).toHaveLength(3);
     expect(frames.map((frame) => frame.originBlock)).toEqual(['concept', 'action', 'object']);
+  });
+});
+
+describe('CANONICAL_RULE_BREAKDOWN_ORDER — ordem canônica exportada (COMP-025-007, DEC-025-003)', () => {
+  it('5 originBlock, ordem CONCEITO→AÇÃO→OBJETO→CONDIÇÃO→EXCEÇÃO', () => {
+    // Falsificável: trocar/omitir 1 originBlock reprova esta sequência —
+    // consumidores externos (pdf-composer.ts/publication.service.ts,
+    // Variante "resumo") dependem exatamente desta ordem.
+    expect(CANONICAL_RULE_BREAKDOWN_ORDER.map((item) => item.originBlock)).toEqual([
+      'concept',
+      'action',
+      'object',
+      'condition',
+      'exception',
+    ]);
   });
 });

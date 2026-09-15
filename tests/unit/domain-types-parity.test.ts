@@ -7,6 +7,7 @@ import {
   NORMATIVE_SOURCE_TYPES,
   PRODUCTION_STAGE_TYPES,
   PRODUCTION_EVENT_TRANSITIONS,
+  PUBLICATION_VARIANTS,
   type SessionUser,
 } from '../../src/domain/types';
 
@@ -72,6 +73,24 @@ function extractPrismaEnum(source: string, enumName: string): string[] {
     .split('\n')
     .map((line) => line.trim())
     .filter((line) => line !== '' && !line.startsWith('//'));
+}
+
+/**
+ * Extrai as chaves de um `export const <constName>: Record<...> = { ... };`
+ * pela leitura textual do arquivo (sem AST) — mesma disciplina de
+ * `extractConstArray`, mas para as CHAVES de um objeto em vez dos elementos
+ * de um array (assimetria de molde de `PublicationVariant`: o frontend só
+ * tem `PUBLICATION_VARIANT_LABELS`, sem um 2º array espelhado,
+ * COMP-025-009).
+ */
+function extractRecordKeys(source: string, constName: string): string[] {
+  const pattern = new RegExp(`export const ${constName}: Record<[^=]*= \\{([\\s\\S]*?)\\};`);
+  const match = pattern.exec(source);
+  const body = match?.[1];
+  if (body === undefined) {
+    throw new Error(`declaração de ${constName} não encontrada`);
+  }
+  return [...body.matchAll(/(\w+):\s*'/g)].map((m) => m[1] ?? '');
 }
 
 function extractSessionUserFields(source: string): string[] {
@@ -146,6 +165,7 @@ describe('paridade de tipos de domínio backend ⇆ frontend (NFR-002-007 / AC-0
     expect(declaredStageTypes).toEqual([
       'ASSOCIACAO_VISUAL',
       'CONTEUDO_BRUTO',
+      'PUBLICACAO_PDF',
       'QUEBRA_DA_REGRA',
       'TIRA_MNEMONICA',
     ]);
@@ -168,6 +188,22 @@ describe('paridade de tipos de domínio backend ⇆ frontend (NFR-002-007 / AC-0
     expect(declaredTransitions).toEqual(schemaTransitions);
     // o símbolo importado confere com a fonte que o teste leu como texto
     expect([...PRODUCTION_EVENT_TRANSITIONS].sort()).toEqual(declaredTransitions);
+  });
+
+  it('expõe PUBLICATION_VARIANTS (backend) em paridade com as chaves de PUBLICATION_VARIANT_LABELS (frontend, COMP-025-009)', () => {
+    const backendVariants = extractConstArray(backendSource, 'PUBLICATION_VARIANTS').sort();
+    const frontendLabelKeys = extractRecordKeys(
+      frontendSource,
+      'PUBLICATION_VARIANT_LABELS',
+    ).sort();
+
+    expect(backendVariants).toEqual(['RESUMO', 'TIRA']);
+    expect(frontendLabelKeys).toEqual(['RESUMO', 'TIRA']);
+    // paridade nos dois sentidos — mesmo tamanho e mesmos elementos: nenhuma
+    // ponta com entrada a mais
+    expect(frontendLabelKeys).toEqual(backendVariants);
+    // o símbolo importado confere com a fonte que o teste leu como texto
+    expect([...PUBLICATION_VARIANTS].sort()).toEqual(backendVariants);
   });
 
   it('declara a interface SessionUser com o mesmo conjunto de campos nos dois repositórios', () => {

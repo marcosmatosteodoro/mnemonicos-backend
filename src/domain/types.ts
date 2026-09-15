@@ -85,6 +85,7 @@ export const PRODUCTION_STAGE_TYPES = [
   'QUEBRA_DA_REGRA',
   'TIRA_MNEMONICA',
   'ASSOCIACAO_VISUAL',
+  'PUBLICACAO_PDF',
 ] as const;
 
 export type ProductionStageType = (typeof PRODUCTION_STAGE_TYPES)[number];
@@ -92,6 +93,18 @@ export type ProductionStageType = (typeof PRODUCTION_STAGE_TYPES)[number];
 export const PRODUCTION_EVENT_TRANSITIONS = ['ABERTURA', 'CONCLUSAO', 'RETRABALHO'] as const;
 
 export type ProductionEventTransition = (typeof PRODUCTION_EVENT_TRANSITIONS)[number];
+
+/**
+ * Variante do artefato exportado pelo pipeline de publicação em PDF (F6,
+ * SPEC-024). Fonte canônica: `mnemonicos-backend/prisma/schema.prisma` (enum
+ * `PublicationVariant`). Espelhado em
+ * `mnemonicos-frontend/src/types/domain.ts` (só `type` + mapa de rótulos,
+ * COMP-025-009) — o teste de divergência cross-repo é
+ * `mnemonicos-backend/tests/unit/domain-types-parity.test.ts`.
+ */
+export const PUBLICATION_VARIANTS = ['TIRA', 'RESUMO'] as const;
+
+export type PublicationVariant = (typeof PUBLICATION_VARIANTS)[number];
 
 /**
  * Conteúdo bruto de produção — espelha o model `RawContent` de

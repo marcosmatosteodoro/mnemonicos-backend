@@ -151,7 +151,7 @@ afterAll(async () => {
 });
 
 describe('fonte de medição da métrica §1.3 — censo das rotas montadas', () => {
-  it('a árvore montada é exatamente estes 33 pares método+caminho (tripwire: rota nova sem atualizar a suíte falha aqui — TASK-023-016 somou GET /visual-associations/:id/image, 32→33)', () => {
+  it('a árvore montada é exatamente estes 34 pares método+caminho (tripwire: rota nova sem atualizar a suíte falha aqui — TASK-025-009 somou POST /contents/:id/publication, 33→34)', () => {
     expect(ROUTES.map(key).sort()).toEqual(
       [
         'GET /health',
@@ -187,6 +187,7 @@ describe('fonte de medição da métrica §1.3 — censo das rotas montadas', ()
         'POST /visual-associations',
         'PATCH /visual-associations/:id',
         'DELETE /visual-associations/:id',
+        'POST /contents/:id/publication',
       ].sort(),
     );
   });
@@ -259,6 +260,7 @@ describe('AC-002-018 — nenhuma capacidade de auto-registro na superfície mont
       '/auth/change-password',
       '/auth/logout',
       '/contents',
+      '/contents/:id/publication',
       '/contents/:id/strip',
       '/contents/:id/strip/frames',
       '/contents/:id/strip/frames/:frameId/visual-association',
@@ -403,7 +405,10 @@ describe('montagem — caminho feliz (oráculo distinto do request): sessão leg
   });
 });
 
-describe('TASK-006-011 — as 7 rotas de /contents sob a barreira (topologia adversarial, itens i/ii/v da lição [Segurança])', () => {
+describe('TASK-006-011/TASK-025-009 — as 8 rotas de /contents sob a barreira (topologia adversarial, itens i/ii/v da lição [Segurança])', () => {
+  // `POST /contents/:id/publication` (TASK-025-009, COMP-025-006) soma-se às 7 rotas
+  // originais de TASK-006-011 — é a barreira de autorização REAL do pipeline de
+  // publicação, NFR-024-003, o service de baixo nível não checa papel de propósito.
   const CONTENT_ROUTE_KEYS = [
     'GET /contents',
     'POST /contents',
@@ -412,9 +417,10 @@ describe('TASK-006-011 — as 7 rotas de /contents sob a barreira (topologia adv
     'DELETE /contents/:id',
     'GET /contents/:id/breakdown',
     'PUT /contents/:id/breakdown',
+    'POST /contents/:id/publication',
   ];
 
-  it('cada uma das 7 rotas está declarada como {EDITOR, ADMIN}; GET/POST em /contents e GET/PUT em /contents/:id/breakdown têm chaves PRÓPRIAS (ii: 2º método no mesmo caminho)', () => {
+  it('cada uma das 8 rotas está declarada como {EDITOR, ADMIN}; GET/POST em /contents e GET/PUT em /contents/:id/breakdown têm chaves PRÓPRIAS (ii: 2º método no mesmo caminho) — mutante que remove ADMIN de POST /contents/:id/publication reprova aqui (controle positivo: GET /contents, já enumerada, reprova do mesmo jeito)', () => {
     for (const routeKey of CONTENT_ROUTE_KEYS) {
       expect(REGISTRY.get(routeKey)).toEqual(new Set<UserRole>(['EDITOR', 'ADMIN']));
     }
@@ -424,10 +430,11 @@ describe('TASK-006-011 — as 7 rotas de /contents sob a barreira (topologia adv
     expect(ROUTE_ROLES.has('POST /contents')).toBe(true);
     expect(ROUTE_ROLES.has('GET /contents/:id/breakdown')).toBe(true);
     expect(ROUTE_ROLES.has('PUT /contents/:id/breakdown')).toBe(true);
+    expect(ROUTE_ROLES.has('POST /contents/:id/publication')).toBe(true);
   });
 
-  it('STUDENT recusado (403) nas 7 rotas — (i) a rota irmã estática GET /contents não "vaza" a permissividade para GET /contents/:id, nem vice-versa; (v) todas as 7 recusam STUDENT', async () => {
-    // As 6 rotas da Tira (TASK-012-008) têm bloco de topologia próprio.
+  it('STUDENT recusado (403) nas 8 rotas — (i) a rota irmã estática GET /contents não "vaza" a permissividade para GET /contents/:id, nem vice-versa; (v) todas as 8 recusam STUDENT', async () => {
+    // As 8 rotas da Tira (TASK-012-008/023-011) têm bloco de topologia próprio.
     const contentRoutes = NON_PUBLIC.filter(
       (route) =>
         route.path.startsWith('/contents') && !route.path.startsWith('/contents/:id/strip'),

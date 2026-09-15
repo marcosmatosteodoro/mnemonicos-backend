@@ -23,3 +23,7 @@ process.env.ARGON2_PARALLELISM = '1';
 // Teto de upload da Biblioteca visual (F5/PLAN-023) — mesmo valor do `.env.example`,
 // determinístico para os testes de tamanho (AC-022-003) computarem o excedente a partir dele.
 process.env.VISUAL_ASSOCIATIONS_MAX_FILE_SIZE_BYTES = '5242880';
+
+// Teto de duração da composição do PDF de publicação (F6/PLAN-025) — mesmo valor do
+// `.env.example`, determinístico para os testes de timeout (AC-024-017) mockarem contra ele.
+process.env.PUBLICATION_PDF_TIMEOUT_MS = '12000';

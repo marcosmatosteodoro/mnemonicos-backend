@@ -44,8 +44,20 @@ export class ConflictError extends AppError {
   }
 }
 
+export class NothingToExportError extends AppError {
+  constructor(message = 'Não há Quadros para exportar nesta Tira mnemônica.') {
+    super(message, 409, 'NOTHING_TO_EXPORT');
+  }
+}
+
 export class TooManyRequestsError extends AppError {
   constructor(message = 'Muitas tentativas. Aguarde um instante e tente novamente.') {
     super(message, 429, 'TOO_MANY_REQUESTS');
+  }
+}
+
+export class GenerationTimeoutError extends AppError {
+  constructor(message = 'A geração do documento demorou demais. Tente novamente.') {
+    super(message, 503, 'GENERATION_TIMEOUT');
   }
 }
