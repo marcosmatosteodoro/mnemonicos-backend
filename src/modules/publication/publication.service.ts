@@ -1,6 +1,6 @@
 import { env } from '../../config/env';
 import type { Prisma } from '../../generated/prisma/client';
-import { GenerationTimeoutError, NotFoundError } from '../../http/errors';
+import { GenerationTimeoutError, NothingToExportError, NotFoundError } from '../../http/errors';
 import { logger } from '../../lib/logger';
 import { prisma } from '../../lib/prisma';
 import type { PublicationVariant } from '../../domain/types';
@@ -203,6 +203,14 @@ async function composePublicationBuffer(
   }
 
   const orderedFrames = await resolveOrderedFramesForStrip(rawContentId, breakdown.id, actor, db);
+  // Variante TIRA depende dos Quadros: lista vazia (Tira sem Quadros) não tem conteúdo
+  // real para compor — recusa antes de chamar `buildStripPdf` (que aceitaria `[]` sem
+  // erro e produziria um PDF sem página de conteúdo). `RESUMO` nunca passa por aqui: usa
+  // a Quebra direto (`concept`/`action`/`object` obrigatórios no schema garantem que ela
+  // nunca fica vazia).
+  if (orderedFrames.length === 0) {
+    throw new NothingToExportError();
+  }
   const frames = await Promise.all(orderedFrames.map((frame) => buildFrameForPdf(frame, db)));
 
   return buildStripPdf(frames, meta, (info: ImageSkippedInfo) => {

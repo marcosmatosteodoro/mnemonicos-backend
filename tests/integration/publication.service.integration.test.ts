@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { env } from '../../src/config/env';
-import { GenerationTimeoutError, NotFoundError } from '../../src/http/errors';
+import { GenerationTimeoutError, NothingToExportError, NotFoundError } from '../../src/http/errors';
 import { logger } from '../../src/lib/logger';
 import { openMnemonicStrip } from '../../src/modules/tira/tira.service';
 // Namespace (não named import): espiar `buildSummaryPdf`/`buildStripPdf` exige o objeto
@@ -357,6 +357,54 @@ describe('exportPublication — 2 chamadas sucessivas geram o documento do ZERO,
       })
     ).map((event) => event.transitionType);
     expect(transitions).toEqual(['ABERTURA', 'CONCLUSAO']);
+  });
+});
+
+describe('exportPublication — Variante TIRA recusa exportar uma Tira sem Quadros (aceitação PLAN-025, BRIEF-024 R-1)', () => {
+  it('Tira aberta e depois esvaziada (0 Quadros): NothingToExportError (409, NOTHING_TO_EXPORT); nenhum Buffer, nenhum evento gravado; buildStripPdf nunca chamada', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const rawContent = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdown(rawContent.id);
+    const strip = await openMnemonicStrip(rawContent.id, actorOf(editor), testPrisma);
+    expect(strip.frames.length).toBeGreaterThan(0);
+
+    // Esvazia a Tira já aberta — único jeito de uma Tira chegar a 0 Quadros: a geração
+    // inicial (`buildInitialFrames`) sempre produz >=3 Quadros porque `concept`/`action`/
+    // `object` são obrigatórios no schema da Quebra da regra.
+    await testPrisma.mnemonicFrame.deleteMany({ where: { stripId: strip.id } });
+
+    const buildStripPdfSpy = jest.spyOn(pdfComposer, 'buildStripPdf');
+
+    const err = await captureError(() =>
+      exportPublication(rawContent.id, { variant: 'TIRA' }, actorOf(editor), testPrisma),
+    );
+    expect(err).toBeInstanceOf(NothingToExportError);
+    expect((err as NothingToExportError).statusCode).toBe(409);
+    expect((err as NothingToExportError).code).toBe('NOTHING_TO_EXPORT');
+    expect(buildStripPdfSpy).not.toHaveBeenCalled();
+
+    const counts = await countEventsFor(rawContent.id);
+    expect(counts).toEqual({ productionStageEvents: 0, publicationEvents: 0 });
+  });
+
+  it('MESMO cenário (Tira esvaziada): Variante RESUMO continua funcionando normalmente — a recusa é só de TIRA', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const rawContent = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdown(rawContent.id);
+    const strip = await openMnemonicStrip(rawContent.id, actorOf(editor), testPrisma);
+    await testPrisma.mnemonicFrame.deleteMany({ where: { stripId: strip.id } });
+
+    const result = await exportPublication(
+      rawContent.id,
+      { variant: 'RESUMO' },
+      actorOf(editor),
+      testPrisma,
+    );
+
+    expect(result.buffer.length).toBeGreaterThan(0);
+    expect(result.filename).toBe(`${rawContent.id}-resumo-rascunho.pdf`);
   });
 });
 
