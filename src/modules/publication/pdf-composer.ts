@@ -240,6 +240,15 @@ export async function buildStripPdf(
   const measureWidth = measureWidthFor(font);
 
   for (const [frameIndex, frame] of frames.entries()) {
+    // Cede o event loop 1x por Quadro: `embedPng`/`embedJpg` (`embedFrameImage` abaixo)
+    // decodificam/reencodam de forma SÍNCRONA — sem este ponto de cessão, o laço inteiro
+    // drena como cascata de microtasks e a fila de TIMERS (onde `withDeadline`/
+    // `Promise.race`, `publication.service.ts`, vive) só é alcançada depois que a
+    // composição inteira termina, tornando o teto de duração de DEC-025-002 inoperante
+    // para Tiras grandes o bastante. `setImmediate` (fila de check, imediatamente após
+    // I/O/timers) é suficiente para devolver a vez a cada Quadro sem custo perceptível.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
     const page = createPage(doc, font, meta);
 
     let y = CONTENT_TOP_Y;

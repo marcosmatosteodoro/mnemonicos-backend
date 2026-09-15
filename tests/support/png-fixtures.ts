@@ -97,6 +97,43 @@ export function buildPngWithDecoyChunkBeforeIhdr(fakeWidth: number, fakeHeight: 
 }
 
 /**
+ * PNG `width`×`height` REALMENTE decodível (`IHDR` + `IDAT` com pixels RGB determinísticos,
+ * não uniformes — evita que o `deflate` colapse tudo num único run de zeros, o que
+ * desviaria o custo de decodificação real de `embedPng`/pdf-lib — + `IEND`), pensado para
+ * exercitar o caminho SÍNCRONO de decode/encode de imagem de `pdf-composer.ts:buildStripPdf`
+ * com trabalho de CPU genuíno, não um timer disfarçado. `width × height` deve ficar abaixo
+ * de `IMAGE_PIXEL_BUDGET_PX` (20_000_000).
+ */
+export function buildValidPngNxN(width: number, height: number): Buffer {
+  const ihdrData = Buffer.alloc(13);
+  ihdrData.writeUInt32BE(width, 0);
+  ihdrData.writeUInt32BE(height, 4);
+  ihdrData.writeUInt8(8, 8); // bit depth
+  ihdrData.writeUInt8(2, 9); // color type 2 = RGB
+  ihdrData.writeUInt8(0, 10);
+  ihdrData.writeUInt8(0, 11);
+  ihdrData.writeUInt8(0, 12);
+  const ihdr = pngChunk('IHDR', ihdrData);
+
+  const bytesPerPixel = 3;
+  const stride = 1 + width * bytesPerPixel; // +1 = byte de filtro por linha de varredura
+  const raw = Buffer.alloc(stride * height);
+  for (let y = 0; y < height; y++) {
+    const rowStart = y * stride;
+    raw[rowStart] = 0; // filtro 0 (nenhum) por linha
+    for (let x = 0; x < width; x++) {
+      const px = rowStart + 1 + x * bytesPerPixel;
+      raw[px] = (x * 7 + y * 3) & 0xff;
+      raw[px + 1] = (x * 13 + y * 17) & 0xff;
+      raw[px + 2] = (x + y) & 0xff;
+    }
+  }
+  const idat = pngChunk('IDAT', deflateSync(raw));
+  const iend = pngChunk('IEND', Buffer.alloc(0));
+  return Buffer.concat([PNG_SIGNATURE_BYTES, ihdr, idat, iend]);
+}
+
+/**
  * PNG com 2 chunks `IHDR` — `width1`×`height1` primeiro, `width2`×`height2` depois. O
  * decoder real (`@pdf-lib/upng`) sobrescreve width/height a cada `IHDR` que encontra —
  * vence o ÚLTIMO, não o primeiro — então um `IHDR` pequeno seguido de um `IHDR` gigante

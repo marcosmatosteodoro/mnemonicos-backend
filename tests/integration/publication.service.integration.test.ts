@@ -12,6 +12,7 @@ import * as pdfComposer from '../../src/modules/publication/pdf-composer';
 import type { StripFrameForPdf } from '../../src/modules/publication/pdf-composer';
 import { exportPublication } from '../../src/modules/publication/publication.service';
 import * as visualAssociationsService from '../../src/modules/visual-associations/visual-associations.service';
+import { buildValidPngNxN } from '../support/png-fixtures';
 import {
   createRawContent,
   createTopic,
@@ -413,30 +414,66 @@ describe('exportPublication — teto de duração interno (AC-024-017, FR-024-01
     env.PUBLICATION_PDF_TIMEOUT_MS = 12000;
   });
 
-  it('composição mais lenta que o teto configurado: rejeita com GenerationTimeoutError (503, GENERATION_TIMEOUT), nenhum evento gravado', async () => {
+  /**
+   * Um mock de "composição lenta" baseado em `setTimeout` NÃO prova esta garantia —
+   * `setTimeout` devolve o event loop, então o timer de `withDeadline` sempre dispara na
+   * hora certa mesmo que o caminho REAL (decode/encode síncrono de imagem em
+   * `buildStripPdf`, `pdf-composer.ts`) trave o loop inteiro e nunca deixe a fila de
+   * timers ser alcançada. Este teste usa Quadros REAIS com imagem PNG REAL
+   * (`buildValidPngNxN`, genuinamente decodificável, não a assinatura mínima de
+   * `PNG_FIXTURE_BUFFER`) grande o bastante para o `embedPng` síncrono do `pdf-lib`
+   * consumir bem mais que o teto de teste — exercitando o caminho de CPU de verdade, não
+   * um timer disfarçado.
+   */
+  it('composição TIRA com Quadros reais/imagem real (CPU-bound): rejeita com GenerationTimeoutError PERTO do teto configurado — não só depois que a composição inteira termina', async () => {
     const editor = await createUser('EDITOR');
     const topicId = await createTopic();
     const rawContent = await createRawContent(editor.id, topicId);
     await seedRuleBreakdown(rawContent.id);
+    const actor = actorOf(editor);
 
-    env.PUBLICATION_PDF_TIMEOUT_MS = 10;
-    jest.spyOn(pdfComposer, 'buildSummaryPdf').mockImplementation(
-      () =>
-        new Promise((resolve) => {
-          setTimeout(() => resolve(Buffer.from('composicao-lenta-demais')), 200);
-        }),
-    );
+    // Abre a Tira (5 Quadros — 1 por Bloco não-vazio de `seedRuleBreakdown`) e vincula
+    // TODOS a uma Associação visual com imagem REAL grande (1500×1500, bem abaixo do
+    // teto de pixels de 20_000_000) — medido como suficiente para travar o event loop
+    // por >1s de decode/encode síncrono (ver `buildValidPngNxN`).
+    const strip = await openMnemonicStrip(rawContent.id, actor, testPrisma);
+    const realPng = buildValidPngNxN(1500, 1500);
+    for (const frame of strip.frames) {
+      const association = await seedVisualAssociation(editor.id, { imageData: realPng });
+      await testPrisma.mnemonicFrame.update({
+        where: { id: frame.id },
+        data: { visualAssociationId: association.id },
+      });
+    }
 
+    // 400ms: acima do I/O de banco medido ANTES da composição em si (~150-370ms:
+    // `assertRawContentExportable` + `ruleBreakdown.findUnique` + `mnemonicStrip.findUnique`
+    // + 5× `getVisualAssociationBinary` em paralelo) — não pode ser tão curto a ponto do
+    // teto disparar durante o I/O real (que é assíncrono de verdade, sem bug nenhum) — e
+    // bem abaixo dos ~1.9s medidos de trabalho SÍNCRONO de `buildStripPdf` sozinho para
+    // estes 5 Quadros, que é o alvo real desta prova.
+    env.PUBLICATION_PDF_TIMEOUT_MS = 400;
+    const callStart = Date.now();
     const err = await captureError(() =>
-      exportPublication(rawContent.id, { variant: 'RESUMO' }, actorOf(editor), testPrisma),
+      exportPublication(rawContent.id, { variant: 'TIRA' }, actor, testPrisma),
     );
+    const rejectionElapsedMs = Date.now() - callStart;
+
     expect(err).toBeInstanceOf(GenerationTimeoutError);
     expect((err as GenerationTimeoutError).statusCode).toBe(503);
     expect((err as GenerationTimeoutError).code).toBe('GENERATION_TIMEOUT');
+    // 1500ms: I/O prévio medido (~150-370ms) + teto configurado (400ms) + até 1 Quadro
+    // inteiro de decode caso o teto vença DURANTE o processamento de um Quadro (~450ms
+    // medido, já que `buildStripPdf` só cede o event loop ENTRE Quadros, nunca dentro do
+    // decode de uma imagem) ≈ 1.2s, com folga para variância de CI. Se `buildStripPdf`
+    // parar de ceder o event loop por Quadro, o laço inteiro volta a drenar de uma vez
+    // só e a rejeição só chega depois da composição completa (~1.9-2.3s medido, para
+    // estes mesmos 5 Quadros/1500×1500px) — bem acima deste bound, o que reprova o teste.
+    expect(rejectionElapsedMs).toBeLessThan(1500);
 
     const counts = await countEventsFor(rawContent.id);
     expect(counts).toEqual({ productionStageEvents: 0, publicationEvents: 0 });
-  });
+  }, 15000);
 });
 
 describe('exportPublication — alcance comum a EDITOR/ADMIN para LEITURA de material já existente (AC-024-018, NFR-024-003, DEC-025-007)', () => {
