@@ -187,10 +187,9 @@ describe('paridade cross-repo — ProductionFlashcard (TASK-027-004)', () => {
   // `domain/types.ts::ProductionFlashcard` é o espelho do model Prisma nos
   // dois repos (PLAN-027 §5) — mas o CONTRATO DE REDE (o que a rota HTTP de
   // fato devolve) é `FlashcardDetail` (flashcards.service.ts, projetado por
-  // `FLASHCARD_DETAIL_SELECT`), mesma forma do bloco `Contrast` acima (achado
-  // bloqueante da Wave 2: comparar contra `domain/types.ts` sozinho não prova
-  // o payload HTTP real). Por isso este bloco compara os DOIS: o espelho do
-  // model contra o frontend, e o payload HTTP contra o frontend.
+  // `FLASHCARD_DETAIL_SELECT`), mesma forma do bloco `Contrast` acima. Por
+  // isso este bloco compara os DOIS: o espelho do model contra o frontend, e
+  // o payload HTTP contra o frontend.
   const backendDomainSource = readSourceFile(BACKEND_DOMAIN_TYPES);
   const backendFlashcardsServiceSource = readSourceFile(BACKEND_FLASHCARDS_SERVICE);
   const frontendSource = readSourceFile(FRONTEND_TYPES);
