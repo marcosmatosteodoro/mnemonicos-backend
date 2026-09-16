@@ -25,6 +25,22 @@ import { closeTestDb, resetDb, testPrisma } from './db';
  * `route-authz-matrix.integration.test.ts` — não duplicada aqui.
  */
 
+/**
+ * Conjunto exato de chaves de `FLASHCARD_DETAIL_SELECT`
+ * (`flashcards.service.ts`) — prova de FORMA do corpo de sucesso HTTP
+ * (achado do code-reviewer, TASK-027-004/006: campo a mais/a menos no
+ * `select` nunca era detectado, só a interface declarada em types.ts).
+ */
+const FLASHCARD_DETAIL_KEYS = [
+  'id',
+  'rawContentId',
+  'authorId',
+  'question',
+  'answer',
+  'createdAt',
+  'updatedAt',
+].sort();
+
 const ACCESS_TTL_MS = env.AUTH_ACCESS_TTL_MINUTES * 60_000;
 const REFRESH_TTL_MS = env.AUTH_REFRESH_TTL_DAYS * 24 * 60 * 60_000;
 
@@ -71,6 +87,7 @@ describe('CRUD completo via HTTP (faceta de transporte de AC-026-008/010)', () =
       .send({ question: 'Pergunta.', answer: 'Resposta.' });
     expect(created.status).toBe(201);
     expect(created.body.authorId).toBe(editor.id);
+    expect(Object.keys(created.body).sort()).toEqual(FLASHCARD_DETAIL_KEYS);
 
     const listed = await request(app)
       .get(`/api/v1/contents/${rawContent.id}/flashcards`)
@@ -78,6 +95,7 @@ describe('CRUD completo via HTTP (faceta de transporte de AC-026-008/010)', () =
     expect(listed.status).toBe(200);
     expect(listed.body).toHaveLength(1);
     expect(listed.body[0].id).toBe(created.body.id);
+    expect(Object.keys(listed.body[0]).sort()).toEqual(FLASHCARD_DETAIL_KEYS);
 
     const patched = await request(app)
       .patch(`/api/v1/contents/${rawContent.id}/flashcards/${created.body.id}`)
@@ -85,6 +103,7 @@ describe('CRUD completo via HTTP (faceta de transporte de AC-026-008/010)', () =
       .send({ question: 'Pergunta revisada.', answer: 'Resposta revisada.' });
     expect(patched.status).toBe(200);
     expect(patched.body.question).toBe('Pergunta revisada.');
+    expect(Object.keys(patched.body).sort()).toEqual(FLASHCARD_DETAIL_KEYS);
 
     const deleted = await request(app)
       .delete(`/api/v1/contents/${rawContent.id}/flashcards/${created.body.id}`)
