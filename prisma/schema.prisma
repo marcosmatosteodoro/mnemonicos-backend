@@ -78,6 +78,10 @@ enum ProductionStageType {
   ASSOCIACAO_VISUAL
   // Aditivo, sem redesenho do mecanismo (NFR-009-001/DEC-010-001).
   PUBLICACAO_PDF
+  // NOVO (F7) — aditivo, sem redesenho do mecanismo (NFR-009-001/DEC-010-001).
+  // Compartilhado pelos 3 registros autorados desta fatia (Contraste, Pegadinha
+  // elaborada, Flashcard) — DEC-027-004: granularidade por REGISTRO, não por TIPO.
+  MATERIAL_REFORCO
   // Fatias futuras (F8 versionamento, F9 QC) acrescentam valores aqui —
   // migração aditiva, sem redesenho do mecanismo (NFR-009-001/DEC-010-001,
   // agora também NFR-011-004).
@@ -120,6 +124,9 @@ model User {
   productionStageEvents ProductionStageEvent[]
 
   visualAssociations VisualAssociation[] @relation("VisualAssociationAuthor")
+
+  contrasts            Contrast[]            @relation("ContrastAuthor")
+  productionFlashcards ProductionFlashcard[] @relation("ProductionFlashcardAuthor")
 
   @@map("users")
 }
@@ -319,12 +326,21 @@ model RawContent {
   /// null = ativo. Todo caminho de leitura do service filtra `deletedAt: null`.
   deletedAt DateTime?
 
+  /// NOVO (F7): texto explicando por que este ponto é um erro comum de prova —
+  /// acrescenta à Classe do radar de prova já persistida, não a redefine
+  /// (A-026-005/DEC-027-002). null = sem Pegadinha elaborada registrada. Autoria
+  /// segue `authorId` do próprio RawContent (não há autor próprio da Pegadinha).
+  pegadinhaText String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   breakdown RuleBreakdown?
 
   productionStageEvents ProductionStageEvent[]
+
+  contrasts            Contrast[]
+  productionFlashcards ProductionFlashcard[]
 
   @@index([authorId])
   @@index([topicId])
@@ -513,4 +529,50 @@ model PublicationEvent {
 
   @@index([occurredAt])
   @@map("publication_events")
+}
+
+/// Comparação entre o Conteúdo bruto titular e um instituto/regra confundível em
+/// texto livre (DEC-027-001). Restrict nos dois FKs: a remoção do titular é
+/// soft-delete (nunca DELETE físico), e apagar um autor com Contraste produzido
+/// fica bloqueado até F8 definir expurgo — mesma razão de RawContent.authorId.
+model Contrast {
+  id String @id @default(uuid(7))
+
+  rawContentId String
+  rawContent   RawContent @relation(fields: [rawContentId], references: [id], onDelete: Restrict)
+
+  authorId String
+  author   User   @relation("ContrastAuthor", fields: [authorId], references: [id], onDelete: Restrict)
+
+  confusableText  String
+  distinctionText String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([rawContentId, createdAt(sort: Asc)])
+  @@map("contrasts")
+}
+
+/// Par pergunta/resposta autorado pelo EDITOR (DEC-027-001), incluído na
+/// Exportação. Nomeado `ProductionFlashcard` — já existe `model Flashcard`
+/// (legado, ligado a Topic/Mnemonic/CardState/Review, dormente desde F2) e os
+/// dois nomes colidiriam (DEC-027-003). Mesma razão de Restrict de `Contrast`.
+model ProductionFlashcard {
+  id String @id @default(uuid(7))
+
+  rawContentId String
+  rawContent   RawContent @relation(fields: [rawContentId], references: [id], onDelete: Restrict)
+
+  authorId String
+  author   User   @relation("ProductionFlashcardAuthor", fields: [authorId], references: [id], onDelete: Restrict)
+
+  question String
+  answer   String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([rawContentId, createdAt(sort: Asc)])
+  @@map("production_flashcards")
 }
