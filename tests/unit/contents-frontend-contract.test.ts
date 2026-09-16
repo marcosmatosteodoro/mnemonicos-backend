@@ -160,10 +160,11 @@ describe('paridade cross-repo — Contrast (TASK-027-003)', () => {
     const frontendFields = extractInterfaceFields(frontendSource, 'Contrast').sort();
 
     expect(backendPayloadFields).toEqual(frontendFields);
-    // Mutante: `CONTRAST_DETAIL_SELECT` deixar de projetar (ou passar a
-    // projetar um campo extra em) `ContrastDetail` sem o frontend acompanhar
-    // faz esta comparação reprovar — é ela, não o bloco acima, que teria
-    // pegado uma divergência introduzida só no `select` HTTP.
+    // Esta comparação cobre a DECLARAÇÃO da interface `ContrastDetail`, nunca
+    // a projeção real de `CONTRAST_DETAIL_SELECT` — mutar o `select` (remover
+    // ou acrescentar campo) sem tocar a interface deixa este teste verde
+    // (comprovado por execução, gate 7 rodada 2, Wave 2 de PLAN-027). Prova de
+    // forma do corpo HTTP de sucesso é pendência separada (ver INDEX do slug).
     expect(backendPayloadFields).toEqual(
       [
         'id',
