@@ -27,9 +27,7 @@ import { closeTestDb, resetDb, testPrisma } from './db';
 
 /**
  * Conjunto exato de chaves de `FLASHCARD_DETAIL_SELECT`
- * (`flashcards.service.ts`) — prova de FORMA do corpo de sucesso HTTP
- * (achado do code-reviewer, TASK-027-004/006: campo a mais/a menos no
- * `select` nunca era detectado, só a interface declarada em types.ts).
+ * (`flashcards.service.ts`) — prova de FORMA do corpo de sucesso HTTP.
  */
 const FLASHCARD_DETAIL_KEYS = [
   'id',
