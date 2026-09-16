@@ -24,6 +24,7 @@ import { resolve } from 'node:path';
  * o arquivo do frontend é lido pelo caminho relativo a partir daqui.
  */
 const BACKEND_SERVICE = resolve(__dirname, '../../src/modules/contents/contents.service.ts');
+const BACKEND_DOMAIN_TYPES = resolve(__dirname, '../../src/domain/types.ts');
 const FRONTEND_TYPES = resolve(__dirname, '../../../mnemonicos-frontend/src/types/domain.ts');
 
 function readSourceFile(path: string): string {
@@ -108,5 +109,36 @@ describe('paridade cross-repo — RawContentSummary/RuleBreakdown/RawContent', (
     // Mutante: reintroduzir `deletedAt` só no frontend (sem o backend passar
     // a projetá-lo no `select`) faz esta comparação reprovar.
     expect(frontendFields).not.toContain('deletedAt');
+  });
+});
+
+describe('paridade cross-repo — Contrast (TASK-027-003)', () => {
+  // Diferente dos 3 blocos acima (que comparam `contents.service.ts` × frontend),
+  // `Contrast` é declarado em `domain/types.ts` nos dois repos (PLAN-027 §5) —
+  // não em `contrasts.service.ts` (que reexporta o mesmo formato como
+  // `ContrastDetail`, sem uma 2ª declaração de campos a comparar).
+  const backendDomainSource = readSourceFile(BACKEND_DOMAIN_TYPES);
+  const frontendSource = readSourceFile(FRONTEND_TYPES);
+
+  it('Contrast: exatamente id/rawContentId/authorId/confusableText/distinctionText/createdAt/updatedAt, nos dois lados', () => {
+    const backendFields = extractInterfaceFields(backendDomainSource, 'Contrast').sort();
+    const frontendFields = extractInterfaceFields(frontendSource, 'Contrast').sort();
+
+    expect(backendFields).toEqual(
+      [
+        'id',
+        'rawContentId',
+        'authorId',
+        'confusableText',
+        'distinctionText',
+        'createdAt',
+        'updatedAt',
+      ].sort(),
+    );
+    expect(frontendFields).toEqual(backendFields);
+    // Mutante: renomear `confusableText`/`distinctionText` só de um lado (ex.:
+    // `confusable`/`distinction`) faz esta comparação reprovar.
+    expect(frontendFields).not.toContain('confusable');
+    expect(frontendFields).not.toContain('distinction');
   });
 });

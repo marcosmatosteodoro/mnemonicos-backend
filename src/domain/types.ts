@@ -147,3 +147,21 @@ export interface RuleBreakdown {
   createdAt: Date;
   updatedAt: Date;
 }
+
+/**
+ * Contraste entre o Conteúdo bruto titular e um instituto/regra confundível
+ * (F7, SPEC-026) — espelha o model `Contrast` de `prisma/schema.prisma`.
+ * Espelhado em `mnemonicos-frontend/src/types/domain.ts`: mudança de um lado
+ * entra no mesmo diff que o outro, ou o contrato quebra em runtime sem o
+ * typecheck acusar — rede de paridade cross-repo:
+ * `mnemonicos-backend/tests/unit/contents-frontend-contract.test.ts`.
+ */
+export interface Contrast {
+  id: string;
+  rawContentId: string;
+  authorId: string;
+  confusableText: string;
+  distinctionText: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
