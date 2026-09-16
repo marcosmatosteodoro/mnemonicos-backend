@@ -105,6 +105,10 @@ export async function createContrast(
  * `RawContent` pai (DEC-027-005): nenhum filtro adicional por `authorId` do
  * Contraste — um EDITOR que alcança seu próprio `RawContent` vê TODOS os
  * Contrastes nele, mesmo os criados por um ADMIN.
+ *
+ * Sem teto/paginação nesta fatia (TRISK-027-002, PLAN-027 §8) — decisão de
+ * introduzir teto de volume fica com quem fechar RISK-025-007 (dono do risco
+ * de página sem limite neste produto).
  */
 export async function listContrasts(
   rawContentId: string,

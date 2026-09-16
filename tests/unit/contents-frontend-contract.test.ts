@@ -25,6 +25,10 @@ import { resolve } from 'node:path';
  */
 const BACKEND_SERVICE = resolve(__dirname, '../../src/modules/contents/contents.service.ts');
 const BACKEND_DOMAIN_TYPES = resolve(__dirname, '../../src/domain/types.ts');
+const BACKEND_CONTRASTS_SERVICE = resolve(
+  __dirname,
+  '../../src/modules/contrasts/contrasts.service.ts',
+);
 const FRONTEND_TYPES = resolve(__dirname, '../../../mnemonicos-frontend/src/types/domain.ts');
 
 function readSourceFile(path: string): string {
@@ -113,11 +117,17 @@ describe('paridade cross-repo — RawContentSummary/RuleBreakdown/RawContent', (
 });
 
 describe('paridade cross-repo — Contrast (TASK-027-003)', () => {
-  // Diferente dos 3 blocos acima (que comparam `contents.service.ts` × frontend),
-  // `Contrast` é declarado em `domain/types.ts` nos dois repos (PLAN-027 §5) —
-  // não em `contrasts.service.ts` (que reexporta o mesmo formato como
-  // `ContrastDetail`, sem uma 2ª declaração de campos a comparar).
+  // `domain/types.ts::Contrast` é o espelho do model Prisma nos dois repos
+  // (PLAN-027 §5) — mas o CONTRATO DE REDE (o que a rota HTTP de fato devolve)
+  // é `ContrastDetail` (contrasts.service.ts:48-56, projetado por
+  // `CONTRAST_DETAIL_SELECT`, linhas 38-46). Por isso este bloco compara os
+  // DOIS: `Contrast` (espelho do model) contra o frontend, e `ContrastDetail`
+  // (payload HTTP) contra o frontend — mesma forma dos 3 blocos acima, que
+  // sempre comparam o tipo de PAYLOAD do backend (`RawContentSummary`/
+  // `RuleBreakdownDetail`/`RawContentDetail`, todos de `contents.service.ts`)
+  // contra o frontend.
   const backendDomainSource = readSourceFile(BACKEND_DOMAIN_TYPES);
+  const backendContrastsServiceSource = readSourceFile(BACKEND_CONTRASTS_SERVICE);
   const frontendSource = readSourceFile(FRONTEND_TYPES);
 
   it('Contrast: exatamente id/rawContentId/authorId/confusableText/distinctionText/createdAt/updatedAt, nos dois lados', () => {
@@ -140,5 +150,30 @@ describe('paridade cross-repo — Contrast (TASK-027-003)', () => {
     // `confusable`/`distinction`) faz esta comparação reprovar.
     expect(frontendFields).not.toContain('confusable');
     expect(frontendFields).not.toContain('distinction');
+  });
+
+  it('ContrastDetail (payload HTTP real, contrasts.service.ts): mesmo conjunto de campos que o Contrast do frontend', () => {
+    const backendPayloadFields = extractInterfaceFields(
+      backendContrastsServiceSource,
+      'ContrastDetail',
+    ).sort();
+    const frontendFields = extractInterfaceFields(frontendSource, 'Contrast').sort();
+
+    expect(backendPayloadFields).toEqual(frontendFields);
+    // Mutante: `CONTRAST_DETAIL_SELECT` deixar de projetar (ou passar a
+    // projetar um campo extra em) `ContrastDetail` sem o frontend acompanhar
+    // faz esta comparação reprovar — é ela, não o bloco acima, que teria
+    // pegado uma divergência introduzida só no `select` HTTP.
+    expect(backendPayloadFields).toEqual(
+      [
+        'id',
+        'rawContentId',
+        'authorId',
+        'confusableText',
+        'distinctionText',
+        'createdAt',
+        'updatedAt',
+      ].sort(),
+    );
   });
 });

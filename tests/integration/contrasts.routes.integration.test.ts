@@ -7,6 +7,7 @@ import { env } from '../../src/config/env';
 import { ACCESS_COOKIE } from '../../src/http/cookies';
 import { prisma } from '../../src/lib/prisma';
 import { generateToken, hashToken } from '../../src/lib/tokens';
+import * as productionEventsService from '../../src/modules/production-events/production-events.service';
 import { createRawContent, createTopic, createUser } from '../support/production-events-fixtures';
 import { closeTestDb, resetDb, testPrisma } from './db';
 
@@ -168,12 +169,21 @@ describe('AC-026-016 (parte — campo vazio de Contraste recusado) e NFR-026-002
     const rawContent = await createRawContent(editor.id, topicId);
 
     const cases = [
-      { confusableText: '', distinctionText: 'Distinção válida.' },
-      { confusableText: 'Confundível válido.', distinctionText: '' },
-      { confusableText: '', distinctionText: '' },
+      {
+        body: { confusableText: '', distinctionText: 'Distinção válida.' },
+        expectedPaths: ['confusableText'],
+      },
+      {
+        body: { confusableText: 'Confundível válido.', distinctionText: '' },
+        expectedPaths: ['distinctionText'],
+      },
+      {
+        body: { confusableText: '', distinctionText: '' },
+        expectedPaths: ['confusableText', 'distinctionText'],
+      },
     ];
 
-    for (const body of cases) {
+    for (const { body, expectedPaths } of cases) {
       const countBefore = await testPrisma.contrast.count({
         where: { rawContentId: rawContent.id },
       });
@@ -183,6 +193,10 @@ describe('AC-026-016 (parte — campo vazio de Contraste recusado) e NFR-026-002
         .set(...withCookie(access))
         .send(body);
       expect(res.status).toBe(422);
+      const reportedPaths = (res.body.error.details as Array<{ path: string }>).map(
+        (detail) => detail.path,
+      );
+      expect(reportedPaths).toEqual(expect.arrayContaining(expectedPaths));
 
       const countAfter = await testPrisma.contrast.count({
         where: { rawContentId: rawContent.id },
@@ -206,21 +220,121 @@ describe('AC-026-016 (parte — campo vazio de Contraste recusado) e NFR-026-002
     });
 
     const cases = [
-      { confusableText: '', distinctionText: 'Distinção válida.' },
-      { confusableText: 'Confundível válido.', distinctionText: '' },
-      { confusableText: '', distinctionText: '' },
+      {
+        body: { confusableText: '', distinctionText: 'Distinção válida.' },
+        expectedPaths: ['confusableText'],
+      },
+      {
+        body: { confusableText: 'Confundível válido.', distinctionText: '' },
+        expectedPaths: ['distinctionText'],
+      },
+      {
+        body: { confusableText: '', distinctionText: '' },
+        expectedPaths: ['confusableText', 'distinctionText'],
+      },
     ];
 
-    for (const body of cases) {
+    for (const { body, expectedPaths } of cases) {
       const res = await request(app)
         .patch(`/api/v1/contents/${rawContent.id}/contrasts/${contrast.id}`)
         .set(...withCookie(access))
         .send(body);
       expect(res.status).toBe(422);
+      const reportedPaths = (res.body.error.details as Array<{ path: string }>).map(
+        (detail) => detail.path,
+      );
+      expect(reportedPaths).toEqual(expect.arrayContaining(expectedPaths));
     }
 
     const untouched = await testPrisma.contrast.findUniqueOrThrow({ where: { id: contrast.id } });
     expect(untouched.confusableText).toBe('Confundível original.');
     expect(untouched.distinctionText).toBe('Distinção original.');
+  });
+});
+
+describe('AC-026-023 (parte — Contraste): erro não previsto na emissão do evento devolve 500 genérico', () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('POST com recordProductionStageEvent rejeitando → 500 genérico, sem detalhe da exceção', async () => {
+    const editor = await createUser('EDITOR');
+    const access = await seedSession(editor.id);
+    const topicId = await createTopic();
+    const rawContent = await createRawContent(editor.id, topicId);
+
+    jest
+      .spyOn(productionEventsService, 'recordProductionStageEvent')
+      .mockRejectedValueOnce(new Error('falha simulada na emissão'));
+
+    const res = await request(app)
+      .post(`/api/v1/contents/${rawContent.id}/contrasts`)
+      .set(...withCookie(access))
+      .send({ confusableText: 'Decadência.', distinctionText: 'Prescrição.' });
+
+    expect(res.status).toBe(500);
+    expect(res.body).toEqual({
+      error: { code: 'INTERNAL_SERVER_ERROR', message: 'Erro interno.' },
+    });
+  });
+
+  it('PATCH com recordProductionStageEvent rejeitando → 500 genérico, sem detalhe da exceção', async () => {
+    const editor = await createUser('EDITOR');
+    const access = await seedSession(editor.id);
+    const topicId = await createTopic();
+    const rawContent = await createRawContent(editor.id, topicId);
+    const contrast = await testPrisma.contrast.create({
+      data: {
+        rawContentId: rawContent.id,
+        authorId: editor.id,
+        confusableText: 'Confundível original.',
+        distinctionText: 'Distinção original.',
+      },
+    });
+
+    jest
+      .spyOn(productionEventsService, 'recordProductionStageEvent')
+      .mockRejectedValueOnce(new Error('falha simulada na emissão'));
+
+    const res = await request(app)
+      .patch(`/api/v1/contents/${rawContent.id}/contrasts/${contrast.id}`)
+      .set(...withCookie(access))
+      .send({
+        confusableText: 'Nunca deveria persistir.',
+        distinctionText: 'Nunca deveria persistir.',
+      });
+
+    expect(res.status).toBe(500);
+    expect(res.body).toEqual({
+      error: { code: 'INTERNAL_SERVER_ERROR', message: 'Erro interno.' },
+    });
+  });
+
+  it('DELETE com recordProductionStageEvent rejeitando → 500 genérico, sem detalhe da exceção', async () => {
+    const editor = await createUser('EDITOR');
+    const access = await seedSession(editor.id);
+    const topicId = await createTopic();
+    const rawContent = await createRawContent(editor.id, topicId);
+    const contrast = await testPrisma.contrast.create({
+      data: {
+        rawContentId: rawContent.id,
+        authorId: editor.id,
+        confusableText: 'Confundível original.',
+        distinctionText: 'Distinção original.',
+      },
+    });
+
+    jest
+      .spyOn(productionEventsService, 'recordProductionStageEvent')
+      .mockRejectedValueOnce(new Error('falha simulada na emissão'));
+
+    const res = await request(app)
+      .delete(`/api/v1/contents/${rawContent.id}/contrasts/${contrast.id}`)
+      .set(...withCookie(access));
+
+    expect(res.status).toBe(500);
+    expect(res.body).toEqual({
+      error: { code: 'INTERNAL_SERVER_ERROR', message: 'Erro interno.' },
+    });
   });
 });
