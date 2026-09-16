@@ -29,6 +29,10 @@ const BACKEND_CONTRASTS_SERVICE = resolve(
   __dirname,
   '../../src/modules/contrasts/contrasts.service.ts',
 );
+const BACKEND_FLASHCARDS_SERVICE = resolve(
+  __dirname,
+  '../../src/modules/flashcards/flashcards.service.ts',
+);
 const FRONTEND_TYPES = resolve(__dirname, '../../../mnemonicos-frontend/src/types/domain.ts');
 
 function readSourceFile(path: string): string {
@@ -175,6 +179,54 @@ describe('paridade cross-repo — Contrast (TASK-027-003)', () => {
         'createdAt',
         'updatedAt',
       ].sort(),
+    );
+  });
+});
+
+describe('paridade cross-repo — ProductionFlashcard (TASK-027-004)', () => {
+  // `domain/types.ts::ProductionFlashcard` é o espelho do model Prisma nos
+  // dois repos (PLAN-027 §5) — mas o CONTRATO DE REDE (o que a rota HTTP de
+  // fato devolve) é `FlashcardDetail` (flashcards.service.ts, projetado por
+  // `FLASHCARD_DETAIL_SELECT`), mesma forma do bloco `Contrast` acima (achado
+  // bloqueante da Wave 2: comparar contra `domain/types.ts` sozinho não prova
+  // o payload HTTP real). Por isso este bloco compara os DOIS: o espelho do
+  // model contra o frontend, e o payload HTTP contra o frontend.
+  const backendDomainSource = readSourceFile(BACKEND_DOMAIN_TYPES);
+  const backendFlashcardsServiceSource = readSourceFile(BACKEND_FLASHCARDS_SERVICE);
+  const frontendSource = readSourceFile(FRONTEND_TYPES);
+
+  it('ProductionFlashcard: exatamente id/rawContentId/authorId/question/answer/createdAt/updatedAt, nos dois lados — nunca "Flashcard" (DEC-027-003)', () => {
+    const backendFields = extractInterfaceFields(backendDomainSource, 'ProductionFlashcard').sort();
+    const frontendFields = extractInterfaceFields(frontendSource, 'ProductionFlashcard').sort();
+
+    expect(backendFields).toEqual(
+      ['id', 'rawContentId', 'authorId', 'question', 'answer', 'createdAt', 'updatedAt'].sort(),
+    );
+    expect(frontendFields).toEqual(backendFields);
+
+    // Mutante: confundir `ProductionFlashcard` com o Flashcard legado (campos
+    // `front`/`back`/`mnemonicId`/`topicId`, interface `Flashcard` já
+    // existente no frontend, F2) faz esta comparação reprovar — os dois
+    // conceitos usam o mesmo substantivo de produto mas nomes/campos
+    // distintos (DEC-027-003).
+    expect(frontendFields).not.toContain('front');
+    expect(frontendFields).not.toContain('back');
+    expect(frontendFields).not.toContain('mnemonicId');
+  });
+
+  it('FlashcardDetail (payload HTTP real, flashcards.service.ts): mesmo conjunto de campos que o ProductionFlashcard do frontend', () => {
+    const backendPayloadFields = extractInterfaceFields(
+      backendFlashcardsServiceSource,
+      'FlashcardDetail',
+    ).sort();
+    const frontendFields = extractInterfaceFields(frontendSource, 'ProductionFlashcard').sort();
+
+    expect(backendPayloadFields).toEqual(frontendFields);
+    // Esta comparação cobre a DECLARAÇÃO da interface `FlashcardDetail`, nunca
+    // a projeção real de `FLASHCARD_DETAIL_SELECT` — mesma pendência já
+    // registrada para `ContrastDetail` (ver bloco acima / INDEX do slug).
+    expect(backendPayloadFields).toEqual(
+      ['id', 'rawContentId', 'authorId', 'question', 'answer', 'createdAt', 'updatedAt'].sort(),
     );
   });
 });

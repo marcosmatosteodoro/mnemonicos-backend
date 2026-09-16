@@ -151,7 +151,7 @@ afterAll(async () => {
 });
 
 describe('fonte de medição da métrica §1.3 — censo das rotas montadas', () => {
-  it('a árvore montada é exatamente estes 38 pares método+caminho (tripwire: rota nova sem atualizar a suíte falha aqui — TASK-027-003 somou as 4 rotas de Contraste, 34→38)', () => {
+  it('a árvore montada é exatamente estes 42 pares método+caminho (tripwire: rota nova sem atualizar a suíte falha aqui — TASK-027-004 somou as 4 rotas de Flashcard, 38→42)', () => {
     expect(ROUTES.map(key).sort()).toEqual(
       [
         'GET /health',
@@ -177,6 +177,10 @@ describe('fonte de medição da métrica §1.3 — censo das rotas montadas', ()
         'GET /contents/:id/contrasts',
         'PATCH /contents/:id/contrasts/:contrastId',
         'DELETE /contents/:id/contrasts/:contrastId',
+        'POST /contents/:id/flashcards',
+        'GET /contents/:id/flashcards',
+        'PATCH /contents/:id/flashcards/:flashcardId',
+        'DELETE /contents/:id/flashcards/:flashcardId',
         'GET /contents/:id/strip',
         'POST /contents/:id/strip',
         'POST /contents/:id/strip/frames',
@@ -265,6 +269,7 @@ describe('AC-002-018 — nenhuma capacidade de auto-registro na superfície mont
       '/auth/logout',
       '/contents',
       '/contents/:id/contrasts',
+      '/contents/:id/flashcards',
       '/contents/:id/publication',
       '/contents/:id/strip',
       '/contents/:id/strip/frames',
@@ -439,13 +444,15 @@ describe('TASK-006-011/TASK-025-009 — as 8 rotas de /contents sob a barreira (
   });
 
   it('STUDENT recusado (403) nas 8 rotas — (i) a rota irmã estática GET /contents não "vaza" a permissividade para GET /contents/:id, nem vice-versa; (v) todas as 8 recusam STUDENT', async () => {
-    // As 8 rotas da Tira (TASK-012-008/023-011) e as 4 de Contraste
-    // (TASK-027-003) têm bloco de topologia próprio.
+    // As 8 rotas da Tira (TASK-012-008/023-011), as 4 de Contraste
+    // (TASK-027-003) e as 4 de Flashcard (TASK-027-004) têm bloco de
+    // topologia próprio.
     const contentRoutes = NON_PUBLIC.filter(
       (route) =>
         route.path.startsWith('/contents') &&
         !route.path.startsWith('/contents/:id/strip') &&
-        !route.path.startsWith('/contents/:id/contrasts'),
+        !route.path.startsWith('/contents/:id/contrasts') &&
+        !route.path.startsWith('/contents/:id/flashcards'),
     );
     expect(contentRoutes.map(key).sort()).toEqual([...CONTENT_ROUTE_KEYS].sort());
 
@@ -489,6 +496,43 @@ describe('TASK-027-003 — as 4 rotas de Contraste sob a barreira (topologia adv
     const { access } = await seedSession('STUDENT');
 
     for (const route of contrastRoutes) {
+      const res = await send(app, route.method, `/api/v1${concrete(route.path)}`).set(
+        'Cookie',
+        `${ACCESS_COOKIE}=${access}`,
+      );
+      expect(res.status).toBe(403);
+    }
+  });
+});
+
+describe('TASK-027-004 — as 4 rotas de Flashcard sob a barreira (topologia adversarial)', () => {
+  const FLASHCARD_ROUTE_KEYS = [
+    'POST /contents/:id/flashcards',
+    'GET /contents/:id/flashcards',
+    'PATCH /contents/:id/flashcards/:flashcardId',
+    'DELETE /contents/:id/flashcards/:flashcardId',
+  ];
+
+  it('cada uma das 4 rotas está declarada como {EDITOR, ADMIN}; GET/POST no MESMO caminho (/contents/:id/flashcards) têm chaves PRÓPRIAS — nenhuma herda a declaração da vizinha', () => {
+    for (const routeKey of FLASHCARD_ROUTE_KEYS) {
+      expect(REGISTRY.get(routeKey)).toEqual(new Set<UserRole>(['EDITOR', 'ADMIN']));
+    }
+
+    expect(ROUTE_ROLES.has('POST /contents/:id/flashcards')).toBe(true);
+    expect(ROUTE_ROLES.has('GET /contents/:id/flashcards')).toBe(true);
+    expect(ROUTE_ROLES.has('PATCH /contents/:id/flashcards/:flashcardId')).toBe(true);
+    expect(ROUTE_ROLES.has('DELETE /contents/:id/flashcards/:flashcardId')).toBe(true);
+  });
+
+  it('STUDENT recusado (403) nas 4 rotas', async () => {
+    const flashcardRoutes = NON_PUBLIC.filter((route) =>
+      route.path.startsWith('/contents/:id/flashcards'),
+    );
+    expect(flashcardRoutes.map(key).sort()).toEqual([...FLASHCARD_ROUTE_KEYS].sort());
+
+    const { access } = await seedSession('STUDENT');
+
+    for (const route of flashcardRoutes) {
       const res = await send(app, route.method, `/api/v1${concrete(route.path)}`).set(
         'Cookie',
         `${ACCESS_COOKIE}=${access}`,

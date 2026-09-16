@@ -165,3 +165,23 @@ export interface Contrast {
   createdAt: Date;
   updatedAt: Date;
 }
+
+/**
+ * Par pergunta/resposta autorado pelo EDITOR (F7, SPEC-026) — espelha o model
+ * `ProductionFlashcard` de `prisma/schema.prisma`. Nome `ProductionFlashcard`,
+ * nunca `Flashcard`: já existe `model Flashcard` (legado, SRS/CardState/
+ * Review, dormente desde F2) e os dois nomes colidiriam (DEC-027-003).
+ * Espelhado em `mnemonicos-frontend/src/types/domain.ts`: mudança de um lado
+ * entra no mesmo diff que o outro, ou o contrato quebra em runtime sem o
+ * typecheck acusar — rede de paridade cross-repo:
+ * `mnemonicos-backend/tests/unit/contents-frontend-contract.test.ts`.
+ */
+export interface ProductionFlashcard {
+  id: string;
+  rawContentId: string;
+  authorId: string;
+  question: string;
+  answer: string;
+  createdAt: Date;
+  updatedAt: Date;
+}

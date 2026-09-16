@@ -4,6 +4,7 @@ import { protectedAuthRoutes, publicAuthRoutes } from '../modules/auth/auth.rout
 import { contentsRoutes } from '../modules/contents/contents.routes';
 import { contrastsRoutes } from '../modules/contrasts/contrasts.routes';
 import { disciplinesRoutes } from '../modules/disciplines/disciplines.routes';
+import { flashcardsRoutes } from '../modules/flashcards/flashcards.routes';
 import { healthRoutes } from '../modules/health/health.routes';
 import { publicationRoutes } from '../modules/publication/publication.routes';
 import { tiraRoutes } from '../modules/tira/tira.routes';
@@ -24,8 +25,8 @@ import { ROUTE_ROLES, sealRouteRoles, type HttpMethod } from './route-roles';
  *      todo caminho fora de `PUBLIC_PATH_ALLOWLIST` que não declare papel em
  *      `ROUTE_ROLES` (403, mesmo com sessão válida — falha fechada);
  *   3. rotas protegidas — `protectedAuthRoutes`, `usersRoutes`,
- *      `disciplinesRoutes`, `contentsRoutes`, `contrastsRoutes`, `tiraRoutes`,
- *      `visualAssociationsRoutes`, `publicationRoutes` — cada uma declara
+ *      `disciplinesRoutes`, `contentsRoutes`, `contrastsRoutes`, `flashcardsRoutes`,
+ *      `tiraRoutes`, `visualAssociationsRoutes`, `publicationRoutes` — cada uma declara
  *      `"<MÉTODO> <caminho>"` em `ROUTE_ROLES` via `requireRole(...)` no ponto de
  *      montagem.
  *
@@ -52,6 +53,7 @@ apiRoutes.use(usersRoutes);
 apiRoutes.use(disciplinesRoutes);
 apiRoutes.use(contentsRoutes);
 apiRoutes.use(contrastsRoutes);
+apiRoutes.use(flashcardsRoutes);
 apiRoutes.use(tiraRoutes);
 apiRoutes.use(visualAssociationsRoutes);
 apiRoutes.use(publicationRoutes);
