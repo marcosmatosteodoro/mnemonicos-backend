@@ -107,6 +107,19 @@ export const rawContentIdParamSchema = z.object({
 export type RawContentIdParam = z.infer<typeof rawContentIdParamSchema>;
 
 /**
+ * Pegadinha elaborada (COMP-027-007, TASK-027-005, DEC-027-002) — campo único
+ * embutido em `RawContent.pegadinhaText`, sem tabela própria e sem autoria
+ * própria (segue `RawContent.authorId`). `text` obrigatório: o `DELETE
+ * /contents/:id/pegadinha` que apaga o campo não envia body, então só a
+ * escrita precisa de schema (FR-026-008/009).
+ */
+export const updatePegadinhaSchema = z.object({
+  text: z.string().trim().min(1, 'Informe o texto da pegadinha.'),
+});
+
+export type UpdatePegadinhaInput = z.infer<typeof updatePegadinhaSchema>;
+
+/**
  * Quebra da regra (COMP-006-002/COMP-006-003, TASK-006-009) — FR-005-017,
  * AC-005-022: `concept`, `action`, `object` e `essence` obrigatórios
  * (não-vazios); `condition`/`exception` opcionais (A-005-009 — vazio = "não se

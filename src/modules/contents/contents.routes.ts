@@ -8,6 +8,7 @@ import {
   listRawContentsQuerySchema,
   rawContentIdParamSchema,
   saveRuleBreakdownSchema,
+  updatePegadinhaSchema,
   updateRawContentSchema,
 } from './contents.schema';
 import {
@@ -15,6 +16,8 @@ import {
   getRawContent,
   getRuleBreakdown,
   listRawContents,
+  removePegadinhaText,
+  savePegadinhaText,
   saveRuleBreakdown,
   softDeleteRawContent,
   updateRawContent,
@@ -140,5 +143,35 @@ contentsRoutes.put(
     const input = saveRuleBreakdownSchema.parse(req.body);
     const saved = await saveRuleBreakdown(id, input, actorOf(req));
     res.json(saved);
+  },
+);
+
+/**
+ * PATCH /contents/:id/pegadinha — salva/edita a Pegadinha elaborada
+ * (COMP-027-007, TASK-027-005, DEC-027-002): campo único embutido em
+ * `RawContent.pegadinhaText`, sem tabela própria. Leitura já embutida em
+ * `GET /contents/:id` — nenhuma rota de leitura própria.
+ */
+contentsRoutes.patch(
+  '/contents/:id/pegadinha',
+  verifyOrigin,
+  requireRole('PATCH', '/contents/:id/pegadinha', 'EDITOR', 'ADMIN'),
+  async (req, res) => {
+    const { id } = rawContentIdParamSchema.parse(req.params);
+    const input = updatePegadinhaSchema.parse(req.body);
+    const updated = await savePegadinhaText(id, input, actorOf(req));
+    res.json(updated);
+  },
+);
+
+/** DELETE /contents/:id/pegadinha — apaga a Pegadinha elaborada; sem body. */
+contentsRoutes.delete(
+  '/contents/:id/pegadinha',
+  verifyOrigin,
+  requireRole('DELETE', '/contents/:id/pegadinha', 'EDITOR', 'ADMIN'),
+  async (req, res) => {
+    const { id } = rawContentIdParamSchema.parse(req.params);
+    await removePegadinhaText(id, actorOf(req));
+    res.status(204).end();
   },
 );

@@ -43,6 +43,7 @@ describe('tipos de Conteúdo bruto e Quebra da regra — domain/types.ts', () =>
       lastEditedById: null,
       lastEditedAt: null,
       deletedAt: null,
+      pegadinhaText: null,
       createdAt: now,
       updatedAt: now,
     };

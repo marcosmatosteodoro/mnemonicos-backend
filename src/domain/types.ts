@@ -126,6 +126,8 @@ export interface RawContent {
   lastEditedById: string | null;
   lastEditedAt: Date | null;
   deletedAt: Date | null;
+  /** Pegadinha elaborada (COMP-027-007, TASK-027-005, DEC-027-002); null = sem Pegadinha registrada. */
+  pegadinhaText: string | null;
   createdAt: Date;
   updatedAt: Date;
 }

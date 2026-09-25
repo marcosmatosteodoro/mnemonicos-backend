@@ -109,7 +109,7 @@ describe('paridade cross-repo — RawContentSummary/RuleBreakdown/RawContent', (
     }
   });
 
-  it('RawContentDetail/RawContent: mesmo conjunto de campos — deletedAt ausente dos dois lados (nunca projetado pelo select)', () => {
+  it('RawContentDetail/RawContent: mesmo conjunto de campos — deletedAt ausente dos dois lados (nunca projetado pelo select); pegadinhaText presente nos dois (TASK-027-005)', () => {
     const backendFields = extractInterfaceFields(backendSource, 'RawContentDetail').sort();
     const frontendFields = extractInterfaceFields(frontendSource, 'RawContent').sort();
 
@@ -117,6 +117,11 @@ describe('paridade cross-repo — RawContentSummary/RuleBreakdown/RawContent', (
     // Mutante: reintroduzir `deletedAt` só no frontend (sem o backend passar
     // a projetá-lo no `select`) faz esta comparação reprovar.
     expect(frontendFields).not.toContain('deletedAt');
+    // Mutante inverso (TASK-027-005): comparar só os dois arrays entre si não
+    // pega o caso em que ambos perderam `pegadinhaText` ao mesmo tempo — a
+    // asserção literal abaixo exige que o campo conste da comparação de fato.
+    expect(backendFields).toContain('pegadinhaText');
+    expect(frontendFields).toContain('pegadinhaText');
   });
 });
 

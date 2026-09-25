@@ -7,6 +7,7 @@ import type {
   CreateRawContentInput,
   ListRawContentsQuery,
   SaveRuleBreakdownInput,
+  UpdatePegadinhaInput,
   UpdateRawContentInput,
 } from './contents.schema';
 
@@ -57,6 +58,7 @@ const RAW_CONTENT_DETAIL_SELECT = {
   sourceUrl: true,
   lastEditedById: true,
   lastEditedAt: true,
+  pegadinhaText: true,
   createdAt: true,
   updatedAt: true,
 } as const satisfies Prisma.RawContentSelect;
@@ -72,6 +74,8 @@ export interface RawContentDetail {
   sourceUrl: string | null;
   lastEditedById: string | null;
   lastEditedAt: Date | null;
+  /** Pegadinha elaborada (COMP-027-007, TASK-027-005, DEC-027-002); null = sem Pegadinha registrada. */
+  pegadinhaText: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -243,6 +247,79 @@ export async function softDeleteRawContent(
   });
 
   if (result.count === 0) throw new NotFoundError('Conteúdo bruto não encontrado.');
+}
+
+/**
+ * Pegadinha elaborada (COMP-027-007, TASK-027-005, DEC-027-002): campo único
+ * `pegadinhaText` embutido em `RawContent`, sem tabela própria e sem autoria
+ * própria — "o autor do registro" (FR-026-012) é sempre `RawContent.authorId`.
+ * Guarda e escrita no **mesmo** `updateMany` (EXATAMENTE o padrão de
+ * `updateRawContent`/`softDeleteRawContent` acima, nunca um `findFirst` de
+ * guarda seguido de `update` por id isolado): sob concorrência, uma revogação
+ * de alcance entre a checagem e a escrita nunca é ignorada.
+ *
+ * Transação interativa (DEC-010-003, NFR-009-002/AC-009-010): a escrita e a
+ * emissão do evento de etapa (`MATERIAL_REFORCO`, FR-026-024/029, DEC-027-004)
+ * são atômicas — falha na emissão reverte a escrita do texto inteira
+ * (fail-secure).
+ */
+export async function savePegadinhaText(
+  rawContentId: string,
+  input: UpdatePegadinhaInput,
+  actor: ContentActor,
+  db: RawContentClient = prisma,
+): Promise<RawContentDetail> {
+  return db.$transaction(async (tx) => {
+    const now = new Date();
+
+    const result = await tx.rawContent.updateMany({
+      where: { id: rawContentId, ...ACTIVE_RAW_CONTENT_WHERE, ...scopeWhere(actor) },
+      data: { pegadinhaText: input.text },
+    });
+
+    if (result.count === 0) throw new NotFoundError('Conteúdo bruto não encontrado.');
+
+    await recordProductionStageEvent(tx, {
+      rawContentId,
+      stageType: 'MATERIAL_REFORCO',
+      actorId: actor.id,
+      now,
+    });
+
+    return tx.rawContent.findUniqueOrThrow({
+      where: { id: rawContentId },
+      select: RAW_CONTENT_DETAIL_SELECT,
+    });
+  });
+}
+
+/**
+ * Apaga a Pegadinha elaborada (FR-026-013): só `pegadinhaText` vira `null`,
+ * nunca exclusão física do `RawContent` titular (NFR-026-004, preservação).
+ * Mesma guarda/transação de `savePegadinhaText` acima.
+ */
+export async function removePegadinhaText(
+  rawContentId: string,
+  actor: ContentActor,
+  db: RawContentClient = prisma,
+): Promise<void> {
+  await db.$transaction(async (tx) => {
+    const now = new Date();
+
+    const result = await tx.rawContent.updateMany({
+      where: { id: rawContentId, ...ACTIVE_RAW_CONTENT_WHERE, ...scopeWhere(actor) },
+      data: { pegadinhaText: null },
+    });
+
+    if (result.count === 0) throw new NotFoundError('Conteúdo bruto não encontrado.');
+
+    await recordProductionStageEvent(tx, {
+      rawContentId,
+      stageType: 'MATERIAL_REFORCO',
+      actorId: actor.id,
+      now,
+    });
+  });
 }
 
 /**
