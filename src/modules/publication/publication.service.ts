@@ -42,7 +42,7 @@ export interface PublicationResult {
 /**
  * Cliente Prisma injetável (PLAN-025 §3): superconjunto do cliente privado de
  * `tira.service.ts` (precisa cobrir tudo que `openMnemonicStrip` exige), mais
- * `publicationEvent` (DEC-025-005). Ganha `'contrast' | 'productionFlashcard'`
+ * `publicationEvent` (DEC-025-005). Inclui `'contrast' | 'productionFlashcard'`
  * (COMP-027-018, PLAN-027 §3): leitura suplementar da Exportação (F7).
  */
 type PublicationClient = Pick<
@@ -83,9 +83,9 @@ type RuleBreakdownForPublication = Prisma.RuleBreakdownGetPayload<{
  * "não existe" e "soft-deleted" como o MESMO caso (nenhuma checagem de autoria caberia
  * entre os dois, então a precedência de guarda de AC-024-019 é garantida por construção).
  *
- * `select` ganha `pegadinhaText` (COMP-027-018, PLAN-027 §3): é o MESMO round-trip da
- * guarda, sem I/O adicional — devolvido ao chamador para compor `SupplementarySections`
- * sem uma 2ª leitura de `RawContent`.
+ * `select` inclui `pegadinhaText` (COMP-027-018, PLAN-027 §3): mesmo round-trip da guarda,
+ * sem I/O adicional — devolvido ao chamador para compor `SupplementarySections` sem uma
+ * 2ª leitura de `RawContent`.
  */
 async function assertRawContentExportable(
   rawContentId: string,

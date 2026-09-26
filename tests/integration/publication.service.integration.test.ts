@@ -15,8 +15,9 @@ import type { StripFrameForPdf } from '../../src/modules/publication/pdf-compose
 import { exportPublication } from '../../src/modules/publication/publication.service';
 import { getReviewProtocolMarks } from '../../src/modules/publication/review-protocol';
 import * as visualAssociationsService from '../../src/modules/visual-associations/visual-associations.service';
-import { buildValidPngNxN } from '../support/png-fixtures';
+import { seedContrast, seedFlashcard } from '../support/material-reforco-fixtures';
 import { decodedDocumentText, hexOfAscii } from '../support/pdf-text';
+import { buildValidPngNxN } from '../support/png-fixtures';
 import {
   createRawContent,
   createTopic,
@@ -36,9 +37,10 @@ import { closeTestDb, resetDb, testPrisma } from './db';
  * Postgres real (molde `tira.service.integration.test.ts`): guarda nova de alcance
  * (DEC-025-007), leitura de baixo nível da Quebra/Tira, composição sob teto de duração
  * (DEC-025-002), gravação transacional do evento genérico + log dedicado (DEC-025-005),
- * fail-secure. Reusa as fixtures compartilhadas de `production-events-fixtures.ts` e
+ * fail-secure. Reusa as fixtures compartilhadas de `production-events-fixtures.ts`,
  * `visual-association-fixtures.ts` (`actorOf`, `PNG_FIXTURE_BUFFER`,
- * `WEBP_FIXTURE_BUFFER`) — não recria fixture equivalente.
+ * `WEBP_FIXTURE_BUFFER`) e `material-reforco-fixtures.ts` (`seedContrast`/
+ * `seedFlashcard`) — não recria fixture equivalente.
  */
 
 /** PDF mínimo (1 página em branco) — usado onde o teste mocka `buildStripPdf`/
@@ -50,35 +52,6 @@ async function buildMinimalPdfBuffer(): Promise<Buffer> {
   doc.addPage();
   const bytes = await doc.save();
   return Buffer.from(bytes);
-}
-
-/**
- * Seeds locais de Contraste/`ProductionFlashcard` (COMP-027-018): `createdAt` opcional —
- * quando informado, sobrepõe o `@default(now())` do schema para os testes de ORDEM
- * (AC-026-012) poderem inverter deliberadamente a ordem de CRIAÇÃO/inserção física da
- * ordem de `createdAt`, isolando a garantia de `orderBy: { createdAt: 'asc' }` de uma
- * ordem de tabela que só coincidiria por acaso.
- */
-async function seedContrast(
-  rawContentId: string,
-  authorId: string,
-  fields: { confusableText: string; distinctionText: string; createdAt?: Date },
-) {
-  const { createdAt, ...rest } = fields;
-  return testPrisma.contrast.create({
-    data: { rawContentId, authorId, ...rest, ...(createdAt && { createdAt }) },
-  });
-}
-
-async function seedFlashcard(
-  rawContentId: string,
-  authorId: string,
-  fields: { question: string; answer: string; createdAt?: Date },
-) {
-  const { createdAt, ...rest } = fields;
-  return testPrisma.productionFlashcard.create({
-    data: { rawContentId, authorId, ...rest, ...(createdAt && { createdAt }) },
-  });
 }
 
 /** Captura o erro de uma chamada que deve rejeitar — evita duplicar a chamada real. */
@@ -723,6 +696,64 @@ describe('exportPublication — Protocolo impresso com os 6 Marcos na ordem fixa
   );
 });
 
+describe('exportPublication — títulos das seções suplementares identificam cada seção (gate 11: Pegadinha sem rótulo era indistinguível do texto principal)', () => {
+  it('CONTRASTES/PEGADINHA/FLASHCARDS/PROTOCOLO DE REVISÃO aparecem, cada um ANTES do conteúdo da própria seção', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const rawContent = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdown(rawContent.id);
+    await testPrisma.rawContent.update({
+      where: { id: rawContent.id },
+      data: { pegadinhaText: 'PEGADINHATITULOXPTO' },
+    });
+    await seedContrast(rawContent.id, editor.id, {
+      confusableText: 'CONFUNDIVELTITULOXPTO',
+      distinctionText: 'DISTINCAOTITULOXPTO',
+    });
+    await seedFlashcard(rawContent.id, editor.id, {
+      question: 'FLASHCARDTITULOXPTOPERGUNTA',
+      answer: 'FLASHCARDTITULOXPTORESPOSTA',
+    });
+
+    const result = await exportPublication(
+      rawContent.id,
+      { variant: 'RESUMO' },
+      actorOf(editor),
+      testPrisma,
+    );
+    const doc = await PDFDocument.load(result.buffer);
+    const text = decodedDocumentText(doc);
+
+    const indexContrastesTitle = text.indexOf(hexOfAscii('CONTRASTES'));
+    const indexContrastesBody = text.indexOf(hexOfAscii('CONFUNDIVELTITULOXPTO'));
+    const indexPegadinhaTitle = text.indexOf(hexOfAscii('PEGADINHA'));
+    const indexPegadinhaBody = text.indexOf(hexOfAscii('PEGADINHATITULOXPTO'));
+    const indexFlashcardsTitle = text.indexOf(hexOfAscii('FLASHCARDS'));
+    const indexFlashcardsBody = text.indexOf(hexOfAscii('FLASHCARDTITULOXPTOPERGUNTA'));
+    const indexProtocolTitle = text.indexOf(hexOfAscii('PROTOCOLO DE REVISÃO'));
+    const indexProtocolBody = text.indexOf(hexOfAscii(getReviewProtocolMarks()[0]!.label));
+
+    // Mutante-alvo (gate 11): `drawSupplementarySection` sem desenhar `title` faz todos os
+    // 4 `indexOf` de título devolverem -1.
+    for (const index of [
+      indexContrastesTitle,
+      indexPegadinhaTitle,
+      indexFlashcardsTitle,
+      indexProtocolTitle,
+    ]) {
+      expect(index).toBeGreaterThanOrEqual(0);
+    }
+
+    // Cada título aparece ANTES do próprio conteúdo — não depois (provaria um rótulo de
+    // RODAPÉ, não de CABEÇALHO de seção) e não numa seção errada (provaria um título fixo
+    // reusado para as 4 seções, mutante que sobreviveria só à checagem de presença acima).
+    expect(indexContrastesTitle).toBeLessThan(indexContrastesBody);
+    expect(indexPegadinhaTitle).toBeLessThan(indexPegadinhaBody);
+    expect(indexFlashcardsTitle).toBeLessThan(indexFlashcardsBody);
+    expect(indexProtocolTitle).toBeLessThan(indexProtocolBody);
+  });
+});
+
 describe('exportPublication — Contrastes (Confundível + distinção) incluídos, em ambas as Variantes (AC-026-020, FR-026-026)', () => {
   it.each(['RESUMO', 'TIRA'] as const)(
     'Variante %s: os 2 Contrastes registrados aparecem no PDF (Confundível + distinção de AMBOS)',
@@ -901,7 +932,7 @@ describe('exportPublication — omissão independente de Contraste e de Pegadinh
 });
 
 describe('exportPublication — NFR-026-003: Contraste/Flashcard/Protocolo dentro do teto JÁ existente (TRISK-027-005)', () => {
-  it('Variante TIRA com Tira real + 5 Contrastes + 5 Flashcards reais: resolve bem abaixo do teto default, sem I/O de rede adicional', async () => {
+  it('Variante TIRA com Tira real + 10 Contrastes + 10 Flashcards reais: resolve bem abaixo do teto default, sem I/O de rede adicional', async () => {
     const editor = await createUser('EDITOR');
     const topicId = await createTopic();
     const rawContent = await createRawContent(editor.id, topicId);
@@ -911,7 +942,7 @@ describe('exportPublication — NFR-026-003: Contraste/Flashcard/Protocolo dentr
     // Mesma carga de imagem REAL/pesada da prova de teto já existente (`buildValidPngNxN`,
     // 1500x1500 — CPU-bound de verdade, nunca dublê de timer, lição ativa) — soma N
     // Contrastes/Flashcards reais por cima, para medir o custo INCREMENTAL desta TASK
-    // sobre a carga que já tensionava NFR-024-... (TRISK-027-005).
+    // sobre a carga que já tensionava NFR-026-003 (TRISK-027-005).
     const strip = await openMnemonicStrip(rawContent.id, actor, testPrisma);
     const realPng = buildValidPngNxN(1500, 1500);
     for (const frame of strip.frames) {

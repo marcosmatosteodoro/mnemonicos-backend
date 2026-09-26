@@ -314,16 +314,24 @@ export async function buildStripPdf(
  * herdar mudança de layout de uma seção que não lhes pertence, DEC-027-006). Chamada só
  * quando a seção TEM conteúdo (o chamador decide a omissão, FR-026-028/023) — por isso
  * sempre produz >=1 página.
+ *
+ * `title` (gate 11 de design, achado de risco pedagógico) identifica a seção — desenhado em
+ * CAIXA ALTA só na 1ª página, antes do 1º parágrafo: sem título a Pegadinha saía como texto
+ * cru, indistinguível do conteúdo principal (o estudante podia decorar o "erro comum de
+ * prova" como se fosse a regra). Página de TRANSBORDO não repete o título — os rótulos de
+ * campo (`Confundível:`/`Pergunta:`/etc.) já identificam a página.
  */
 function drawSupplementarySection(
   doc: PDFDocument,
   font: PDFFont,
   measureWidth: (word: string) => number,
   meta: PublicationPdfMeta,
+  title: string,
   paragraphs: readonly string[],
 ): void {
   let page = createPage(doc, font, meta);
-  let y = CONTENT_TOP_Y;
+  page.drawText(title, { x: MARGIN_X, y: CONTENT_TOP_Y, size: BODY_FONT_SIZE, font });
+  let y = CONTENT_TOP_Y - LINE_HEIGHT - PARAGRAPH_GAP;
 
   for (const paragraph of paragraphs) {
     const lines = wrapTextToLines(paragraph, CONTENT_WIDTH, measureWidth);
@@ -360,11 +368,11 @@ export async function buildSupplementaryPagesPdf(
       `Confundível: ${contrast.confusableText}`,
       `Distinção: ${contrast.distinctionText}`,
     ]);
-    drawSupplementarySection(doc, font, measureWidth, meta, paragraphs);
+    drawSupplementarySection(doc, font, measureWidth, meta, 'CONTRASTES', paragraphs);
   }
 
   if (sections.pegadinhaText !== null) {
-    drawSupplementarySection(doc, font, measureWidth, meta, [sections.pegadinhaText]);
+    drawSupplementarySection(doc, font, measureWidth, meta, 'PEGADINHA', [sections.pegadinhaText]);
   }
 
   if (sections.flashcards.length > 0) {
@@ -372,7 +380,7 @@ export async function buildSupplementaryPagesPdf(
       `Pergunta: ${flashcard.question}`,
       `Resposta: ${flashcard.answer}`,
     ]);
-    drawSupplementarySection(doc, font, measureWidth, meta, paragraphs);
+    drawSupplementarySection(doc, font, measureWidth, meta, 'FLASHCARDS', paragraphs);
   }
 
   drawSupplementarySection(
@@ -380,6 +388,7 @@ export async function buildSupplementaryPagesPdf(
     font,
     measureWidth,
     meta,
+    'PROTOCOLO DE REVISÃO',
     sections.protocol.map((mark) => mark.label),
   );
 

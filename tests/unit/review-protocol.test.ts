@@ -19,8 +19,12 @@ const EXPECTED_LABELS = [
 
 describe('getReviewProtocolMarks — AC-026-014 (1): assinatura sem parâmetro de tempo', () => {
   it('a função declara arity 0 — prova a AUSÊNCIA de cálculo, não o texto do rótulo', () => {
-    // Mutante-alvo: acrescentar um parâmetro `now`/`Date` (mesmo opcional) muda
-    // `Function.length` — este teste reprovaria antes de qualquer rótulo ser lido.
+    // Mutante-alvo PARCIAL: acrescentar um parâmetro OBRIGATÓRIO, ou opcional SEM valor
+    // default (`now?: Date`), muda `Function.length` de 0 para 1 — este teste reprovaria.
+    // Um parâmetro COM valor default (`now: Date = new Date()`) NÃO move a arity (JS exclui
+    // parâmetro com default da contagem de `Function.length`; mutante testado, sobrevive
+    // aqui) — é a comparação literal do rótulo (bloco seguinte) que fecha essa lacuna,
+    // reprovando qualquer rótulo calculado a partir de `now`.
     expect(getReviewProtocolMarks.length).toBe(0);
   });
 });

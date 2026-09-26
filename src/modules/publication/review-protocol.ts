@@ -18,7 +18,9 @@ export interface ReviewProtocolMark {
  * (`StandardFonts.Helvetica`, `pdf-composer.ts`) só codifica WinAnsi/cp1252 — `page.drawText`
  * lança para qualquer code point fora dela (mesma restrição já documentada em
  * `pdf-composer.ts` para o texto do usuário, TRISK-025-007). `[ ]` preserva o mesmo papel
- * (caixa para marcação manual) dentro do alfabeto renderizável.
+ * (caixa para marcação manual) dentro do alfabeto renderizável. Voltar a `☐` só se o motor
+ * de composição passar a embutir uma fonte com cobertura além de WinAnsi (revisão de
+ * TRISK-025-007).
  */
 const REVIEW_PROTOCOL_MARKS: readonly ReviewProtocolMark[] = [
   { code: 'R0', label: '[ ] Revisão R0 — data: ___' },

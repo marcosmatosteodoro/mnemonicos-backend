@@ -4,7 +4,7 @@ import type { PDFDocument } from 'pdf-lib';
 /**
  * Extração de texto de PDF para testes de integração de `publication.service.ts` — mesma
  * técnica de `tests/unit/pdf-composer.test.ts` (padrão local daquele arquivo, não
- * exportado; replicada aqui como módulo compartilhado, sem tocar o arquivo existente).
+ * exportado).
  */
 
 /**
