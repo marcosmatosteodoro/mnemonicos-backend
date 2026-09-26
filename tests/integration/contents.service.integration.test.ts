@@ -8,6 +8,7 @@ import { AppError, NotFoundError } from '../../src/http/errors';
 import type {
   CreateRawContentInput,
   SaveRuleBreakdownInput,
+  UpdatePegadinhaInput,
 } from '../../src/modules/contents/contents.schema';
 import {
   type ContentActor,
@@ -15,6 +16,8 @@ import {
   getRawContent,
   getRuleBreakdown,
   listRawContents,
+  removePegadinhaText,
+  savePegadinhaText,
   saveRuleBreakdown,
   softDeleteRawContent,
   updateRawContent,
@@ -1192,5 +1195,238 @@ describe('Fail-secure: falha na emissão do evento reverte a mutação de negóc
       where: { rawContentId: created.id },
     });
     expect(row.concept).toBe(breakdownInputA.concept);
+  });
+});
+
+/**
+ * `savePegadinhaText`/`removePegadinhaText` (COMP-027-007 / TASK-027-005) —
+ * Pegadinha elaborada: campo único `pegadinhaText` embutido em `RawContent`,
+ * MESMA guarda de autoria de `updateRawContent`/`softDeleteRawContent` acima
+ * (`updateMany` composto, DEC-027-002). 2 métodos novos de escrita, prova
+ * comportamental própria por método (decisão 4.139/4.232) — nenhum dos dois
+ * reusa a prova do outro.
+ */
+function pegadinhaInput(text: string): UpdatePegadinhaInput {
+  return { text };
+}
+
+describe('savePegadinhaText — persiste independente da radarClass atual (AC-026-005, FR-026-008/009/011)', () => {
+  it.each(['ALTA', 'PEGADINHA'] as const)(
+    'RawContent com radarClass=%s também aceita a Pegadinha; getRawContent relê o valor atualizado',
+    async (radarClass) => {
+      const editorA = await createUser('EDITOR');
+      const topicId = await createTopic();
+      const seeded = await seedRawContent({ authorId: editorA.id, topicId, radarClass });
+
+      const saved = await savePegadinhaText(
+        seeded.id,
+        pegadinhaInput('Pegadinha: o prazo é decadencial, não prescricional.'),
+        actorOf(editorA),
+        testPrisma,
+      );
+      expect(saved.pegadinhaText).toBe('Pegadinha: o prazo é decadencial, não prescricional.');
+
+      const reread = await getRawContent(seeded.id, actorOf(editorA), testPrisma);
+      expect(reread.pegadinhaText).toBe('Pegadinha: o prazo é decadencial, não prescricional.');
+
+      const events = await testPrisma.productionStageEvent.findMany({
+        where: { rawContentId: seeded.id, stageType: 'MATERIAL_REFORCO' },
+      });
+      expect(events).toHaveLength(1);
+      expect(events[0]?.transitionType).toBe('ABERTURA');
+    },
+  );
+});
+
+describe('Guarda — mutação contável por método (decisão 4.139/4.232): B não alcança o RawContent de A', () => {
+  it('savePegadinhaText: B não salva no rawContentId de A → NotFoundError "Conteúdo bruto não encontrado."; pegadinhaText de A permanece INTOCADO; ADMIN, no mesmo cenário, salva com sucesso', async () => {
+    const editorA = await createUser('EDITOR');
+    const editorB = await createUser('EDITOR');
+    const admin = await createUser('ADMIN');
+    const topicId = await createTopic();
+    const seeded = await seedRawContent({ authorId: editorA.id, topicId });
+    await savePegadinhaText(
+      seeded.id,
+      pegadinhaInput('Texto original de A.'),
+      actorOf(editorA),
+      testPrisma,
+    );
+
+    const message = await captureMessage(() =>
+      savePegadinhaText(
+        seeded.id,
+        pegadinhaInput('Não deveria persistir.'),
+        actorOf(editorB),
+        testPrisma,
+      ),
+    );
+    expect(message).toBe('Conteúdo bruto não encontrado.');
+
+    const untouched = await testPrisma.rawContent.findUniqueOrThrow({ where: { id: seeded.id } });
+    expect(untouched.pegadinhaText).toBe('Texto original de A.');
+
+    const savedByAdmin = await savePegadinhaText(
+      seeded.id,
+      pegadinhaInput('Editado pelo ADMIN.'),
+      actorOf(admin),
+      testPrisma,
+    );
+    expect(savedByAdmin.pegadinhaText).toBe('Editado pelo ADMIN.');
+  });
+
+  it('removePegadinhaText: B não apaga a Pegadinha de A → NotFoundError "Conteúdo bruto não encontrado."; pegadinhaText de A permanece INTOCADO; ADMIN, no mesmo cenário, apaga com sucesso', async () => {
+    const editorA = await createUser('EDITOR');
+    const editorB = await createUser('EDITOR');
+    const admin = await createUser('ADMIN');
+    const topicId = await createTopic();
+    const seeded = await seedRawContent({ authorId: editorA.id, topicId });
+    await savePegadinhaText(seeded.id, pegadinhaInput('Texto de A.'), actorOf(editorA), testPrisma);
+
+    const message = await captureMessage(() =>
+      removePegadinhaText(seeded.id, actorOf(editorB), testPrisma),
+    );
+    expect(message).toBe('Conteúdo bruto não encontrado.');
+
+    const untouched = await testPrisma.rawContent.findUniqueOrThrow({ where: { id: seeded.id } });
+    expect(untouched.pegadinhaText).toBe('Texto de A.');
+
+    await removePegadinhaText(seeded.id, actorOf(admin), testPrisma);
+    const afterAdmin = await testPrisma.rawContent.findUniqueOrThrow({ where: { id: seeded.id } });
+    expect(afterAdmin.pegadinhaText).toBeNull();
+
+    const events = await testPrisma.productionStageEvent.findMany({
+      where: { rawContentId: seeded.id, stageType: 'MATERIAL_REFORCO' },
+      orderBy: { sequence: 'asc' },
+    });
+    expect(events).toHaveLength(2);
+    expect(events[0]?.transitionType).toBe('ABERTURA');
+    expect(events[1]?.transitionType).toBe('CONCLUSAO');
+  });
+});
+
+describe('savePegadinhaText/getRawContent — preservação sob soft-delete (AC-026-007, NFR-026-004)', () => {
+  it('RawContent soft-deleted com Pegadinha registrada → getRawContent recusa (404); leitura DIRETA confirma pegadinhaText preservado, sem exclusão física', async () => {
+    const editorA = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const seeded = await seedRawContent({ authorId: editorA.id, topicId });
+    await savePegadinhaText(
+      seeded.id,
+      pegadinhaInput('Pegadinha registrada antes da remoção.'),
+      actorOf(editorA),
+      testPrisma,
+    );
+
+    await softDeleteRawContent(seeded.id, actorOf(editorA), testPrisma);
+
+    await expect(getRawContent(seeded.id, actorOf(editorA), testPrisma)).rejects.toThrow(
+      NotFoundError,
+    );
+
+    const direct = await testPrisma.rawContent.findUnique({ where: { id: seeded.id } });
+    expect(direct?.pegadinhaText).toBe('Pegadinha registrada antes da remoção.');
+  });
+
+  it('savePegadinhaText contra RawContent JÁ soft-deleted → recusa (count 0); pegadinhaText permanece o valor anterior à tentativa (achado do qa pré-código)', async () => {
+    const editorA = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const seeded = await seedRawContent({ authorId: editorA.id, topicId });
+    await savePegadinhaText(
+      seeded.id,
+      pegadinhaInput('Valor anterior à remoção.'),
+      actorOf(editorA),
+      testPrisma,
+    );
+    await softDeleteRawContent(seeded.id, actorOf(editorA), testPrisma);
+
+    const message = await captureMessage(() =>
+      savePegadinhaText(
+        seeded.id,
+        pegadinhaInput('Não deveria persistir.'),
+        actorOf(editorA),
+        testPrisma,
+      ),
+    );
+    expect(message).toBe('Conteúdo bruto não encontrado.');
+
+    const direct = await testPrisma.rawContent.findUnique({ where: { id: seeded.id } });
+    expect(direct?.pegadinhaText).toBe('Valor anterior à remoção.');
+  });
+
+  it('removePegadinhaText contra RawContent JÁ soft-deleted → recusa (count 0); pegadinhaText permanece INALTERADO (nunca vira null)', async () => {
+    const editorA = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const seeded = await seedRawContent({ authorId: editorA.id, topicId });
+    await savePegadinhaText(
+      seeded.id,
+      pegadinhaInput('Pegadinha registrada antes da remoção do pai.'),
+      actorOf(editorA),
+      testPrisma,
+    );
+    await softDeleteRawContent(seeded.id, actorOf(editorA), testPrisma);
+
+    const message = await captureMessage(() =>
+      removePegadinhaText(seeded.id, actorOf(editorA), testPrisma),
+    );
+    expect(message).toBe('Conteúdo bruto não encontrado.');
+
+    const direct = await testPrisma.rawContent.findUnique({ where: { id: seeded.id } });
+    expect(direct?.pegadinhaText).toBe('Pegadinha registrada antes da remoção do pai.');
+  });
+});
+
+describe('Fail-secure: falha na emissão do evento reverte a transação inteira (AC-026-023, NFR-026-005)', () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('savePegadinhaText: recordProductionStageEvent rejeitando → propaga o erro; pegadinhaText permanece o valor anterior à tentativa', async () => {
+    const editorA = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const seeded = await seedRawContent({ authorId: editorA.id, topicId });
+    await savePegadinhaText(
+      seeded.id,
+      pegadinhaInput('Valor anterior.'),
+      actorOf(editorA),
+      testPrisma,
+    );
+
+    jest
+      .spyOn(productionEventsService, 'recordProductionStageEvent')
+      .mockRejectedValueOnce(new Error('falha simulada na emissão'));
+
+    await expect(
+      savePegadinhaText(
+        seeded.id,
+        pegadinhaInput('Não deveria persistir.'),
+        actorOf(editorA),
+        testPrisma,
+      ),
+    ).rejects.toThrow('falha simulada na emissão');
+
+    const persisted = await testPrisma.rawContent.findUniqueOrThrow({ where: { id: seeded.id } });
+    expect(persisted.pegadinhaText).toBe('Valor anterior.');
+  });
+
+  it('removePegadinhaText: recordProductionStageEvent rejeitando → propaga o erro; pegadinhaText permanece com o valor anterior (não vira null)', async () => {
+    const editorA = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const seeded = await seedRawContent({ authorId: editorA.id, topicId });
+    await savePegadinhaText(
+      seeded.id,
+      pegadinhaInput('Valor que não deve ser apagado.'),
+      actorOf(editorA),
+      testPrisma,
+    );
+
+    jest
+      .spyOn(productionEventsService, 'recordProductionStageEvent')
+      .mockRejectedValueOnce(new Error('falha simulada na emissão'));
+
+    await expect(removePegadinhaText(seeded.id, actorOf(editorA), testPrisma)).rejects.toThrow(
+      'falha simulada na emissão',
+    );
+
+    const persisted = await testPrisma.rawContent.findUniqueOrThrow({ where: { id: seeded.id } });
+    expect(persisted.pegadinhaText).toBe('Valor que não deve ser apagado.');
   });
 });

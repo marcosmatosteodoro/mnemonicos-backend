@@ -86,6 +86,7 @@ export const PRODUCTION_STAGE_TYPES = [
   'TIRA_MNEMONICA',
   'ASSOCIACAO_VISUAL',
   'PUBLICACAO_PDF',
+  'MATERIAL_REFORCO',
 ] as const;
 
 export type ProductionStageType = (typeof PRODUCTION_STAGE_TYPES)[number];
@@ -125,6 +126,8 @@ export interface RawContent {
   lastEditedById: string | null;
   lastEditedAt: Date | null;
   deletedAt: Date | null;
+  /** Pegadinha elaborada (COMP-027-007, TASK-027-005, DEC-027-002); null = sem Pegadinha registrada. */
+  pegadinhaText: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -143,6 +146,44 @@ export interface RuleBreakdown {
   condition: string | null;
   exception: string | null;
   essence: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+/**
+ * Contraste entre o Conteúdo bruto titular e um instituto/regra confundível
+ * (F7, SPEC-026) — espelha o model `Contrast` de `prisma/schema.prisma`.
+ * Espelhado em `mnemonicos-frontend/src/types/domain.ts`: mudança de um lado
+ * entra no mesmo diff que o outro, ou o contrato quebra em runtime sem o
+ * typecheck acusar — rede de paridade cross-repo:
+ * `mnemonicos-backend/tests/unit/contents-frontend-contract.test.ts`.
+ */
+export interface Contrast {
+  id: string;
+  rawContentId: string;
+  authorId: string;
+  confusableText: string;
+  distinctionText: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+/**
+ * Par pergunta/resposta autorado pelo EDITOR (F7, SPEC-026) — espelha o model
+ * `ProductionFlashcard` de `prisma/schema.prisma`. Nome `ProductionFlashcard`,
+ * nunca `Flashcard`: já existe `model Flashcard` (legado, SRS/CardState/
+ * Review, dormente desde F2) e os dois nomes colidiriam (DEC-027-003).
+ * Espelhado em `mnemonicos-frontend/src/types/domain.ts`: mudança de um lado
+ * entra no mesmo diff que o outro, ou o contrato quebra em runtime sem o
+ * typecheck acusar — rede de paridade cross-repo:
+ * `mnemonicos-backend/tests/unit/contents-frontend-contract.test.ts`.
+ */
+export interface ProductionFlashcard {
+  id: string;
+  rawContentId: string;
+  authorId: string;
+  question: string;
+  answer: string;
   createdAt: Date;
   updatedAt: Date;
 }

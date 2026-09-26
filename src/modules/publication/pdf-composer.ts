@@ -10,6 +10,7 @@ import {
 } from '../visual-associations/image-signature';
 import type { PublicationVariant } from '../../domain/types';
 import { wrapTextToLines } from './pdf-layout';
+import type { ReviewProtocolMark } from './review-protocol';
 
 /**
  * Motor de composição do PDF (COMP-025-003, DEC-025-001 — `pdf-lib`): desenha texto e
@@ -41,6 +42,32 @@ export interface ImageSkippedInfo {
   frameIndex: number;
   format: 'PNG' | 'JPEG';
   reason: ImageSkipReason;
+}
+
+/** 1 Contraste (Confundível + distinção) a compor nas páginas suplementares (COMP-027-017). */
+export interface ContrastForPdf {
+  confusableText: string;
+  distinctionText: string;
+}
+
+/** 1 Flashcard (pergunta/resposta) a compor nas páginas suplementares (COMP-027-017). */
+export interface FlashcardForPdf {
+  question: string;
+  answer: string;
+}
+
+/**
+ * Composição suplementar (COMP-027-017, DEC-027-006) — Contraste(s) + Pegadinha +
+ * Flashcard(s) + Protocolo impresso, fundida ao PDF principal via `PDFDocument.copyPages`
+ * em `publication.service.ts`. Cada campo com 0 itens (`length === 0` ou
+ * `pegadinhaText === null`) omite a seção correspondente (FR-026-028/023) — o Protocolo é o
+ * único sempre presente (FR-026-021).
+ */
+export interface SupplementarySections {
+  contrasts: ContrastForPdf[];
+  pegadinhaText: string | null;
+  flashcards: FlashcardForPdf[];
+  protocol: ReviewProtocolMark[];
 }
 
 const [PAGE_WIDTH, PAGE_HEIGHT] = PageSizes.A4;
@@ -274,6 +301,99 @@ export async function buildStripPdf(
       }
     }
   }
+
+  const bytes = await doc.save();
+  return Buffer.from(bytes);
+}
+
+/**
+ * Desenha os parágrafos de 1 seção suplementar SEMPRE numa página própria (nunca
+ * compartilhada com a seção anterior/seguinte), com transbordo para novas páginas quando o
+ * texto não cabe (mesmo mecanismo de paginação de `buildSummaryPdf`, duplicado aqui de
+ * propósito: `buildSummaryPdf`/`buildStripPdf` são as 2 Variantes existentes e não devem
+ * herdar mudança de layout de uma seção que não lhes pertence, DEC-027-006). Chamada só
+ * quando a seção TEM conteúdo (o chamador decide a omissão, FR-026-028/023) — por isso
+ * sempre produz >=1 página.
+ *
+ * `title` identifica a seção — desenhado em CAIXA ALTA só na 1ª página, antes do 1º
+ * parágrafo: sem título a Pegadinha saía como texto cru, indistinguível do conteúdo
+ * principal (o estudante podia decorar o "erro comum de prova" como se fosse a regra).
+ * Página de TRANSBORDO não repete o título — nas seções com rótulo de campo
+ * (`Confundível:`/`Pergunta:`/etc.) o próprio rótulo já identifica a página; a PEGADINHA é a
+ * exceção: é parágrafo único sem rótulo, e `updatePegadinhaSchema` não limita tamanho — texto
+ * longo o bastante para transbordar fica sem identificação na página de continuação (risco
+ * residual, RISK-027-008).
+ */
+function drawSupplementarySection(
+  doc: PDFDocument,
+  font: PDFFont,
+  measureWidth: (word: string) => number,
+  meta: PublicationPdfMeta,
+  title: string,
+  paragraphs: readonly string[],
+): void {
+  let page = createPage(doc, font, meta);
+  page.drawText(title, { x: MARGIN_X, y: CONTENT_TOP_Y, size: BODY_FONT_SIZE, font });
+  let y = CONTENT_TOP_Y - LINE_HEIGHT - PARAGRAPH_GAP;
+
+  for (const paragraph of paragraphs) {
+    const lines = wrapTextToLines(paragraph, CONTENT_WIDTH, measureWidth);
+    for (const line of lines) {
+      if (y < CONTENT_BOTTOM_Y) {
+        page = createPage(doc, font, meta);
+        y = CONTENT_TOP_Y;
+      }
+      page.drawText(line, { x: MARGIN_X, y, size: BODY_FONT_SIZE, font });
+      y -= LINE_HEIGHT;
+    }
+    y -= PARAGRAPH_GAP;
+  }
+}
+
+/**
+ * Composição suplementar (COMP-027-017, DEC-027-006): Contraste(s) + Pegadinha +
+ * Flashcard(s) + Protocolo impresso, num `PDFDocument` PRÓPRIO (nunca o principal — a fusão
+ * é responsabilidade de `publication.service.ts`, via `PDFDocument.copyPages`). Cada seção
+ * com 0 itens é OMITIDA (nenhuma página vazia, nenhum erro, FR-026-028/023); o Protocolo é
+ * sempre desenhado por último, mesmo quando as 3 demais seções estão vazias (FR-026-021 —
+ * não depende de nenhum registro autorado).
+ */
+export async function buildSupplementaryPagesPdf(
+  sections: SupplementarySections,
+  meta: PublicationPdfMeta,
+): Promise<Buffer> {
+  const doc = await PDFDocument.create();
+  const font = await doc.embedFont(StandardFonts.Helvetica);
+  const measureWidth = measureWidthFor(font);
+
+  if (sections.contrasts.length > 0) {
+    const paragraphs = sections.contrasts.flatMap((contrast) => [
+      `Confundível: ${contrast.confusableText}`,
+      `Distinção: ${contrast.distinctionText}`,
+    ]);
+    drawSupplementarySection(doc, font, measureWidth, meta, 'CONTRASTES', paragraphs);
+  }
+
+  if (sections.pegadinhaText !== null) {
+    drawSupplementarySection(doc, font, measureWidth, meta, 'PEGADINHA', [sections.pegadinhaText]);
+  }
+
+  if (sections.flashcards.length > 0) {
+    const paragraphs = sections.flashcards.flatMap((flashcard) => [
+      `Pergunta: ${flashcard.question}`,
+      `Resposta: ${flashcard.answer}`,
+    ]);
+    drawSupplementarySection(doc, font, measureWidth, meta, 'FLASHCARDS', paragraphs);
+  }
+
+  drawSupplementarySection(
+    doc,
+    font,
+    measureWidth,
+    meta,
+    'PROTOCOLO DE REVISÃO',
+    sections.protocol.map((mark) => mark.label),
+  );
 
   const bytes = await doc.save();
   return Buffer.from(bytes);

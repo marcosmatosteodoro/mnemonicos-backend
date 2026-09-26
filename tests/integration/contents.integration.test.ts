@@ -12,6 +12,11 @@ import type {
   CreateRawContentInput,
   SaveRuleBreakdownInput,
 } from '../../src/modules/contents/contents.schema';
+// Namespace (não named import): TASK-027-005 espia `recordProductionStageEvent`
+// (fail-secure, AC-026-023) — precisa do objeto de módulo, não do binding
+// isolado, para o spy interceptar a chamada feita de dentro de
+// `contents.service.ts` a partir da rota HTTP.
+import * as productionEventsService from '../../src/modules/production-events/production-events.service';
 import { closeTestDb, resetDb, testPrisma } from './db';
 
 /**
@@ -608,6 +613,92 @@ describe('AC-005-026 + g8 — as 7 rotas sob a barreira: sem sessão → 401; ST
     ).toBe(200);
   });
 
+  it('PATCH /contents/:id/pegadinha — 401 sem sessão, 403 STUDENT, 200 EDITOR dono, 200 ADMIN', async () => {
+    const editor = await createUser('EDITOR');
+    const admin = await createUser('ADMIN');
+    const student = await createUser('STUDENT');
+    const [access, adminAccess, studentAccess] = await Promise.all([
+      seedSession(editor.id),
+      seedSession(admin.id),
+      seedSession(student.id),
+    ]);
+    const { topicId } = await createTopicWithNames();
+    const forAnon = await seedRawContent({ authorId: editor.id, topicId });
+    const forStudent = await seedRawContent({ authorId: editor.id, topicId });
+    const forEditor = await seedRawContent({ authorId: editor.id, topicId });
+    const forAdmin = await seedRawContent({ authorId: editor.id, topicId });
+    const body = { text: 'Pegadinha: o prazo é decadencial, não prescricional.' };
+
+    expect(
+      (await request(app).patch(`/api/v1/contents/${forAnon.id}/pegadinha`).send(body)).status,
+    ).toBe(401);
+    expect(
+      (
+        await request(app)
+          .patch(`/api/v1/contents/${forStudent.id}/pegadinha`)
+          .set(...withCookie(studentAccess))
+          .send(body)
+      ).status,
+    ).toBe(403);
+    expect(
+      (
+        await request(app)
+          .patch(`/api/v1/contents/${forEditor.id}/pegadinha`)
+          .set(...withCookie(access))
+          .send(body)
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await request(app)
+          .patch(`/api/v1/contents/${forAdmin.id}/pegadinha`)
+          .set(...withCookie(adminAccess))
+          .send(body)
+      ).status,
+    ).toBe(200);
+  });
+
+  it('DELETE /contents/:id/pegadinha — 401 sem sessão, 403 STUDENT, 204 EDITOR dono, 204 ADMIN (itens distintos)', async () => {
+    const editor = await createUser('EDITOR');
+    const admin = await createUser('ADMIN');
+    const student = await createUser('STUDENT');
+    const [access, adminAccess, studentAccess] = await Promise.all([
+      seedSession(editor.id),
+      seedSession(admin.id),
+      seedSession(student.id),
+    ]);
+    const { topicId } = await createTopicWithNames();
+    const forAnon = await seedRawContent({ authorId: editor.id, topicId });
+    const forStudent = await seedRawContent({ authorId: editor.id, topicId });
+    const forEditor = await seedRawContent({ authorId: editor.id, topicId });
+    const forAdmin = await seedRawContent({ authorId: editor.id, topicId });
+
+    expect((await request(app).delete(`/api/v1/contents/${forAnon.id}/pegadinha`)).status).toBe(
+      401,
+    );
+    expect(
+      (
+        await request(app)
+          .delete(`/api/v1/contents/${forStudent.id}/pegadinha`)
+          .set(...withCookie(studentAccess))
+      ).status,
+    ).toBe(403);
+    expect(
+      (
+        await request(app)
+          .delete(`/api/v1/contents/${forEditor.id}/pegadinha`)
+          .set(...withCookie(access))
+      ).status,
+    ).toBe(204);
+    expect(
+      (
+        await request(app)
+          .delete(`/api/v1/contents/${forAdmin.id}/pegadinha`)
+          .set(...withCookie(adminAccess))
+      ).status,
+    ).toBe(204);
+  });
+
   it('PUT /contents/:id/breakdown — 401 sem sessão, 403 STUDENT, 200 EDITOR dono, 200 ADMIN', async () => {
     const editor = await createUser('EDITOR');
     const admin = await createUser('ADMIN');
@@ -647,5 +738,95 @@ describe('AC-005-026 + g8 — as 7 rotas sob a barreira: sem sessão → 401; ST
           .send(body)
       ).status,
     ).toBe(200);
+  });
+});
+
+describe('PATCH /contents/:id/pegadinha — corpo inválido (AC-026-016, NFR-026-002)', () => {
+  it('text vazio → 422, motivo informado, pegadinhaText INTOCADO', async () => {
+    const editor = await createUser('EDITOR');
+    const access = await seedSession(editor.id);
+    const { topicId } = await createTopicWithNames();
+    const seeded = await seedRawContent({ authorId: editor.id, topicId });
+    await request(app)
+      .patch(`/api/v1/contents/${seeded.id}/pegadinha`)
+      .set(...withCookie(access))
+      .send({ text: 'Valor original.' });
+
+    const res = await request(app)
+      .patch(`/api/v1/contents/${seeded.id}/pegadinha`)
+      .set(...withCookie(access))
+      .send({ text: '' });
+
+    expect(res.status).toBe(422);
+    const details = res.body.error.details as Array<{ path: string; message: string }>;
+    expect(details).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ path: 'text', message: 'Informe o texto da pegadinha.' }),
+      ]),
+    );
+
+    const untouched = await testPrisma.rawContent.findUniqueOrThrow({ where: { id: seeded.id } });
+    expect(untouched.pegadinhaText).toBe('Valor original.');
+  });
+});
+
+describe('AC-026-023 (parte — Pegadinha): erro não previsto na emissão do evento devolve 500 genérico', () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('PATCH .../pegadinha com recordProductionStageEvent rejeitando → 500 genérico, sem detalhe da exceção; pegadinhaText permanece o valor anterior', async () => {
+    const editor = await createUser('EDITOR');
+    const access = await seedSession(editor.id);
+    const { topicId } = await createTopicWithNames();
+    const seeded = await seedRawContent({ authorId: editor.id, topicId });
+    await request(app)
+      .patch(`/api/v1/contents/${seeded.id}/pegadinha`)
+      .set(...withCookie(access))
+      .send({ text: 'Valor anterior.' });
+
+    jest
+      .spyOn(productionEventsService, 'recordProductionStageEvent')
+      .mockRejectedValueOnce(new Error('falha simulada na emissão'));
+
+    const res = await request(app)
+      .patch(`/api/v1/contents/${seeded.id}/pegadinha`)
+      .set(...withCookie(access))
+      .send({ text: 'Não deveria persistir.' });
+
+    expect(res.status).toBe(500);
+    expect(res.body).toEqual({
+      error: { code: 'INTERNAL_SERVER_ERROR', message: 'Erro interno.' },
+    });
+
+    const persisted = await testPrisma.rawContent.findUniqueOrThrow({ where: { id: seeded.id } });
+    expect(persisted.pegadinhaText).toBe('Valor anterior.');
+  });
+
+  it('DELETE .../pegadinha com recordProductionStageEvent rejeitando → 500 genérico, sem detalhe da exceção; pegadinhaText permanece o valor anterior (não vira null)', async () => {
+    const editor = await createUser('EDITOR');
+    const access = await seedSession(editor.id);
+    const { topicId } = await createTopicWithNames();
+    const seeded = await seedRawContent({ authorId: editor.id, topicId });
+    await request(app)
+      .patch(`/api/v1/contents/${seeded.id}/pegadinha`)
+      .set(...withCookie(access))
+      .send({ text: 'Valor que não deve ser apagado.' });
+
+    jest
+      .spyOn(productionEventsService, 'recordProductionStageEvent')
+      .mockRejectedValueOnce(new Error('falha simulada na emissão'));
+
+    const res = await request(app)
+      .delete(`/api/v1/contents/${seeded.id}/pegadinha`)
+      .set(...withCookie(access));
+
+    expect(res.status).toBe(500);
+    expect(res.body).toEqual({
+      error: { code: 'INTERNAL_SERVER_ERROR', message: 'Erro interno.' },
+    });
+
+    const persisted = await testPrisma.rawContent.findUniqueOrThrow({ where: { id: seeded.id } });
+    expect(persisted.pegadinhaText).toBe('Valor que não deve ser apagado.');
   });
 });
