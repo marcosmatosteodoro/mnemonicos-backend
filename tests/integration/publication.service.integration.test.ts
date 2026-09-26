@@ -14,11 +14,14 @@ import * as pdfComposer from '../../src/modules/publication/pdf-composer';
 import type { StripFrameForPdf } from '../../src/modules/publication/pdf-composer';
 import { exportPublication } from '../../src/modules/publication/publication.service';
 import { getReviewProtocolMarks } from '../../src/modules/publication/review-protocol';
+import { closeContentVersion } from '../../src/modules/content-versions/content-versions.service';
+import { saveRuleBreakdown } from '../../src/modules/contents/contents.service';
 import * as visualAssociationsService from '../../src/modules/visual-associations/visual-associations.service';
 import { seedContrast, seedFlashcard } from '../support/material-reforco-fixtures';
-import { decodedDocumentText, hexOfAscii } from '../support/pdf-text';
+import { decodedDocumentText, decodedPageTexts, hexOfAscii } from '../support/pdf-text';
 import { buildValidPngNxN } from '../support/png-fixtures';
 import {
+  BREAKDOWN_FIELDS,
   createRawContent,
   createTopic,
   createUser,
@@ -973,4 +976,189 @@ describe('exportPublication — NFR-026-003: Contraste/Flashcard/Protocolo dentr
     // é sobreposto neste teste (nenhum teto novo, Não inclui desta TASK).
     expect(elapsedMs).toBeLessThan(env.PUBLICATION_PDF_TIMEOUT_MS);
   }, 15000);
+});
+
+/**
+ * Carimbo de Versão editorial no cabeçalho de rascunho (TASK-029-003, F8):
+ * FR-028-008/009/010/011. `closeContentVersion` reusado sem duplicar fixture — mesma
+ * função de `content-versions.service.ts` (TASK-029-002), chamada direto com `testPrisma`
+ * (mesmo padrão de `openMnemonicStrip` já usado neste arquivo).
+ */
+describe('exportPublication — carimbo de Versão editorial no cabeçalho de rascunho (TASK-029-003)', () => {
+  it.each(['RESUMO', 'TIRA'] as const)(
+    'Variante %s — AC-028-009 (FR-028-008) e caso SIMÉTRICO de AC-028-013: 3 Versões fechadas (a mais recente number:3/2026-09-01), Conteúdo/Quebra intactos desde então — TODAS as páginas (>=2) trazem "Versão 3 — verificado até 01/09/2026", NUNCA a marca de alteração',
+    async (variant) => {
+      const editor = await createUser('EDITOR');
+      const topicId = await createTopic();
+      const rawContent = await createRawContent(editor.id, topicId);
+      await seedRuleBreakdown(rawContent.id);
+      const actor = actorOf(editor);
+
+      await closeContentVersion(
+        rawContent.id,
+        { legislativeClosureDate: '2026-07-01' },
+        actor,
+        testPrisma,
+      );
+      await closeContentVersion(
+        rawContent.id,
+        { legislativeClosureDate: '2026-08-01' },
+        actor,
+        testPrisma,
+      );
+      await closeContentVersion(
+        rawContent.id,
+        { legislativeClosureDate: '2026-09-01' },
+        actor,
+        testPrisma,
+      );
+
+      const result = await exportPublication(rawContent.id, { variant }, actor, testPrisma);
+      const doc = await PDFDocument.load(result.buffer);
+      const pageTexts = decodedPageTexts(doc);
+
+      // Protocolo suplementar sempre soma 1+ página além da principal (quantificador
+      // "toda página" exige ler TODAS, lição ativa).
+      expect(doc.getPageCount()).toBeGreaterThanOrEqual(2);
+      expect(pageTexts).toHaveLength(doc.getPageCount());
+
+      const versionStampHex = hexOfAscii('Versão 3 — verificado até 01/09/2026');
+      expect(pageTexts.every((text) => text.includes(versionStampHex))).toBe(true);
+
+      // AC-028-011 (FR-028-010): o rótulo de RASCUNHO continua presente, sem substituição.
+      const draftLabelHex = hexOfAscii('RASCUNHO');
+      expect(pageTexts.every((text) => text.includes(draftLabelHex))).toBe(true);
+
+      // Caso SIMÉTRICO de AC-028-013: nenhum campo versionado mudou depois do 3º
+      // fechamento — a marca de alteração NUNCA aparece.
+      const alteredMarkerHex = hexOfAscii('alterado após o fechamento');
+      expect(pageTexts.some((text) => text.includes(alteredMarkerHex))).toBe(false);
+    },
+  );
+
+  it.each(['RESUMO', 'TIRA'] as const)(
+    'Variante %s — AC-028-010 (FR-028-009): nenhuma Versão fechada — TODAS as páginas trazem "Sem versão fechada." em vez de número/data, e o rótulo de RASCUNHO continua presente (AC-028-011)',
+    async (variant) => {
+      const editor = await createUser('EDITOR');
+      const topicId = await createTopic();
+      const rawContent = await createRawContent(editor.id, topicId);
+      await seedRuleBreakdown(rawContent.id);
+      const actor = actorOf(editor);
+
+      const result = await exportPublication(rawContent.id, { variant }, actor, testPrisma);
+      const doc = await PDFDocument.load(result.buffer);
+      const pageTexts = decodedPageTexts(doc);
+
+      expect(doc.getPageCount()).toBeGreaterThanOrEqual(2);
+
+      const noVersionHex = hexOfAscii('Sem versão fechada.');
+      expect(pageTexts.every((text) => text.includes(noVersionHex))).toBe(true);
+
+      const draftLabelHex = hexOfAscii('RASCUNHO');
+      expect(pageTexts.every((text) => text.includes(draftLabelHex))).toBe(true);
+    },
+  );
+
+  it.each(['RESUMO', 'TIRA'] as const)(
+    'Variante %s — AC-028-013 (FR-028-011): Versão number:3/2026-09-01 fechada, Quebra da regra EDITADA depois do fechamento — TODAS as páginas trazem a marca de alteração (fail-secure, A-028-012)',
+    async (variant) => {
+      const editor = await createUser('EDITOR');
+      const topicId = await createTopic();
+      const rawContent = await createRawContent(editor.id, topicId);
+      await seedRuleBreakdown(rawContent.id);
+      const actor = actorOf(editor);
+
+      await closeContentVersion(
+        rawContent.id,
+        { legislativeClosureDate: '2026-07-01' },
+        actor,
+        testPrisma,
+      );
+      await closeContentVersion(
+        rawContent.id,
+        { legislativeClosureDate: '2026-08-01' },
+        actor,
+        testPrisma,
+      );
+      await closeContentVersion(
+        rawContent.id,
+        { legislativeClosureDate: '2026-09-01' },
+        actor,
+        testPrisma,
+      );
+
+      // Edita a Quebra da regra DEPOIS do fechamento da Versão 3 — divergência num único
+      // campo versionado (concept) já basta para `hasVersionedContentChanged` recusar o
+      // "sem alteração" (fail-secure, A-028-012).
+      await saveRuleBreakdown(
+        rawContent.id,
+        {
+          concept: 'CONCEITO_ALTERADO_APOS_FECHAMENTO_DA_VERSAO_3',
+          action: BREAKDOWN_FIELDS.action,
+          object: BREAKDOWN_FIELDS.object,
+          essence: BREAKDOWN_FIELDS.essence,
+          condition: BREAKDOWN_FIELDS.condition,
+          exception: BREAKDOWN_FIELDS.exception,
+        },
+        actor,
+        testPrisma,
+      );
+
+      const result = await exportPublication(rawContent.id, { variant }, actor, testPrisma);
+      const doc = await PDFDocument.load(result.buffer);
+      const pageTexts = decodedPageTexts(doc);
+
+      expect(doc.getPageCount()).toBeGreaterThanOrEqual(2);
+
+      const alteredStampHex = hexOfAscii(
+        'Versão 3 — verificado até 01/09/2026 — alterado após o fechamento da Versão 3',
+      );
+      // Falsificável (fail-secure, A-028-012): se `resolveVersionStampForPdf` comparasse
+      // contra o snapshot errado ou ignorasse a divergência, este caso reprovaria (falso
+      // negativo é o que NFR-028 proíbe).
+      expect(pageTexts.every((text) => text.includes(alteredStampHex))).toBe(true);
+    },
+  );
+
+  it('resolveVersionStampForPdf busca a Versão de MAIOR number, não por closedAt/legislativeClosureDate (DEC-029-006, datas não-monotônicas)', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const rawContent = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdown(rawContent.id);
+    const actor = actorOf(editor);
+
+    // 3 Versões fechadas EM ORDEM (number 1, 2, 3), mas com datas NÃO-monotônicas: a
+    // Versão number:2 tem legislativeClosureDate ANTERIOR à number:1 — histórico de datas
+    // não implica ordem cronológica (DEC-029-006). A exportação tem que estampar a de
+    // MAIOR number (3, 2026-05-15), nunca a de data mais recente/antiga.
+    await closeContentVersion(
+      rawContent.id,
+      { legislativeClosureDate: '2026-09-01' },
+      actor,
+      testPrisma,
+    );
+    await closeContentVersion(
+      rawContent.id,
+      { legislativeClosureDate: '2026-02-01' },
+      actor,
+      testPrisma,
+    );
+    await closeContentVersion(
+      rawContent.id,
+      { legislativeClosureDate: '2026-05-15' },
+      actor,
+      testPrisma,
+    );
+
+    const result = await exportPublication(rawContent.id, { variant: 'RESUMO' }, actor, testPrisma);
+    const doc = await PDFDocument.load(result.buffer);
+    const pageTexts = decodedPageTexts(doc);
+
+    const expectedStampHex = hexOfAscii('Versão 3 — verificado até 15/05/2026');
+    expect(pageTexts.every((text) => text.includes(expectedStampHex))).toBe(true);
+
+    // Controle negativo: nem a Versão 1 nem a Versão 2 (menor number) aparecem estampadas.
+    expect(pageTexts.some((text) => text.includes(hexOfAscii('Versão 1 —')))).toBe(false);
+    expect(pageTexts.some((text) => text.includes(hexOfAscii('Versão 2 —')))).toBe(false);
+  });
 });
