@@ -89,7 +89,7 @@ const MARGIN_X = 50;
 const MARGIN_TOP = 100; // reserva o cabeçalho de rascunho (4 linhas, TASK-029-003) fora da área de conteúdo
 const MARGIN_BOTTOM = 50;
 const CONTENT_WIDTH = PAGE_WIDTH - 2 * MARGIN_X;
-const CONTENT_TOP_Y = PAGE_HEIGHT - MARGIN_TOP; // derivado de MARGIN_TOP — recalibra sozinho (TRISK-029-003)
+const CONTENT_TOP_Y = PAGE_HEIGHT - MARGIN_TOP;
 const CONTENT_BOTTOM_Y = MARGIN_BOTTOM;
 
 const BODY_FONT_SIZE = 12;

@@ -4,6 +4,7 @@ import { prisma } from '../../lib/prisma';
 import { assertRawContentReachable, type ContentActor } from '../contents/contents.service';
 import { recordProductionStageEvent } from '../production-events/production-events.service';
 import type { CloseContentVersionInput } from './content-versions.schema';
+import { toVersionedContentFields } from './versioned-content-diff';
 
 /**
  * Ciclo de vida de Versão editorial (COMP-029-004/005 / TASK-029-002):
@@ -28,11 +29,12 @@ import type { CloseContentVersionInput } from './content-versions.schema';
  *      recusa e informa o motivo, sem `INSERT`.
  *   5. Próximo `number` sequencial, dentro da MESMA transação, depois do lock
  *      do passo 1.
- *   6. Monta o `contentSnapshot` — ALLOWLIST explícita dos campos
+ *   6. Monta o `contentSnapshot` via `toVersionedContentFields`
+ *      (`versioned-content-diff.ts`) — ALLOWLIST explícita dos campos
  *      versionados lidos nos passos 2/3 (RawContent) e 4 (RuleBreakdown),
- *      NUNCA espalhamento (`...rawContent`/`...ruleBreakdown`) — o objeto
+ *      NUNCA espalhamento (`...rawContent`/`...ruleBreakdown`): o objeto
  *      inteiro carregaria campos não-versionados (ex.: `pegadinhaText`) para
- *      dentro do snapshot (achado do security-engineer na Wave 1).
+ *      dentro do snapshot.
  *   7. `tx.contentVersion.create`.
  *   8. `recordProductionStageEvent(tx, { ..., transitionType: 'CONCLUSAO' })`
  *      — ÚLTIMA chamada do corpo, sempre `CONCLUSAO` direto, nunca via
@@ -149,25 +151,14 @@ export async function closeContentVersion(
     });
     const number = (last?.number ?? 0) + 1;
 
-    // Passo 6 (DEC-029-003): allowlist explícita dos campos versionados —
-    // NUNCA espalhamento de RawContent/RuleBreakdown (o objeto inteiro
-    // carregaria campos não-versionados, ex. pegadinhaText, para dentro do
-    // snapshot).
-    const contentSnapshot = {
-      rawText: rawContent.rawText,
-      radarClass: rawContent.radarClass,
-      sourceType: rawContent.sourceType,
-      sourceCitation: rawContent.sourceCitation,
-      sourceUrl: rawContent.sourceUrl,
-      concept: ruleBreakdown.concept,
-      action: ruleBreakdown.action,
-      object: ruleBreakdown.object,
-      condition: ruleBreakdown.condition,
-      exception: ruleBreakdown.exception,
-      essence: ruleBreakdown.essence,
-    };
+    // Passo 6 (DEC-029-003): allowlist explícita dos campos versionados, via
+    // `toVersionedContentFields` — a MESMA função que `publication.service.ts`
+    // usa para o lado "atual" da comparação (`versioned-content-diff.ts`,
+    // único ponto de manutenção) — NUNCA espalhamento de
+    // RawContent/RuleBreakdown (o objeto inteiro carregaria campos
+    // não-versionados, ex. pegadinhaText, para dentro do snapshot).
+    const contentSnapshot = toVersionedContentFields(rawContent, ruleBreakdown);
 
-    // Passo 7.
     const created = await tx.contentVersion.create({
       data: {
         rawContentId,
@@ -202,7 +193,9 @@ export async function closeContentVersion(
  *
  * Custo depende só de `N` (Versões daquele `RawContent`, NFR-028-003/AC-028-012)
  * — o índice `@@unique([rawContentId, number])` (TASK-029-001) serve o
- * `findMany` filtrado por `rawContentId`, 1 único statement.
+ * `findMany` filtrado por `rawContentId`. Medido: 2 statements
+ * (`assertRawContentReachable` + este `findMany`), nenhum dos 2 cresce com
+ * `N` — nunca 1 único statement (a guarda de alcance é uma leitura própria).
  */
 export async function listContentVersions(
   rawContentId: string,

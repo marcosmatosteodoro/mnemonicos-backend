@@ -3,12 +3,12 @@ import type { NormativeSourceType, ProofRadarClass } from '../../domain/types';
 /**
  * Os 11 campos versionados (COMP-029-003, A-028-002/DEC-029-003): os 5 de
  * `RawContent` (`rawText`/`radarClass`/`sourceType`/`sourceCitation`/`sourceUrl`) mais os
- * 6 de `RuleBreakdown` (`concept`/`action`/`object`/`condition`/`exception`/`essence`) —
- * a MESMA allowlist que `content-versions.service.ts` (TASK-029-002) grava em
- * `contentSnapshot` (passo 6, DEC-029-003). Único ponto de manutenção quando o recorte de
- * A-028-002 mudar: um campo novo entra aqui E lá, ou a comparação abaixo passa a comparar
- * um subconjunto desatualizado sem avisar (Json não tem typecheck cruzado — ver
- * TASK-029-003, "Comparação com o molde canônico").
+ * 6 de `RuleBreakdown` (`concept`/`action`/`object`/`condition`/`exception`/`essence`).
+ * Único ponto de manutenção quando o recorte de A-028-002 mudar: `toVersionedContentFields`
+ * (abaixo) é a ÚNICA função que monta este formato a partir de `RawContent`/`RuleBreakdown`
+ * — `content-versions.service.ts` (o snapshot gravado no fechamento) e
+ * `publication.service.ts` (o lado "atual" da comparação) chamam a mesma função, nenhum dos
+ * dois monta o objeto por conta própria.
  */
 export interface VersionedContentFields {
   rawText: string;
@@ -22,6 +22,43 @@ export interface VersionedContentFields {
   condition: string | null;
   exception: string | null;
   essence: string;
+}
+
+/**
+ * Monta os 11 campos versionados a partir do `RawContent` e da `RuleBreakdown` já lidos
+ * pelo chamador (sem I/O aqui) — `satisfies VersionedContentFields` trava, em tempo de
+ * compilação, qualquer campo esquecido ou de tipo errado; os parâmetros são `Pick`s
+ * estruturais (não os models inteiros), então tanto o `rawContent`/`ruleBreakdown` de
+ * `content-versions.service.ts` (que têm campos extras, ex. `authorId`) quanto os de
+ * `publication.service.ts` (que têm forma reduzida própria) satisfazem o parâmetro sem
+ * conversão. Sem anotação de retorno `: VersionedContentFields` (nominal) — o resultado
+ * precisa chegar a `tx.contentVersion.create({ data: { contentSnapshot } })` como tipo de
+ * objeto literal (sem index signature própria), o único formato que `Prisma.InputJsonObject`
+ * aceita sem cast; `satisfies` trava a forma sem alterar o tipo inferido do retorno.
+ */
+export function toVersionedContentFields(
+  rawContent: Pick<
+    VersionedContentFields,
+    'rawText' | 'radarClass' | 'sourceType' | 'sourceCitation' | 'sourceUrl'
+  >,
+  ruleBreakdown: Pick<
+    VersionedContentFields,
+    'concept' | 'action' | 'object' | 'condition' | 'exception' | 'essence'
+  >,
+) {
+  return {
+    rawText: rawContent.rawText,
+    radarClass: rawContent.radarClass,
+    sourceType: rawContent.sourceType,
+    sourceCitation: rawContent.sourceCitation,
+    sourceUrl: rawContent.sourceUrl,
+    concept: ruleBreakdown.concept,
+    action: ruleBreakdown.action,
+    object: ruleBreakdown.object,
+    condition: ruleBreakdown.condition,
+    exception: ruleBreakdown.exception,
+    essence: ruleBreakdown.essence,
+  } satisfies VersionedContentFields;
 }
 
 /**

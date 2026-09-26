@@ -6,6 +6,7 @@ import {
   recordProductionStageEvent,
 } from '../../src/modules/production-events/production-events.service';
 import { createRawContent, createTopic, createUser } from '../support/production-events-fixtures';
+import { withQueryProbe } from '../support/query-probe';
 import { closeTestDb, resetDb, testPrisma } from './db';
 
 /**
@@ -191,25 +192,60 @@ describe('recordProductionStageEvent — transitionType informado pula históric
     jest.restoreAllMocks();
   });
 
-  it('(a) NUNCA chama tx.productionStageEvent.findMany quando transitionType é informado', async () => {
+  /**
+   * `recordProductionStageEvent` recebe o `tx` de DENTRO de `$transaction` —
+   * no Prisma 7 o client de transação interativa tem delegates PRÓPRIOS,
+   * distintos dos do client raiz, então um spy em
+   * `testPrisma.productionStageEvent` nunca vê uma chamada feita pelo `tx`.
+   * `withQueryProbe` conta os statements emitidos pelo PRÓPRIO client da
+   * transação (`probe.$transaction`), o observador que a função realmente
+   * atravessa.
+   */
+  it('(a) NUNCA emite um SELECT de histórico quando transitionType é informado — controle negativo por contagem de statements', async () => {
     const editor = await createUser('EDITOR');
     const topicId = await createTopic();
     const rawContent = await createRawContent(editor.id, topicId);
     const now = new Date('2026-09-26T12:00:00.000Z');
 
-    const findManySpy = jest.spyOn(testPrisma.productionStageEvent, 'findMany');
-
-    await testPrisma.$transaction((tx) =>
-      recordProductionStageEvent(tx, {
-        rawContentId: rawContent.id,
-        stageType: 'VERSAO_EDITORIAL',
-        transitionType: 'CONCLUSAO',
-        actorId: editor.id,
-        now,
-      }),
+    const queries = await withQueryProbe((probe) =>
+      probe.$transaction((tx) =>
+        recordProductionStageEvent(tx, {
+          rawContentId: rawContent.id,
+          stageType: 'VERSAO_EDITORIAL',
+          transitionType: 'CONCLUSAO',
+          actorId: editor.id,
+          now,
+        }),
+      ),
     );
 
-    expect(findManySpy).not.toHaveBeenCalled();
+    const selectQueries = queries.filter((query) =>
+      query.trim().toUpperCase().startsWith('SELECT'),
+    );
+    expect(selectQueries).toHaveLength(0);
+  });
+
+  it('controle POSITIVO do mesmo arranjo: omitir transitionType faz o MESMO observador registrar ≥1 SELECT de histórico', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const rawContent = await createRawContent(editor.id, topicId);
+    const now = new Date('2026-09-26T12:00:00.000Z');
+
+    const queries = await withQueryProbe((probe) =>
+      probe.$transaction((tx) =>
+        recordProductionStageEvent(tx, {
+          rawContentId: rawContent.id,
+          stageType: 'VERSAO_EDITORIAL',
+          actorId: editor.id,
+          now,
+        }),
+      ),
+    );
+
+    const selectQueries = queries.filter((query) =>
+      query.trim().toUpperCase().startsWith('SELECT'),
+    );
+    expect(selectQueries.length).toBeGreaterThanOrEqual(1);
   });
 
   it('(b) grava o transitionType EXATAMENTE como informado, mesmo quando a decisão automática produziria outro valor (histórico já contém CONCLUSAO, override ABERTURA)', async () => {

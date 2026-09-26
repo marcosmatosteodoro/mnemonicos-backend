@@ -8,6 +8,7 @@ import { prisma } from '../../lib/prisma';
 import type { PublicationVariant } from '../../domain/types';
 import {
   hasVersionedContentChanged,
+  toVersionedContentFields,
   type VersionedContentFields,
 } from '../content-versions/versioned-content-diff';
 import { ACTIVE_RAW_CONTENT_WHERE, type ContentActor } from '../contents/contents.service';
@@ -435,19 +436,7 @@ export async function exportPublication(
 
   const version = await resolveVersionStampForPdf(
     rawContentId,
-    {
-      rawText: rawContent.rawText,
-      radarClass: rawContent.radarClass,
-      sourceType: rawContent.sourceType,
-      sourceCitation: rawContent.sourceCitation,
-      sourceUrl: rawContent.sourceUrl,
-      concept: breakdown.concept,
-      action: breakdown.action,
-      object: breakdown.object,
-      condition: breakdown.condition,
-      exception: breakdown.exception,
-      essence: breakdown.essence,
-    },
+    toVersionedContentFields(rawContent, breakdown),
     db,
   );
 
