@@ -1,3 +1,5 @@
+import { PDFDocument } from 'pdf-lib';
+
 import { env } from '../../config/env';
 import type { Prisma } from '../../generated/prisma/client';
 import { GenerationTimeoutError, NothingToExportError, NotFoundError } from '../../http/errors';
@@ -12,10 +14,13 @@ import { getVisualAssociationBinary } from '../visual-associations/visual-associ
 import {
   buildStripPdf,
   buildSummaryPdf,
+  buildSupplementaryPagesPdf,
   type ImageSkippedInfo,
   type PublicationPdfMeta,
   type StripFrameForPdf,
+  type SupplementarySections,
 } from './pdf-composer';
+import { getReviewProtocolMarks } from './review-protocol';
 
 /**
  * Orquestração da exportação (COMP-025-005, PLAN-025 §3): função central que combina a
@@ -37,7 +42,8 @@ export interface PublicationResult {
 /**
  * Cliente Prisma injetável (PLAN-025 §3): superconjunto do cliente privado de
  * `tira.service.ts` (precisa cobrir tudo que `openMnemonicStrip` exige), mais
- * `publicationEvent` (DEC-025-005).
+ * `publicationEvent` (DEC-025-005). Ganha `'contrast' | 'productionFlashcard'`
+ * (COMP-027-018, PLAN-027 §3): leitura suplementar da Exportação (F7).
  */
 type PublicationClient = Pick<
   typeof prisma,
@@ -49,6 +55,8 @@ type PublicationClient = Pick<
   | 'visualAssociationLinkEvent'
   | 'productionStageEvent'
   | 'publicationEvent'
+  | 'contrast'
+  | 'productionFlashcard'
   | '$transaction'
 >;
 
@@ -74,18 +82,23 @@ type RuleBreakdownForPublication = Prisma.RuleBreakdownGetPayload<{
  * abrir um oráculo de distinção entre os dois mecanismos. Um único `findFirst` já resolve
  * "não existe" e "soft-deleted" como o MESMO caso (nenhuma checagem de autoria caberia
  * entre os dois, então a precedência de guarda de AC-024-019 é garantida por construção).
+ *
+ * `select` ganha `pegadinhaText` (COMP-027-018, PLAN-027 §3): é o MESMO round-trip da
+ * guarda, sem I/O adicional — devolvido ao chamador para compor `SupplementarySections`
+ * sem uma 2ª leitura de `RawContent`.
  */
 async function assertRawContentExportable(
   rawContentId: string,
   db: Pick<PublicationClient, 'rawContent'>,
-): Promise<void> {
+): Promise<{ pegadinhaText: string | null }> {
   const row = await db.rawContent.findFirst({
     where: { id: rawContentId, ...ACTIVE_RAW_CONTENT_WHERE },
-    select: { id: true },
+    select: { id: true, pegadinhaText: true },
   });
   if (row === null) {
     throw new NotFoundError('Conteúdo bruto não encontrado.');
   }
+  return { pegadinhaText: row.pegadinhaText };
 }
 
 /**
@@ -182,15 +195,16 @@ async function resolveOrderedFramesForStrip(
 }
 
 /**
- * Passos 3/4 — composição em si, escopada à Variante. `RESUMO` compõe direto sobre a
- * Quebra lida no Passo 2 (nenhuma leitura adicional); `TIRA` resolve os Quadros
+ * Passos 3/4 — composição do PDF PRINCIPAL, escopada à Variante. `RESUMO` compõe direto
+ * sobre a Quebra lida no Passo 2 (nenhuma leitura adicional); `TIRA` resolve os Quadros
  * (`resolveOrderedFramesForStrip` acima) e embute a imagem de cada um vinculado a uma
  * Associação visual, chamando `buildStripPdf` com o callback `onImageSkipped` que loga
  * (nunca lança) o descarte de uma imagem recusada por `buildStripPdf`/`embedFrameImage`
  * (TASK-025-007) — SÓ metadado (índice, formato, motivo enum), nunca `buffer`/bytes da
- * imagem nem texto do Quadro.
+ * imagem nem texto do Quadro. Chamada por `composePublicationBuffer` (COMP-027-018), que
+ * soma a esta a composição suplementar antes de devolver o documento final.
  */
-async function composePublicationBuffer(
+async function composeVariantBuffer(
   rawContentId: string,
   variant: PublicationVariant,
   actor: ContentActor,
@@ -227,6 +241,94 @@ async function composePublicationBuffer(
 }
 
 /**
+ * Leitura suplementar (COMP-027-018, PLAN-027 §3/§4 Fluxo 5): Contrastes e
+ * `ProductionFlashcard`s do `rawContentId`, ordenados por `createdAt asc` (AC-026-012,
+ * mesma ordem de `listContrasts`/`listFlashcards`) — `Promise.all` (NFR-026-003, 2
+ * `findMany` locais a mais, sem `scopeWhere`: a guarda comum já foi resolvida pelo Passo 1
+ * de `exportPublication`, DEC-025-007, não redecidida aqui). `pegadinhaText` chega pronto
+ * (já lido no Passo 1, não uma 2ª consulta) e o Protocolo é sempre gerado
+ * (`getReviewProtocolMarks`, COMP-027-016 — FR-026-021, não depende de nenhum registro).
+ */
+async function loadSupplementarySections(
+  rawContentId: string,
+  pegadinhaText: string | null,
+  db: PublicationClient,
+): Promise<SupplementarySections> {
+  const [contrasts, flashcards] = await Promise.all([
+    db.contrast.findMany({
+      where: { rawContentId },
+      orderBy: { createdAt: 'asc' },
+      select: { confusableText: true, distinctionText: true },
+    }),
+    db.productionFlashcard.findMany({
+      where: { rawContentId },
+      orderBy: { createdAt: 'asc' },
+      select: { question: true, answer: true },
+    }),
+  ]);
+
+  return {
+    contrasts,
+    pegadinhaText,
+    flashcards,
+    protocol: getReviewProtocolMarks(),
+  };
+}
+
+/**
+ * Funde as páginas do PDF suplementar ao final do PDF principal (DEC-027-006):
+ * `PDFDocument.load` dos 2 `Buffer`s já prontos, `copyPages` de TODAS as páginas do
+ * suplementar para o principal, `.save()` de novo — 1 único documento final, em AMBAS as
+ * Variantes.
+ */
+async function mergeSupplementaryPages(
+  primaryBuffer: Buffer,
+  supplementaryBuffer: Buffer,
+): Promise<Buffer> {
+  const primaryDoc = await PDFDocument.load(primaryBuffer);
+  const supplementaryDoc = await PDFDocument.load(supplementaryBuffer);
+
+  const copiedPages = await primaryDoc.copyPages(
+    supplementaryDoc,
+    supplementaryDoc.getPageIndices(),
+  );
+  for (const page of copiedPages) {
+    primaryDoc.addPage(page);
+  }
+
+  const bytes = await primaryDoc.save();
+  return Buffer.from(bytes);
+}
+
+/**
+ * Orquestração da composição completa (COMP-027-018, DEC-027-006): o PDF principal
+ * (`composeVariantBuffer`) e a leitura suplementar (`loadSupplementarySections`) rodam em
+ * `Promise.all` — a leitura de Contraste/Flashcard não soma latência sequencial ao que já
+ * é composto (NFR-026-003). A composição suplementar em si (`buildSupplementaryPagesPdf`)
+ * só pode rodar DEPOIS da leitura (precisa do resultado) e a fusão
+ * (`mergeSupplementaryPages`) só depois dos 2 `Buffer`s prontos — nessa ordem, para AMBAS
+ * as Variantes (A-026-007).
+ */
+async function composePublicationBuffer(
+  rawContentId: string,
+  variant: PublicationVariant,
+  actor: ContentActor,
+  breakdown: RuleBreakdownForPublication,
+  pegadinhaText: string | null,
+  meta: PublicationPdfMeta,
+  db: PublicationClient,
+): Promise<Buffer> {
+  const [primaryBuffer, sections] = await Promise.all([
+    composeVariantBuffer(rawContentId, variant, actor, breakdown, meta, db),
+    loadSupplementarySections(rawContentId, pegadinhaText, db),
+  ]);
+
+  const supplementaryBuffer = await buildSupplementaryPagesPdf(sections, meta);
+
+  return mergeSupplementaryPages(primaryBuffer, supplementaryBuffer);
+}
+
+/**
  * `exportPublication` (COMP-025-005) — ordem exata:
  * 1. `assertRawContentExportable` — guarda nova de alcance (DEC-025-007).
  * 2. Leitura de BAIXO NÍVEL da Quebra da regra, direto no `db` — `NotFoundError` se ainda
@@ -250,7 +352,7 @@ export async function exportPublication(
   actor: ContentActor,
   db: PublicationClient = prisma,
 ): Promise<PublicationResult> {
-  await assertRawContentExportable(rawContentId, db);
+  const { pegadinhaText } = await assertRawContentExportable(rawContentId, db);
 
   const breakdown = await db.ruleBreakdown.findUnique({
     where: { rawContentId },
@@ -263,7 +365,15 @@ export async function exportPublication(
   const meta: PublicationPdfMeta = { variant: input.variant, generatedAt: new Date() };
 
   const buffer = await withDeadline(
-    composePublicationBuffer(rawContentId, input.variant, actor, breakdown, meta, db),
+    composePublicationBuffer(
+      rawContentId,
+      input.variant,
+      actor,
+      breakdown,
+      pegadinhaText,
+      meta,
+      db,
+    ),
     env.PUBLICATION_PDF_TIMEOUT_MS,
   );
 

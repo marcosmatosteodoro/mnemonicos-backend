@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
+import { PDFDocument } from 'pdf-lib';
+
 import { env } from '../../src/config/env';
 import { GenerationTimeoutError, NothingToExportError, NotFoundError } from '../../src/http/errors';
 import { logger } from '../../src/lib/logger';
@@ -11,8 +13,10 @@ import { openMnemonicStrip } from '../../src/modules/tira/tira.service';
 import * as pdfComposer from '../../src/modules/publication/pdf-composer';
 import type { StripFrameForPdf } from '../../src/modules/publication/pdf-composer';
 import { exportPublication } from '../../src/modules/publication/publication.service';
+import { getReviewProtocolMarks } from '../../src/modules/publication/review-protocol';
 import * as visualAssociationsService from '../../src/modules/visual-associations/visual-associations.service';
 import { buildValidPngNxN } from '../support/png-fixtures';
+import { decodedDocumentText, hexOfAscii } from '../support/pdf-text';
 import {
   createRawContent,
   createTopic,
@@ -36,6 +40,46 @@ import { closeTestDb, resetDb, testPrisma } from './db';
  * `visual-association-fixtures.ts` (`actorOf`, `PNG_FIXTURE_BUFFER`,
  * `WEBP_FIXTURE_BUFFER`) — não recria fixture equivalente.
  */
+
+/** PDF mínimo (1 página em branco) — usado onde o teste mocka `buildStripPdf`/
+ * `buildSummaryPdf` diretamente: `exportPublication` sempre funde o resultado a um PDF
+ * suplementar via `PDFDocument.load` (DEC-027-006), que rejeita um `Buffer` que não seja um
+ * PDF genuíno — um mock literal (`Buffer.from('pdf-fake')`) não atravessa a fusão. */
+async function buildMinimalPdfBuffer(): Promise<Buffer> {
+  const doc = await PDFDocument.create();
+  doc.addPage();
+  const bytes = await doc.save();
+  return Buffer.from(bytes);
+}
+
+/**
+ * Seeds locais de Contraste/`ProductionFlashcard` (COMP-027-018): `createdAt` opcional —
+ * quando informado, sobrepõe o `@default(now())` do schema para os testes de ORDEM
+ * (AC-026-012) poderem inverter deliberadamente a ordem de CRIAÇÃO/inserção física da
+ * ordem de `createdAt`, isolando a garantia de `orderBy: { createdAt: 'asc' }` de uma
+ * ordem de tabela que só coincidiria por acaso.
+ */
+async function seedContrast(
+  rawContentId: string,
+  authorId: string,
+  fields: { confusableText: string; distinctionText: string; createdAt?: Date },
+) {
+  const { createdAt, ...rest } = fields;
+  return testPrisma.contrast.create({
+    data: { rawContentId, authorId, ...rest, ...(createdAt && { createdAt }) },
+  });
+}
+
+async function seedFlashcard(
+  rawContentId: string,
+  authorId: string,
+  fields: { question: string; answer: string; createdAt?: Date },
+) {
+  const { createdAt, ...rest } = fields;
+  return testPrisma.productionFlashcard.create({
+    data: { rawContentId, authorId, ...rest, ...(createdAt && { createdAt }) },
+  });
+}
 
 /** Captura o erro de uma chamada que deve rejeitar — evita duplicar a chamada real. */
 async function captureError(fn: () => Promise<unknown>): Promise<unknown> {
@@ -171,10 +215,11 @@ describe('exportPublication — Variante TIRA mapeia binário real para StripFra
     });
     // strip.frames[2] permanece sem vínculo.
 
+    const fakeStripBuffer = await buildMinimalPdfBuffer();
     let capturedFrames: StripFrameForPdf[] | undefined;
     jest.spyOn(pdfComposer, 'buildStripPdf').mockImplementation((frames) => {
       capturedFrames = [...frames];
-      return Promise.resolve(Buffer.from('pdf-fake'));
+      return Promise.resolve(fakeStripBuffer);
     });
     const getBinarySpy = jest.spyOn(visualAssociationsService, 'getVisualAssociationBinary');
 
@@ -184,7 +229,7 @@ describe('exportPublication — Variante TIRA mapeia binário real para StripFra
       actorOf(editor),
       testPrisma,
     );
-    expect(result.buffer.toString()).toBe('pdf-fake');
+    expect(result.buffer.length).toBeGreaterThan(0);
 
     expect(capturedFrames).toBeDefined();
     const frames = capturedFrames!;
@@ -576,4 +621,325 @@ describe('exportPublication — filename segue o formato exato ${rawContentId}-$
       expect(result.filename).toBe(`${rawContent.id}-${suffix}-rascunho.pdf`);
     },
   );
+});
+
+/**
+ * COMP-027-018 (TASK-027-006) — composição suplementar (Contraste/Pegadinha/Flashcard/
+ * Protocolo) fundida ao PDF principal, em AMBAS as Variantes (A-026-007). Os textos de
+ * fixture são tokens curtos, sem espaço interno (mesma convenção de
+ * `pdf-composer.test.ts`) — cabem numa única linha, o que garante que o hex de
+ * `hexOfAscii(text)` seja uma substring CONTÍGUA do content stream (uma quebra de linha
+ * fatiaria o texto em 2 operadores `Tj` distintos).
+ */
+describe('exportPublication — Flashcards na ordem de CRIAÇÃO, em ambas as Variantes (AC-026-012, FR-026-020)', () => {
+  it.each(['RESUMO', 'TIRA'] as const)(
+    'Variante %s: o 1º Flashcard criado aparece ANTES do 2º; a leitura pede `orderBy: createdAt asc` explicitamente',
+    async (variant) => {
+      const editor = await createUser('EDITOR');
+      const topicId = await createTopic();
+      const rawContent = await createRawContent(editor.id, topicId);
+      await seedRuleBreakdown(rawContent.id);
+
+      const baseTime = Date.now();
+      // Inserida 1ª na tabela, mas com `createdAt` POSTERIOR — desalinha a ordem de
+      // CRIAÇÃO da ordem física de inserção (checagem de comportamento COMPLEMENTAR ao spy
+      // abaixo). A tabela tem índice `production_flashcards_rawContentId_createdAt_idx`,
+      // que o Postgres pode escolher para o filtro por `rawContentId` mesmo sem `orderBy`
+      // explícito — nesse plano a ordem devolvida já sai correta por COINCIDÊNCIA (a
+      // varredura segue a ordem do próprio índice). Por isso o spy abaixo, não este par de
+      // datas isolado, é o oráculo que de fato falsifica o mutante "remover `orderBy`".
+      await seedFlashcard(rawContent.id, editor.id, {
+        question: 'FLASHCARDB_PERGUNTA',
+        answer: 'FLASHCARDB_RESPOSTA',
+        createdAt: new Date(baseTime + 60_000),
+      });
+      // Inserida 2ª na tabela, mas com `createdAt` ANTERIOR — é a 1ª na ordem de CRIAÇÃO
+      // real que AC-026-012 exige.
+      await seedFlashcard(rawContent.id, editor.id, {
+        question: 'FLASHCARDA_PERGUNTA',
+        answer: 'FLASHCARDA_RESPOSTA',
+        createdAt: new Date(baseTime),
+      });
+
+      const findManySpy = jest.spyOn(testPrisma.productionFlashcard, 'findMany');
+
+      const result = await exportPublication(
+        rawContent.id,
+        { variant },
+        actorOf(editor),
+        testPrisma,
+      );
+      const doc = await PDFDocument.load(result.buffer);
+      const text = decodedDocumentText(doc);
+
+      const indexA = text.indexOf(hexOfAscii('FLASHCARDA_PERGUNTA'));
+      const indexB = text.indexOf(hexOfAscii('FLASHCARDB_PERGUNTA'));
+
+      expect(indexA).toBeGreaterThanOrEqual(0);
+      expect(indexB).toBeGreaterThanOrEqual(0);
+      expect(indexA).toBeLessThan(indexB);
+
+      // Mutante-alvo (AC-026-012, lição ativa): `findMany` sem
+      // `orderBy: { createdAt: 'asc' }` faz este `toHaveBeenCalledWith` reprovar.
+      expect(findManySpy).toHaveBeenCalledWith(
+        expect.objectContaining({ orderBy: { createdAt: 'asc' } }),
+      );
+    },
+  );
+});
+
+describe('exportPublication — Protocolo impresso com os 6 Marcos na ordem fixa, em ambas as Variantes (AC-026-013, FR-026-021)', () => {
+  it.each(['RESUMO', 'TIRA'] as const)(
+    'Variante %s: os 6 labels de getReviewProtocolMarks() aparecem no PDF, na MESMA ordem',
+    async (variant) => {
+      const editor = await createUser('EDITOR');
+      const topicId = await createTopic();
+      const rawContent = await createRawContent(editor.id, topicId);
+      await seedRuleBreakdown(rawContent.id);
+
+      const result = await exportPublication(
+        rawContent.id,
+        { variant },
+        actorOf(editor),
+        testPrisma,
+      );
+      const doc = await PDFDocument.load(result.buffer);
+      const text = decodedDocumentText(doc);
+
+      const marks = getReviewProtocolMarks();
+
+      // Contra a ordem CANÔNICA fixa (não contra a própria `marks` lida de volta — um
+      // `getReviewProtocolMarks()` reordenado devolveria `marks` já na ordem errada, e
+      // comparar `indices` só contra o `sort()` de si mesmo nunca reprovaria: é sempre
+      // internamente consistente). Mutante-alvo (AC-026-013): reordenar 2 Marcos em
+      // `getReviewProtocolMarks()` faz este `toEqual` reprovar.
+      expect(marks.map((mark) => mark.code)).toEqual(['R0', 'R24', 'R3', 'R7', 'R14', 'R30']);
+
+      const indices = marks.map((mark) => text.indexOf(hexOfAscii(mark.label)));
+      expect(indices.every((index) => index >= 0)).toBe(true);
+      // Confirma que a composição do PDF PRESERVA essa ordem (não a embaralha ao desenhar).
+      expect(indices).toEqual([...indices].sort((a, b) => a - b));
+    },
+  );
+});
+
+describe('exportPublication — Contrastes (Confundível + distinção) incluídos, em ambas as Variantes (AC-026-020, FR-026-026)', () => {
+  it.each(['RESUMO', 'TIRA'] as const)(
+    'Variante %s: os 2 Contrastes registrados aparecem no PDF (Confundível + distinção de AMBOS)',
+    async (variant) => {
+      const editor = await createUser('EDITOR');
+      const topicId = await createTopic();
+      const rawContent = await createRawContent(editor.id, topicId);
+      await seedRuleBreakdown(rawContent.id);
+
+      await seedContrast(rawContent.id, editor.id, {
+        confusableText: 'CONFUNDIVELUM',
+        distinctionText: 'DISTINCAOUM',
+      });
+      await seedContrast(rawContent.id, editor.id, {
+        confusableText: 'CONFUNDIVELDOIS',
+        distinctionText: 'DISTINCAODOIS',
+      });
+
+      const result = await exportPublication(
+        rawContent.id,
+        { variant },
+        actorOf(editor),
+        testPrisma,
+      );
+      const doc = await PDFDocument.load(result.buffer);
+      const text = decodedDocumentText(doc);
+
+      expect(text).toContain(hexOfAscii('CONFUNDIVELUM'));
+      expect(text).toContain(hexOfAscii('DISTINCAOUM'));
+      expect(text).toContain(hexOfAscii('CONFUNDIVELDOIS'));
+      expect(text).toContain(hexOfAscii('DISTINCAODOIS'));
+    },
+  );
+});
+
+describe('exportPublication — Pegadinha elaborada incluída, em ambas as Variantes (AC-026-021, FR-026-027)', () => {
+  it.each(['RESUMO', 'TIRA'] as const)(
+    'Variante %s: o texto da Pegadinha elaborada aparece no PDF',
+    async (variant) => {
+      const editor = await createUser('EDITOR');
+      const topicId = await createTopic();
+      const rawContent = await createRawContent(editor.id, topicId);
+      await seedRuleBreakdown(rawContent.id);
+      await testPrisma.rawContent.update({
+        where: { id: rawContent.id },
+        data: { pegadinhaText: 'PEGADINHATEXTOXPTO' },
+      });
+
+      const result = await exportPublication(
+        rawContent.id,
+        { variant },
+        actorOf(editor),
+        testPrisma,
+      );
+      const doc = await PDFDocument.load(result.buffer);
+      const text = decodedDocumentText(doc);
+
+      expect(text).toContain(hexOfAscii('PEGADINHATEXTOXPTO'));
+    },
+  );
+});
+
+/**
+ * AC-026-017/AC-026-022 — omissão de seção sem página vazia e sem erro (FR-026-028/023).
+ * A composição suplementar NÃO diverge por Variante (DEC-027-006: "conteúdo suplementar
+ * não muda por Variante") — testar 1 Variante (RESUMO, `breakdown` curto = SEMPRE 1
+ * página principal, já confirmado por `buildSummaryPdf — AC-024-002`) já cobre a garantia;
+ * a contagem de página SUPLEMENTAR é a mesma para TIRA.
+ */
+describe('exportPublication — sem Flashcard registrado: documento sem seção de Flashcards e sem erro (AC-026-017, FR-026-023)', () => {
+  it('0 Contraste/Pegadinha/Flashcard: só o Protocolo soma página suplementar (1) — nenhuma seção omitida gera página vazia', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const rawContent = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdown(rawContent.id);
+
+    const result = await exportPublication(
+      rawContent.id,
+      { variant: 'RESUMO' },
+      actorOf(editor),
+      testPrisma,
+    );
+    expect(result.buffer.length).toBeGreaterThan(0);
+
+    const doc = await PDFDocument.load(result.buffer);
+    // Mutante-alvo (AC-026-017): `buildSupplementaryPagesPdf` desenhando uma página vazia
+    // para a seção de Flashcards ausente somaria 1 página a mais — 1 (principal) + 1
+    // (Protocolo) + 1 (página vazia espúria) = 3, reprovando este `toBe(2)`.
+    expect(doc.getPageCount()).toBe(2);
+
+    const text = decodedDocumentText(doc);
+    const marks = getReviewProtocolMarks();
+    for (const mark of marks) {
+      expect(text).toContain(hexOfAscii(mark.label));
+    }
+  });
+});
+
+describe('exportPublication — omissão independente de Contraste e de Pegadinha, sem erro (AC-026-022, FR-026-028)', () => {
+  it('sem Contraste (com Pegadinha + Flashcard presentes): nenhum texto de seção de Contraste aparece; resolve com sucesso', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const rawContent = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdown(rawContent.id);
+    await testPrisma.rawContent.update({
+      where: { id: rawContent.id },
+      data: { pegadinhaText: 'PEGADINHASEMCONTRASTE' },
+    });
+    await seedFlashcard(rawContent.id, editor.id, {
+      question: 'FLASHCARDSEMCONTRASTEPERGUNTA',
+      answer: 'FLASHCARDSEMCONTRASTERESPOSTA',
+    });
+
+    const result = await exportPublication(
+      rawContent.id,
+      { variant: 'RESUMO' },
+      actorOf(editor),
+      testPrisma,
+    );
+    expect(result.buffer.length).toBeGreaterThan(0);
+
+    const doc = await PDFDocument.load(result.buffer);
+    // Asserção PRÓPRIA de ausência (via contagem — uma seção OMITIDA nunca cria página,
+    // mesmo vazia, ao contrário de uma seção apenas ESVAZIADA de texto): 1 (principal) + 1
+    // (Pegadinha) + 1 (Flashcard) + 1 (Protocolo) = 4 — uma página extra espúria para o
+    // Contraste ausente reprovaria; a busca textual abaixo sozinha NÃO pegaria esse
+    // mutante (0 Contrastes já produz 0 texto "Confundível:"/"Distinção:" com OU sem a
+    // guarda de omissão — a lista vazia nunca gera o texto, só a página).
+    expect(doc.getPageCount()).toBe(4);
+
+    const text = decodedDocumentText(doc);
+
+    // Asserção PRÓPRIA de ausência (nunca agregada com o sub-caso seguinte): nenhum dos 2
+    // marcadores da seção de Contraste aparece — a seção inteira foi omitida, não só
+    // esvaziada.
+    expect(text).not.toContain(hexOfAscii('Confundível:'));
+    expect(text).not.toContain(hexOfAscii('Distinção:'));
+
+    // As demais seções (Pegadinha, Flashcard, Protocolo) continuam presentes.
+    expect(text).toContain(hexOfAscii('PEGADINHASEMCONTRASTE'));
+    expect(text).toContain(hexOfAscii('FLASHCARDSEMCONTRASTEPERGUNTA'));
+  });
+
+  it('sem Pegadinha (com Contraste + Flashcard presentes): nenhuma página suplementar extra é gerada para ela; resolve com sucesso', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const rawContent = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdown(rawContent.id);
+    await seedContrast(rawContent.id, editor.id, {
+      confusableText: 'CONFUNDIVELSEMPEGADINHA',
+      distinctionText: 'DISTINCAOSEMPEGADINHA',
+    });
+    await seedFlashcard(rawContent.id, editor.id, {
+      question: 'FLASHCARDSEMPEGADINHAPERGUNTA',
+      answer: 'FLASHCARDSEMPEGADINHARESPOSTA',
+    });
+
+    const result = await exportPublication(
+      rawContent.id,
+      { variant: 'RESUMO' },
+      actorOf(editor),
+      testPrisma,
+    );
+    expect(result.buffer.length).toBeGreaterThan(0);
+
+    const doc = await PDFDocument.load(result.buffer);
+    // Asserção PRÓPRIA de ausência (via contagem, já que o texto da Pegadinha nunca tem
+    // marcador de seção próprio): 1 (principal) + 1 (Contraste) + 1 (Flashcard) +
+    // 1 (Protocolo) = 4 — uma página extra espúria para a Pegadinha ausente reprovaria.
+    expect(doc.getPageCount()).toBe(4);
+
+    const text = decodedDocumentText(doc);
+    expect(text).toContain(hexOfAscii('CONFUNDIVELSEMPEGADINHA'));
+    expect(text).toContain(hexOfAscii('FLASHCARDSEMPEGADINHAPERGUNTA'));
+  });
+});
+
+describe('exportPublication — NFR-026-003: Contraste/Flashcard/Protocolo dentro do teto JÁ existente (TRISK-027-005)', () => {
+  it('Variante TIRA com Tira real + 5 Contrastes + 5 Flashcards reais: resolve bem abaixo do teto default, sem I/O de rede adicional', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const rawContent = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdown(rawContent.id);
+    const actor = actorOf(editor);
+
+    // Mesma carga de imagem REAL/pesada da prova de teto já existente (`buildValidPngNxN`,
+    // 1500x1500 — CPU-bound de verdade, nunca dublê de timer, lição ativa) — soma N
+    // Contrastes/Flashcards reais por cima, para medir o custo INCREMENTAL desta TASK
+    // sobre a carga que já tensionava NFR-024-... (TRISK-027-005).
+    const strip = await openMnemonicStrip(rawContent.id, actor, testPrisma);
+    const realPng = buildValidPngNxN(1500, 1500);
+    for (const frame of strip.frames) {
+      const association = await seedVisualAssociation(editor.id, { imageData: realPng });
+      await testPrisma.mnemonicFrame.update({
+        where: { id: frame.id },
+        data: { visualAssociationId: association.id },
+      });
+    }
+    for (let i = 0; i < 10; i++) {
+      await seedContrast(rawContent.id, editor.id, {
+        confusableText: `CONFUNDIVELCARGA${i}`,
+        distinctionText: `DISTINCAOCARGA${i}`,
+      });
+      await seedFlashcard(rawContent.id, editor.id, {
+        question: `PERGUNTACARGA${i}`,
+        answer: `RESPOSTACARGA${i}`,
+      });
+    }
+
+    const startedAt = Date.now();
+    const result = await exportPublication(rawContent.id, { variant: 'TIRA' }, actor, testPrisma);
+    const elapsedMs = Date.now() - startedAt;
+
+    expect(result.buffer.length).toBeGreaterThan(0);
+    // Condição de aprovação de NFR-026-003 (não a diferença antes/depois): a duração
+    // pós-fusão fica abaixo do teto JÁ existente — `env.PUBLICATION_PDF_TIMEOUT_MS` NUNCA
+    // é sobreposto neste teste (nenhum teto novo, Não inclui desta TASK).
+    expect(elapsedMs).toBeLessThan(env.PUBLICATION_PDF_TIMEOUT_MS);
+  }, 15000);
 });
