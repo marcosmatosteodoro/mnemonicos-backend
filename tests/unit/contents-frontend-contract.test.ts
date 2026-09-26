@@ -240,11 +240,6 @@ describe('paridade cross-repo — ProductionFlashcard (TASK-027-004)', () => {
 });
 
 describe('paridade cross-repo — ContentVersion (TASK-029-004)', () => {
-  // Mesma forma dos 2 blocos acima: `domain/types.ts::ContentVersion` (espelho
-  // do model Prisma nos dois repos, COMP-029-009) contra o frontend, e
-  // `ContentVersionDetail` (payload HTTP real, content-versions.service.ts,
-  // TASK-029-002) contra o frontend — mesmo par duplo já aplicado a
-  // `Contrast`/`ContrastDetail` e `ProductionFlashcard`/`FlashcardDetail`.
   const backendDomainSource = readSourceFile(BACKEND_DOMAIN_TYPES);
   const backendContentVersionsServiceSource = readSourceFile(BACKEND_CONTENT_VERSIONS_SERVICE);
   const frontendSource = readSourceFile(FRONTEND_TYPES);

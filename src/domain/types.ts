@@ -191,9 +191,9 @@ export interface ProductionFlashcard {
 
 /**
  * Versão editorial fechada de um Conteúdo bruto (F8, SPEC-028) — espelha o
- * model `ContentVersion` de `prisma/schema.prisma`, só os 4 dados imutáveis
- * expostos para leitura (`id`/`number`/`legislativeClosureDate`/`authorId`/
- * `closedAt`). **Sem** `contentSnapshot` (dado interno de verificação, nunca
+ * model `ContentVersion` de `prisma/schema.prisma`, só os 6 dados imutáveis
+ * expostos para leitura (`id`/`rawContentId`/`number`/`legislativeClosureDate`/
+ * `authorId`/`closedAt`). **Sem** `contentSnapshot` (dado interno de verificação, nunca
  * exposto à UI, DEC-029-003). Espelhado em
  * `mnemonicos-frontend/src/types/domain.ts`: mudança de um lado entra no
  * mesmo diff que o outro, ou o contrato quebra em runtime sem o typecheck
