@@ -42,10 +42,11 @@ describe('ContentVersion — criada e lida de volta vinculada a RawContent/autor
     });
     const afterCreate = new Date();
 
-    // Se `@@map("content_versions")` ou o `@@unique([rawContentId, number])`
-    // estivesse errado, o `create` acima já teria rejeitado com erro do
-    // Postgres — a leitura de volta é a 2ª metade do contrato (o dado
-    // persistido é o dado lido).
+    // Se `@@map("content_versions")` estivesse errado (tabela inexistente), o
+    // `create` acima já teria rejeitado com erro do Postgres — a leitura de
+    // volta é a 2ª metade do contrato (o dado persistido é o dado lido). Quem
+    // prova o `@@unique([rawContentId, number])` é o describe de duplicidade
+    // abaixo, não este create isolado.
     const read = await testPrisma.contentVersion.findUniqueOrThrow({
       where: { id: contentVersion.id },
     });
