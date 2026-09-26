@@ -169,6 +169,7 @@ describe('paridade de tipos de domínio backend ⇆ frontend (NFR-002-007 / AC-0
       'PUBLICACAO_PDF',
       'QUEBRA_DA_REGRA',
       'TIRA_MNEMONICA',
+      'VERSAO_EDITORIAL',
     ]);
     // paridade real contra o schema Prisma — um valor novo em F4-F9 sem o
     // espelho em domain/types.ts deixa esta linha vermelha
