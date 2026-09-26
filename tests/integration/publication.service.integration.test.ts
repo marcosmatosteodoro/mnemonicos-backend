@@ -696,7 +696,7 @@ describe('exportPublication — Protocolo impresso com os 6 Marcos na ordem fixa
   );
 });
 
-describe('exportPublication — títulos das seções suplementares identificam cada seção (gate 11: Pegadinha sem rótulo era indistinguível do texto principal)', () => {
+describe('exportPublication — títulos das seções suplementares identificam cada seção', () => {
   it('CONTRASTES/PEGADINHA/FLASHCARDS/PROTOCOLO DE REVISÃO aparecem, cada um ANTES do conteúdo da própria seção', async () => {
     const editor = await createUser('EDITOR');
     const topicId = await createTopic();
@@ -733,7 +733,7 @@ describe('exportPublication — títulos das seções suplementares identificam 
     const indexProtocolTitle = text.indexOf(hexOfAscii('PROTOCOLO DE REVISÃO'));
     const indexProtocolBody = text.indexOf(hexOfAscii(getReviewProtocolMarks()[0]!.label));
 
-    // Mutante-alvo (gate 11): `drawSupplementarySection` sem desenhar `title` faz todos os
+    // Mutante-alvo: `drawSupplementarySection` sem desenhar `title` faz todos os
     // 4 `indexOf` de título devolverem -1.
     for (const index of [
       indexContrastesTitle,

@@ -315,11 +315,14 @@ export async function buildStripPdf(
  * quando a seção TEM conteúdo (o chamador decide a omissão, FR-026-028/023) — por isso
  * sempre produz >=1 página.
  *
- * `title` (gate 11 de design, achado de risco pedagógico) identifica a seção — desenhado em
- * CAIXA ALTA só na 1ª página, antes do 1º parágrafo: sem título a Pegadinha saía como texto
- * cru, indistinguível do conteúdo principal (o estudante podia decorar o "erro comum de
- * prova" como se fosse a regra). Página de TRANSBORDO não repete o título — os rótulos de
- * campo (`Confundível:`/`Pergunta:`/etc.) já identificam a página.
+ * `title` identifica a seção — desenhado em CAIXA ALTA só na 1ª página, antes do 1º
+ * parágrafo: sem título a Pegadinha saía como texto cru, indistinguível do conteúdo
+ * principal (o estudante podia decorar o "erro comum de prova" como se fosse a regra).
+ * Página de TRANSBORDO não repete o título — nas seções com rótulo de campo
+ * (`Confundível:`/`Pergunta:`/etc.) o próprio rótulo já identifica a página; a PEGADINHA é a
+ * exceção: é parágrafo único sem rótulo, e `updatePegadinhaSchema` não limita tamanho — texto
+ * longo o bastante para transbordar fica sem identificação na página de continuação (risco
+ * residual, RISK-027-008).
  */
 function drawSupplementarySection(
   doc: PDFDocument,
