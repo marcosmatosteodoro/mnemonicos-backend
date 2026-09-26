@@ -1228,6 +1228,12 @@ describe('savePegadinhaText — persiste independente da radarClass atual (AC-02
 
       const reread = await getRawContent(seeded.id, actorOf(editorA), testPrisma);
       expect(reread.pegadinhaText).toBe('Pegadinha: o prazo é decadencial, não prescricional.');
+
+      const events = await testPrisma.productionStageEvent.findMany({
+        where: { rawContentId: seeded.id, stageType: 'MATERIAL_REFORCO' },
+      });
+      expect(events).toHaveLength(1);
+      expect(events[0]?.transitionType).toBe('ABERTURA');
     },
   );
 });
@@ -1287,6 +1293,14 @@ describe('Guarda — mutação contável por método (decisão 4.139/4.232): B n
     await removePegadinhaText(seeded.id, actorOf(admin), testPrisma);
     const afterAdmin = await testPrisma.rawContent.findUniqueOrThrow({ where: { id: seeded.id } });
     expect(afterAdmin.pegadinhaText).toBeNull();
+
+    const events = await testPrisma.productionStageEvent.findMany({
+      where: { rawContentId: seeded.id, stageType: 'MATERIAL_REFORCO' },
+      orderBy: { sequence: 'asc' },
+    });
+    expect(events).toHaveLength(2);
+    expect(events[0]?.transitionType).toBe('ABERTURA');
+    expect(events[1]?.transitionType).toBe('CONCLUSAO');
   });
 });
 
@@ -1336,6 +1350,27 @@ describe('savePegadinhaText/getRawContent — preservação sob soft-delete (AC-
 
     const direct = await testPrisma.rawContent.findUnique({ where: { id: seeded.id } });
     expect(direct?.pegadinhaText).toBe('Valor anterior à remoção.');
+  });
+
+  it('removePegadinhaText contra RawContent JÁ soft-deleted → recusa (count 0); pegadinhaText permanece INALTERADO (nunca vira null)', async () => {
+    const editorA = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const seeded = await seedRawContent({ authorId: editorA.id, topicId });
+    await savePegadinhaText(
+      seeded.id,
+      pegadinhaInput('Pegadinha registrada antes da remoção do pai.'),
+      actorOf(editorA),
+      testPrisma,
+    );
+    await softDeleteRawContent(seeded.id, actorOf(editorA), testPrisma);
+
+    const message = await captureMessage(() =>
+      removePegadinhaText(seeded.id, actorOf(editorA), testPrisma),
+    );
+    expect(message).toBe('Conteúdo bruto não encontrado.');
+
+    const direct = await testPrisma.rawContent.findUnique({ where: { id: seeded.id } });
+    expect(direct?.pegadinhaText).toBe('Pegadinha registrada antes da remoção do pai.');
   });
 });
 
