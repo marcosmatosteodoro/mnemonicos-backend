@@ -30,6 +30,7 @@ describe('ContentVersion — criada e lida de volta vinculada a RawContent/autor
       concept: 'Vínculo jurídico entre Fisco e contribuinte.',
     };
 
+    const beforeCreate = new Date();
     const contentVersion = await testPrisma.contentVersion.create({
       data: {
         rawContentId: rawContent.id,
@@ -39,20 +40,27 @@ describe('ContentVersion — criada e lida de volta vinculada a RawContent/autor
         contentSnapshot,
       },
     });
+    const afterCreate = new Date();
 
-    // Se `@@map("content_versions")` ou alguma das 2 FKs `Restrict` novas
-    // estivesse errada, o `create` acima já teria rejeitado com erro do
+    // Se `@@map("content_versions")` ou o `@@unique([rawContentId, number])`
+    // estivesse errado, o `create` acima já teria rejeitado com erro do
     // Postgres — a leitura de volta é a 2ª metade do contrato (o dado
     // persistido é o dado lido).
-    await expect(
-      testPrisma.contentVersion.findUniqueOrThrow({ where: { id: contentVersion.id } }),
-    ).resolves.toMatchObject({
+    const read = await testPrisma.contentVersion.findUniqueOrThrow({
+      where: { id: contentVersion.id },
+    });
+    expect(read).toMatchObject({
       rawContentId: rawContent.id,
       authorId: editor.id,
       number: 1,
       legislativeClosureDate,
       contentSnapshot,
     });
+    // `expect.any(Date)` não mataria um mutante que trocasse `@default(now())`
+    // por um valor fixo — a janela [beforeCreate, afterCreate] é discriminante:
+    // só um `closedAt` calculado no instante do `create` cai dentro dela.
+    expect(read.closedAt.getTime()).toBeGreaterThanOrEqual(beforeCreate.getTime());
+    expect(read.closedAt.getTime()).toBeLessThanOrEqual(afterCreate.getTime());
   });
 });
 

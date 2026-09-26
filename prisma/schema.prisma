@@ -588,7 +588,8 @@ model ProductionFlashcard {
 /// Versão editorial — registro append-only do fechamento explícito de um
 /// Conteúdo bruto (F8, SPEC-028). Restrict nos dois FKs: mesma razão de
 /// Contrast/ProductionFlashcard (apagar o RawContent/autor fica bloqueado
-/// enquanto a Versão existir, até F8+ definir expurgo).
+/// enquanto a Versão existir, até uma fatia futura definir expurgo
+/// (RISK-028-005)).
 model ContentVersion {
   id String @id @default(uuid(7))
 
