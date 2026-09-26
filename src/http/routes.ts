@@ -1,6 +1,7 @@
 import { Router } from 'express';
 
 import { protectedAuthRoutes, publicAuthRoutes } from '../modules/auth/auth.routes';
+import { contentVersionsRoutes } from '../modules/content-versions/content-versions.routes';
 import { contentsRoutes } from '../modules/contents/contents.routes';
 import { contrastsRoutes } from '../modules/contrasts/contrasts.routes';
 import { disciplinesRoutes } from '../modules/disciplines/disciplines.routes';
@@ -26,7 +27,8 @@ import { ROUTE_ROLES, sealRouteRoles, type HttpMethod } from './route-roles';
  *      `ROUTE_ROLES` (403, mesmo com sessão válida — falha fechada);
  *   3. rotas protegidas — `protectedAuthRoutes`, `usersRoutes`,
  *      `disciplinesRoutes`, `contentsRoutes`, `contrastsRoutes`, `flashcardsRoutes`,
- *      `tiraRoutes`, `visualAssociationsRoutes`, `publicationRoutes` — cada uma declara
+ *      `tiraRoutes`, `visualAssociationsRoutes`, `publicationRoutes`, `contentVersionsRoutes`
+ *      — cada uma declara
  *      `"<MÉTODO> <caminho>"` em `ROUTE_ROLES` via `requireRole(...)` no ponto de
  *      montagem.
  *
@@ -57,6 +59,7 @@ apiRoutes.use(flashcardsRoutes);
 apiRoutes.use(tiraRoutes);
 apiRoutes.use(visualAssociationsRoutes);
 apiRoutes.use(publicationRoutes);
+apiRoutes.use(contentVersionsRoutes);
 
 /** Par `<MÉTODO> <caminho-completo>` de uma rota concreta da árvore plana. */
 export interface MountedRoute {

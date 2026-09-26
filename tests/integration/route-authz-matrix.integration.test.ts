@@ -151,7 +151,7 @@ afterAll(async () => {
 });
 
 describe('fonte de medição da métrica §1.3 — censo das rotas montadas', () => {
-  it('a árvore montada é exatamente estes 44 pares método+caminho (tripwire: rota nova sem atualizar a suíte falha aqui — TASK-027-005 somou as 2 rotas de Pegadinha, 42→44)', () => {
+  it('a árvore montada é exatamente estes 46 pares método+caminho (tripwire: rota nova sem atualizar a suíte falha aqui — TASK-029-002 somou as 2 rotas de Versão editorial, 44→46)', () => {
     expect(ROUTES.map(key).sort()).toEqual(
       [
         'GET /health',
@@ -198,6 +198,8 @@ describe('fonte de medição da métrica §1.3 — censo das rotas montadas', ()
         'PATCH /visual-associations/:id',
         'DELETE /visual-associations/:id',
         'POST /contents/:id/publication',
+        'POST /contents/:id/versions',
+        'GET /contents/:id/versions',
       ].sort(),
     );
   });
@@ -276,6 +278,7 @@ describe('AC-002-018 — nenhuma capacidade de auto-registro na superfície mont
       '/contents/:id/strip',
       '/contents/:id/strip/frames',
       '/contents/:id/strip/frames/:frameId/visual-association',
+      '/contents/:id/versions',
       '/visual-associations',
     ]);
   });
@@ -447,15 +450,17 @@ describe('TASK-006-011/TASK-025-009 — as 8 rotas de /contents sob a barreira (
 
   it('STUDENT recusado (403) nas 8 rotas — (i) a rota irmã estática GET /contents não "vaza" a permissividade para GET /contents/:id, nem vice-versa; (v) todas as 8 recusam STUDENT', async () => {
     // As 8 rotas da Tira (TASK-012-008/023-011), as 4 de Contraste
-    // (TASK-027-003), as 4 de Flashcard (TASK-027-004) e as 2 de Pegadinha
-    // (TASK-027-005) têm bloco de topologia próprio.
+    // (TASK-027-003), as 4 de Flashcard (TASK-027-004), as 2 de Pegadinha
+    // (TASK-027-005) e as 2 de Versão editorial (TASK-029-002) têm bloco de
+    // topologia próprio.
     const contentRoutes = NON_PUBLIC.filter(
       (route) =>
         route.path.startsWith('/contents') &&
         !route.path.startsWith('/contents/:id/strip') &&
         !route.path.startsWith('/contents/:id/contrasts') &&
         !route.path.startsWith('/contents/:id/flashcards') &&
-        !route.path.startsWith('/contents/:id/pegadinha'),
+        !route.path.startsWith('/contents/:id/pegadinha') &&
+        !route.path.startsWith('/contents/:id/versions'),
     );
     expect(contentRoutes.map(key).sort()).toEqual([...CONTENT_ROUTE_KEYS].sort());
 
@@ -566,6 +571,36 @@ describe('TASK-027-005 — as 2 rotas de Pegadinha sob a barreira (topologia adv
     const { access } = await seedSession('STUDENT');
 
     for (const route of pegadinhaRoutes) {
+      const res = await send(app, route.method, `/api/v1${concrete(route.path)}`).set(
+        'Cookie',
+        `${ACCESS_COOKIE}=${access}`,
+      );
+      expect(res.status).toBe(403);
+    }
+  });
+});
+
+describe('TASK-029-002 — as 2 rotas de Versão editorial sob a barreira (topologia adversarial)', () => {
+  const CONTENT_VERSION_ROUTE_KEYS = ['POST /contents/:id/versions', 'GET /contents/:id/versions'];
+
+  it('cada uma das 2 rotas está declarada como {EDITOR, ADMIN}; POST/GET no MESMO caminho têm chaves PRÓPRIAS — nenhuma herda a declaração da vizinha', () => {
+    for (const routeKey of CONTENT_VERSION_ROUTE_KEYS) {
+      expect(REGISTRY.get(routeKey)).toEqual(new Set<UserRole>(['EDITOR', 'ADMIN']));
+    }
+
+    expect(ROUTE_ROLES.has('POST /contents/:id/versions')).toBe(true);
+    expect(ROUTE_ROLES.has('GET /contents/:id/versions')).toBe(true);
+  });
+
+  it('STUDENT recusado (403) nas 2 rotas', async () => {
+    const contentVersionRoutes = NON_PUBLIC.filter((route) =>
+      route.path.startsWith('/contents/:id/versions'),
+    );
+    expect(contentVersionRoutes.map(key).sort()).toEqual([...CONTENT_VERSION_ROUTE_KEYS].sort());
+
+    const { access } = await seedSession('STUDENT');
+
+    for (const route of contentVersionRoutes) {
       const res = await send(app, route.method, `/api/v1${concrete(route.path)}`).set(
         'Cookie',
         `${ACCESS_COOKIE}=${access}`,
