@@ -70,9 +70,7 @@ export interface ContentVersionDetail {
  * Cliente Prisma injetável (mesmo padrão de `ContrastClient`): cobre
  * `contentVersion`, `rawContent` (exigido pelo tipo de `assertRawContentReachable`),
  * `ruleBreakdown` (leitura do par versionado), `$transaction` e
- * `productionStageEvent` (COMP-031-003/DEC-031-007 — `resolveAlterationSignal`
- * lê o evento de Tira emitido por `tira.service.ts`, sem importar nada desse
- * módulo além do valor do enum `stageType`).
+ * `productionStageEvent` (DEC-031-007).
  */
 type ContentVersionClient = Pick<
   typeof prisma,
