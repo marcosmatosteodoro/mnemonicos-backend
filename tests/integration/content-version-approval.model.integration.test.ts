@@ -3,9 +3,8 @@ import { closeTestDb, resetDb, testPrisma } from './db';
 
 /**
  * `ContentVersion.approvedById`/`approvedAt` — prova de contrato do schema
- * (TASK-031-001), sem passar por nenhum service (`approveContentVersion` nasce
- * em TASK-031-003). Grava/lê direto via `testPrisma`, mesmo molde de
- * `content-version.model.integration.test.ts` (TASK-029-001).
+ * (TASK-031-001), sem passar por nenhum service. Grava/lê direto via
+ * `testPrisma`, mesmo molde de `content-version.model.integration.test.ts`.
  */
 
 beforeEach(async () => {

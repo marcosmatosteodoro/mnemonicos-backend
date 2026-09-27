@@ -87,7 +87,7 @@ enum ProductionStageType {
   // nunca via decideStageTransition (DEC-029-005) — Versão editorial não tem
   // ciclo abertura/retrabalho.
   VERSAO_EDITORIAL
-  // NOVO (F9) — aditivo, sem redesenho do mecanismo (NFR-009-001/DEC-010-001,
+  // aditivo, sem redesenho do mecanismo (NFR-009-001/DEC-010-001,
   // agora também NFR-011-004). Emitido sempre como CONCLUSAO direto pelo ato de
   // aprovação (DEC-031-008) — aprovação de Versão não tem ciclo
   // abertura/retrabalho, mesma razão de VERSAO_EDITORIAL acima.
@@ -138,7 +138,7 @@ model User {
   productionFlashcards ProductionFlashcard[] @relation("ProductionFlashcardAuthor")
 
   contentVersions         ContentVersion[]
-  /// NOVO (F9, DEC-031-004): relação reversa nomeada — distinta de `contentVersions`
+  /// DEC-031-004: relação reversa nomeada — distinta de `contentVersions`
   /// (autoria/default) — de quem aprovou (`approvedById`) para as Versões aprovadas.
   contentVersionApprovals ContentVersion[] @relation("ContentVersionApprover")
 
@@ -617,11 +617,11 @@ model ContentVersion {
   /// fechamento (DEC-029-003) — nunca exposto à UI.
   contentSnapshot Json
 
-  /// NOVO (F9, DEC-031-004): estado de aprovação — colunas na MESMA linha, não uma
+  /// DEC-031-004: estado de aprovação — colunas na MESMA linha, não uma
   /// tabela 1:1 separada. `null` = ainda não aprovada (estado inicial de toda Versão
   /// recém-fechada, FR-030-006). Nunca sobrescrito depois de setado uma vez
-  /// (FR-030-005) — a garantia é o `updateMany` condicional em `approveContentVersion`
-  /// (TASK-031-003), não a ausência de coluna de update.
+  /// (FR-030-005) — a garantia é o `updateMany` condicional em `approveContentVersion`,
+  /// não a ausência de coluna de update.
   approvedById String?
   approver     User?     @relation("ContentVersionApprover", fields: [approvedById], references: [id], onDelete: Restrict)
   approvedAt   DateTime?
