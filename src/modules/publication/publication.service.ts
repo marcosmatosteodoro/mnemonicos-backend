@@ -6,6 +6,11 @@ import { GenerationTimeoutError, NothingToExportError, NotFoundError } from '../
 import { logger } from '../../lib/logger';
 import { prisma } from '../../lib/prisma';
 import type { PublicationVariant } from '../../domain/types';
+import {
+  hasVersionedContentChanged,
+  toVersionedContentFields,
+  type VersionedContentFields,
+} from '../content-versions/versioned-content-diff';
 import { ACTIVE_RAW_CONTENT_WHERE, type ContentActor } from '../contents/contents.service';
 import { recordProductionStageEvent } from '../production-events/production-events.service';
 import { openMnemonicStrip, type MnemonicFrameDetail } from '../tira/tira.service';
@@ -19,6 +24,7 @@ import {
   type PublicationPdfMeta,
   type StripFrameForPdf,
   type SupplementarySections,
+  type VersionStampForPdf,
 } from './pdf-composer';
 import { getReviewProtocolMarks } from './review-protocol';
 
@@ -43,7 +49,9 @@ export interface PublicationResult {
  * Cliente Prisma injetável (PLAN-025 §3): superconjunto do cliente privado de
  * `tira.service.ts` (precisa cobrir tudo que `openMnemonicStrip` exige), mais
  * `publicationEvent` (DEC-025-005). Inclui `'contrast' | 'productionFlashcard'`
- * (COMP-027-018, PLAN-027 §3): leitura suplementar da Exportação (F7).
+ * (COMP-027-018, PLAN-027 §3): leitura suplementar da Exportação (F7). Inclui
+ * `'contentVersion'` (COMP-029-007, TASK-029-003): leitura da Versão editorial mais
+ * recente para o carimbo do PDF — nunca escrita, esse módulo só lê.
  */
 type PublicationClient = Pick<
   typeof prisma,
@@ -57,6 +65,7 @@ type PublicationClient = Pick<
   | 'publicationEvent'
   | 'contrast'
   | 'productionFlashcard'
+  | 'contentVersion'
   | '$transaction'
 >;
 
@@ -85,20 +94,80 @@ type RuleBreakdownForPublication = Prisma.RuleBreakdownGetPayload<{
  *
  * `select` inclui `pegadinhaText` (COMP-027-018, PLAN-027 §3): mesmo round-trip da guarda,
  * sem I/O adicional — devolvido ao chamador para compor `SupplementarySections` sem uma
- * 2ª leitura de `RawContent`.
+ * 2ª leitura de `RawContent`. Ganha os 5 campos versionados de `RawContent`
+ * (`rawText`/`radarClass`/`sourceType`/`sourceCitation`/`sourceUrl`, TASK-029-003): mesmo
+ * round-trip, sem I/O adicional — devolvidos para `resolveVersionStampForPdf` montar o
+ * lado ATUAL da comparação (A-028-002/DEC-029-003), sem uma 3ª leitura de `RawContent`.
  */
 async function assertRawContentExportable(
   rawContentId: string,
   db: Pick<PublicationClient, 'rawContent'>,
-): Promise<{ pegadinhaText: string | null }> {
+): Promise<{
+  pegadinhaText: string | null;
+  rawText: string;
+  radarClass: VersionedContentFields['radarClass'];
+  sourceType: VersionedContentFields['sourceType'];
+  sourceCitation: string | null;
+  sourceUrl: string | null;
+}> {
   const row = await db.rawContent.findFirst({
     where: { id: rawContentId, ...ACTIVE_RAW_CONTENT_WHERE },
-    select: { id: true, pegadinhaText: true },
+    select: {
+      id: true,
+      pegadinhaText: true,
+      rawText: true,
+      radarClass: true,
+      sourceType: true,
+      sourceCitation: true,
+      sourceUrl: true,
+    },
   });
   if (row === null) {
     throw new NotFoundError('Conteúdo bruto não encontrado.');
   }
-  return { pegadinhaText: row.pegadinhaText };
+  return {
+    pegadinhaText: row.pegadinhaText,
+    rawText: row.rawText,
+    radarClass: row.radarClass,
+    sourceType: row.sourceType,
+    sourceCitation: row.sourceCitation,
+    sourceUrl: row.sourceUrl,
+  };
+}
+
+/**
+ * Passo 2b (COMP-029-007, TASK-029-003): a Versão editorial MAIS RECENTE já fechada
+ * (`orderBy: { number: 'desc' }`, DEC-029-006 — histórico de datas não implica ordem
+ * cronológica, então a busca é por `number`, nunca por `closedAt`/`legislativeClosureDate`)
+ * — `null` = nenhuma Versão fechada ainda (FR-028-009). Quando existe, compara o estado
+ * ATUAL (`current`, já lido nos Passos 1/2 sem 3ª consulta) contra o `contentSnapshot`
+ * gravado no fechamento (`closeContentVersion`, TASK-029-002) via
+ * `hasVersionedContentChanged` — o cast é seguro porque `contentSnapshot` só é gravado
+ * por aquela função, sempre na mesma forma (allowlist idêntica, ver
+ * `versioned-content-diff.ts`).
+ */
+async function resolveVersionStampForPdf(
+  rawContentId: string,
+  current: VersionedContentFields,
+  db: Pick<PublicationClient, 'contentVersion'>,
+): Promise<VersionStampForPdf | null> {
+  const latest = await db.contentVersion.findFirst({
+    where: { rawContentId },
+    orderBy: { number: 'desc' },
+    select: { number: true, legislativeClosureDate: true, contentSnapshot: true },
+  });
+  if (latest === null) return null;
+
+  const alteredAfterClosure = hasVersionedContentChanged(
+    current,
+    latest.contentSnapshot as unknown as VersionedContentFields,
+  );
+
+  return {
+    number: latest.number,
+    legislativeClosureDate: latest.legislativeClosureDate,
+    alteredAfterClosure,
+  };
 }
 
 /**
@@ -334,6 +403,9 @@ async function composePublicationBuffer(
  * 2. Leitura de BAIXO NÍVEL da Quebra da regra, direto no `db` — `NotFoundError` se ainda
  *    não foi salva (FR-024-002/AC-024-001), sem herdar a guarda de autoria de
  *    `getRuleBreakdown`.
+ * 2b. `resolveVersionStampForPdf` (COMP-029-007, TASK-029-003) — reusa os campos já lidos
+ *    nos passos 1/2 (nenhuma consulta nova de `RawContent`/`RuleBreakdown`), resolve a
+ *    Versão vigente (ou `null`, FR-028-009) para o carimbo do PDF.
  * 3/4. Composição do PDF por Variante (`composePublicationBuffer`), sob o teto de duração
  *    interno (`withDeadline`, DEC-025-002/FR-024-015).
  * 6. Sucesso: MESMA `$transaction` grava o evento de etapa genérico
@@ -352,7 +424,7 @@ export async function exportPublication(
   actor: ContentActor,
   db: PublicationClient = prisma,
 ): Promise<PublicationResult> {
-  const { pegadinhaText } = await assertRawContentExportable(rawContentId, db);
+  const rawContent = await assertRawContentExportable(rawContentId, db);
 
   const breakdown = await db.ruleBreakdown.findUnique({
     where: { rawContentId },
@@ -362,7 +434,13 @@ export async function exportPublication(
     throw new NotFoundError('Quebra da regra não encontrada.');
   }
 
-  const meta: PublicationPdfMeta = { variant: input.variant, generatedAt: new Date() };
+  const version = await resolveVersionStampForPdf(
+    rawContentId,
+    toVersionedContentFields(rawContent, breakdown),
+    db,
+  );
+
+  const meta: PublicationPdfMeta = { variant: input.variant, generatedAt: new Date(), version };
 
   const buffer = await withDeadline(
     composePublicationBuffer(
@@ -370,7 +448,7 @@ export async function exportPublication(
       input.variant,
       actor,
       breakdown,
-      pegadinhaText,
+      rawContent.pegadinhaText,
       meta,
       db,
     ),

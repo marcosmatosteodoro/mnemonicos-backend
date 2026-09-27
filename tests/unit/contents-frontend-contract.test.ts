@@ -33,6 +33,10 @@ const BACKEND_FLASHCARDS_SERVICE = resolve(
   __dirname,
   '../../src/modules/flashcards/flashcards.service.ts',
 );
+const BACKEND_CONTENT_VERSIONS_SERVICE = resolve(
+  __dirname,
+  '../../src/modules/content-versions/content-versions.service.ts',
+);
 const FRONTEND_TYPES = resolve(__dirname, '../../../mnemonicos-frontend/src/types/domain.ts');
 
 function readSourceFile(path: string): string {
@@ -231,6 +235,43 @@ describe('paridade cross-repo — ProductionFlashcard (TASK-027-004)', () => {
     // registrada para `ContrastDetail` (ver bloco acima / INDEX do slug).
     expect(backendPayloadFields).toEqual(
       ['id', 'rawContentId', 'authorId', 'question', 'answer', 'createdAt', 'updatedAt'].sort(),
+    );
+  });
+});
+
+describe('paridade cross-repo — ContentVersion (TASK-029-004)', () => {
+  const backendDomainSource = readSourceFile(BACKEND_DOMAIN_TYPES);
+  const backendContentVersionsServiceSource = readSourceFile(BACKEND_CONTENT_VERSIONS_SERVICE);
+  const frontendSource = readSourceFile(FRONTEND_TYPES);
+
+  it('ContentVersion: exatamente id/rawContentId/number/legislativeClosureDate/authorId/closedAt, nos dois lados — sem contentSnapshot fantasma no frontend (DEC-029-003)', () => {
+    const backendFields = extractInterfaceFields(backendDomainSource, 'ContentVersion').sort();
+    const frontendFields = extractInterfaceFields(frontendSource, 'ContentVersion').sort();
+
+    expect(backendFields).toEqual(
+      ['id', 'rawContentId', 'number', 'legislativeClosureDate', 'authorId', 'closedAt'].sort(),
+    );
+    expect(frontendFields).toEqual(backendFields);
+    // Mutante: reintroduzir `contentSnapshot` só no frontend (sem o backend
+    // também passar a expor o dado interno de verificação, DEC-029-003) faz
+    // esta comparação reprovar.
+    expect(frontendFields).not.toContain('contentSnapshot');
+  });
+
+  it('ContentVersionDetail (payload HTTP real, content-versions.service.ts): mesmo conjunto de campos que o ContentVersion do frontend', () => {
+    const backendPayloadFields = extractInterfaceFields(
+      backendContentVersionsServiceSource,
+      'ContentVersionDetail',
+    ).sort();
+    const frontendFields = extractInterfaceFields(frontendSource, 'ContentVersion').sort();
+
+    expect(backendPayloadFields).toEqual(frontendFields);
+    // Esta comparação cobre a DECLARAÇÃO da interface `ContentVersionDetail`,
+    // nunca a projeção real de `CONTENT_VERSION_DETAIL_SELECT` — mesma
+    // pendência já registrada para `ContrastDetail`/`FlashcardDetail` (ver
+    // blocos acima / INDEX do slug).
+    expect(backendPayloadFields).toEqual(
+      ['id', 'rawContentId', 'number', 'legislativeClosureDate', 'authorId', 'closedAt'].sort(),
     );
   });
 });

@@ -92,3 +92,16 @@ export function decodedDocumentText(doc: PDFDocument): string {
   }
   return text;
 }
+
+/** Texto decodificado de CADA página do documento, 1 string POR página (nunca
+ * concatenado, TASK-029-003) — pré-requisito mecânico de qualquer critério "toda página"
+ * (ex.: AC-028-009/010/011/013): um teste que só olhasse `decodedDocumentText` não
+ * distinguiria "aparece em 1 página" de "aparece em TODAS", porque a concatenação apaga a
+ * fronteira entre páginas. */
+export function decodedPageTexts(doc: PDFDocument): string[] {
+  const texts: string[] = [];
+  for (let i = 0; i < doc.getPageCount(); i++) {
+    texts.push(decodedPageContent(doc, i));
+  }
+  return texts;
+}

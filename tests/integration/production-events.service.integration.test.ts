@@ -6,6 +6,7 @@ import {
   recordProductionStageEvent,
 } from '../../src/modules/production-events/production-events.service';
 import { createRawContent, createTopic, createUser } from '../support/production-events-fixtures';
+import { withQueryProbe } from '../support/query-probe';
 import { closeTestDb, resetDb, testPrisma } from './db';
 
 /**
@@ -178,6 +179,117 @@ const PRODUCTION_EVENTS_SERVICE = resolve(
   '../../src/modules/production-events/production-events.service.ts',
 );
 const CONTENTS_SERVICE = resolve(__dirname, '../../src/modules/contents/contents.service.ts');
+
+/**
+ * Extensão de `recordProductionStageEvent` (Inclui, item 1 / TASK-029-002):
+ * `transitionType` opcional, usado DIRETO quando informado — pula a leitura
+ * de histórico (`tx.productionStageEvent.findMany`) e `decideStageTransition`
+ * inteiramente. Comportamento existente (campo omitido) segue coberto pelos
+ * blocos acima, sem alteração.
+ */
+describe('recordProductionStageEvent — transitionType informado pula histórico (COMP-029-004, DEC-029-005)', () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  /**
+   * `recordProductionStageEvent` recebe o `tx` de DENTRO de `$transaction` —
+   * no Prisma 7 o client de transação interativa tem delegates PRÓPRIOS,
+   * distintos dos do client raiz, então um spy em
+   * `testPrisma.productionStageEvent` nunca vê uma chamada feita pelo `tx`.
+   * `withQueryProbe` conta os statements emitidos pelo PRÓPRIO client da
+   * transação (`probe.$transaction`), o observador que a função realmente
+   * atravessa.
+   */
+  it('(a) NUNCA emite um SELECT de histórico quando transitionType é informado — controle negativo por contagem de statements', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const rawContent = await createRawContent(editor.id, topicId);
+    const now = new Date('2026-09-26T12:00:00.000Z');
+
+    const queries = await withQueryProbe((probe) =>
+      probe.$transaction((tx) =>
+        recordProductionStageEvent(tx, {
+          rawContentId: rawContent.id,
+          stageType: 'VERSAO_EDITORIAL',
+          transitionType: 'CONCLUSAO',
+          actorId: editor.id,
+          now,
+        }),
+      ),
+    );
+
+    const selectQueries = queries.filter((query) =>
+      query.trim().toUpperCase().startsWith('SELECT'),
+    );
+    expect(selectQueries).toHaveLength(0);
+  });
+
+  it('controle POSITIVO do mesmo arranjo: omitir transitionType faz o MESMO observador registrar ≥1 SELECT de histórico', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const rawContent = await createRawContent(editor.id, topicId);
+    const now = new Date('2026-09-26T12:00:00.000Z');
+
+    const queries = await withQueryProbe((probe) =>
+      probe.$transaction((tx) =>
+        recordProductionStageEvent(tx, {
+          rawContentId: rawContent.id,
+          stageType: 'VERSAO_EDITORIAL',
+          actorId: editor.id,
+          now,
+        }),
+      ),
+    );
+
+    const selectQueries = queries.filter((query) =>
+      query.trim().toUpperCase().startsWith('SELECT'),
+    );
+    expect(selectQueries.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('(b) grava o transitionType EXATAMENTE como informado, mesmo quando a decisão automática produziria outro valor (histórico já contém CONCLUSAO, override ABERTURA)', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const rawContent = await createRawContent(editor.id, topicId);
+    const now = new Date('2026-09-26T12:00:00.000Z');
+
+    // Histórico já contém CONCLUSAO para o par — decisão automática
+    // (decideStageTransition) produziria RETRABALHO.
+    await testPrisma.$transaction((tx) =>
+      recordProductionStageEvent(tx, {
+        rawContentId: rawContent.id,
+        stageType: 'VERSAO_EDITORIAL',
+        actorId: editor.id,
+        now,
+      }),
+    );
+    const beforeOverride = await listProductionStageEvents(rawContent.id, testPrisma);
+    expect(beforeOverride.map((event) => event.transitionType)).toEqual(['ABERTURA']);
+    // Força o histórico a conter CONCLUSAO diretamente, para simular o
+    // cenário em que a decisão automática divergiria do override.
+    await testPrisma.productionStageEvent.updateMany({
+      where: { rawContentId: rawContent.id, stageType: 'VERSAO_EDITORIAL' },
+      data: { transitionType: 'CONCLUSAO' },
+    });
+
+    await testPrisma.$transaction((tx) =>
+      recordProductionStageEvent(tx, {
+        rawContentId: rawContent.id,
+        stageType: 'VERSAO_EDITORIAL',
+        transitionType: 'ABERTURA',
+        actorId: editor.id,
+        now,
+      }),
+    );
+
+    const events = await listProductionStageEvents(rawContent.id, testPrisma);
+    expect(events).toHaveLength(2);
+    // O 2º evento gravado é ABERTURA (o override), NUNCA RETRABALHO (o que
+    // decideStageTransition decidiria a partir do histórico CONCLUSAO acima).
+    expect(events[1]?.transitionType).toBe('ABERTURA');
+  });
+});
 
 describe('Tripwire estrutural — nenhuma mutação (update/updateMany/delete/deleteMany/upsert) sobre productionStageEvent (AC-009-006, parte 1/2)', () => {
   it.each([

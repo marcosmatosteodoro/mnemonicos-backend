@@ -12,7 +12,11 @@ import {
   decodePDFRawStream,
 } from 'pdf-lib';
 
-import { buildStripPdf, buildSummaryPdf } from '../../src/modules/publication/pdf-composer';
+import {
+  buildStripPdf,
+  buildSummaryPdf,
+  formatLegislativeClosureDate,
+} from '../../src/modules/publication/pdf-composer';
 import type {
   ImageSkippedInfo,
   StripFrameForPdf,
@@ -332,17 +336,19 @@ function pageImageDims(doc: PDFDocument, pageIndex: number): { width: number; he
   return { width, height };
 }
 
-const META: { variant: 'RESUMO'; generatedAt: Date } = {
+const META: { variant: 'RESUMO'; generatedAt: Date; version: null } = {
   variant: 'RESUMO',
   generatedAt: new Date('2026-03-17T08:05:00.000Z'), // "17/03/2026, 05:05:00" — sem "49"
+  version: null, // TASK-029-003: nenhuma Versão fechada nestes fixtures pré-existentes
 };
 
 /** Mesma data de `META`, Variante diferente — usada pelo teste abaixo que precisa das
  * DUAS variantes reais para provar que o rótulo lê `meta.variant` em vez de uma
  * constante fixa. */
-const META_TIRA: { variant: 'TIRA'; generatedAt: Date } = {
+const META_TIRA: { variant: 'TIRA'; generatedAt: Date; version: null } = {
   variant: 'TIRA',
   generatedAt: new Date('2026-03-17T08:05:00.000Z'),
+  version: null,
 };
 
 describe('Fixtures locais são realmente decodíveis (pré-condição, TASK-025-007)', () => {
@@ -815,5 +821,25 @@ describe('Postura estrutural de pdf-composer.ts (NFR-024-001/002/004, gate 1)', 
       const plantedRequire = `const x = require('node:${moduleName}');\n${nonCommentLines}`;
       expect(importsModule(plantedRequire, moduleName)).toBe(true);
     }
+  });
+});
+
+describe('formatLegislativeClosureDate — imune a fuso (TASK-029-003)', () => {
+  const originalTz = process.env.TZ;
+
+  afterEach(() => {
+    if (originalTz === undefined) {
+      delete process.env.TZ;
+    } else {
+      process.env.TZ = originalTz;
+    }
+  });
+
+  it('meia-noite UTC de 01/09/2026 formata "01/09/2026" mesmo com TZ America/Sao_Paulo (UTC-3) setado — uma implementação por fuso LOCAL devolveria "31/08/2026"', () => {
+    process.env.TZ = 'America/Sao_Paulo';
+
+    const formatted = formatLegislativeClosureDate(new Date('2026-09-01T00:00:00.000Z'));
+
+    expect(formatted).toBe('01/09/2026');
   });
 });

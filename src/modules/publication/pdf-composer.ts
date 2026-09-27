@@ -23,6 +23,19 @@ import type { ReviewProtocolMark } from './review-protocol';
 export interface PublicationPdfMeta {
   variant: PublicationVariant;
   generatedAt: Date;
+  /** Carimbo de Versão editorial vigente (COMP-029-007/008, TASK-029-003) — `null` =
+   * nenhuma Versão fechada para este `RawContent` ainda (FR-028-009). */
+  version: VersionStampForPdf | null;
+}
+
+/** Carimbo de Versão vigente a desenhar no cabeçalho de rascunho (FR-028-008/009/011):
+ * a Versão de MAIOR `number` já fechada, e se o Conteúdo/Quebra foi alterado depois desse
+ * fechamento (`alteredAfterClosure`, resolvido por `resolveVersionStampForPdf` em
+ * `publication.service.ts` via `hasVersionedContentChanged`). */
+export interface VersionStampForPdf {
+  number: number;
+  legislativeClosureDate: Date;
+  alteredAfterClosure: boolean;
 }
 
 export interface StripFrameForPdf {
@@ -73,7 +86,7 @@ export interface SupplementarySections {
 const [PAGE_WIDTH, PAGE_HEIGHT] = PageSizes.A4;
 
 const MARGIN_X = 50;
-const MARGIN_TOP = 85; // reserva o cabeçalho de rascunho (3 linhas) fora da área de conteúdo
+const MARGIN_TOP = 100; // reserva o cabeçalho de rascunho (4 linhas, TASK-029-003) fora da área de conteúdo
 const MARGIN_BOTTOM = 50;
 const CONTENT_WIDTH = PAGE_WIDTH - 2 * MARGIN_X;
 const CONTENT_TOP_Y = PAGE_HEIGHT - MARGIN_TOP;
@@ -87,6 +100,8 @@ const LABEL_FONT_SIZE = 9;
 const LABEL_LINE_Y = PAGE_HEIGHT - 30;
 const VARIANT_LINE_Y = PAGE_HEIGHT - 45;
 const GENERATED_AT_LINE_Y = PAGE_HEIGHT - 60;
+/** 4ª linha do cabeçalho (TASK-029-003) — mesmo espaçamento de 15pt das 3 anteriores. */
+const VERSION_LINE_Y = PAGE_HEIGHT - 75;
 
 /** Nunca "fechamento"/"aprovação" (AC-024-005) — é rótulo de RASCUNHO/geração, não de
  * decisão editorial sobre o conteúdo. */
@@ -100,10 +115,39 @@ function formatGeneratedAt(date: Date): string {
 }
 
 /**
+ * Formata `DD/MM/AAAA` a partir dos componentes UTC do `Date` (TASK-029-003) — NUNCA
+ * `Intl.DateTimeFormat` sem `timeZone: 'UTC'` explícito nem os getters locais
+ * (`getDate`/`getMonth`): `legislativeClosureDate` é construído a partir de uma string ISO
+ * `YYYY-MM-DD` sem componente de hora (meia-noite UTC, TASK-029-002) — formatar pelo fuso
+ * LOCAL do servidor pode exibir o dia ANTERIOR (ex.: servidor em `America/Sao_Paulo`,
+ * UTC-3: meia-noite UTC de 01/09 vira 21h de 31/08 local).
+ */
+export function formatLegislativeClosureDate(date: Date): string {
+  const day = String(date.getUTCDate()).padStart(2, '0');
+  const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const year = date.getUTCFullYear();
+  return `${day}/${month}/${year}`;
+}
+
+/** Texto da 4ª linha do cabeçalho (FR-028-008/009/011) — o carimbo de Versão vigente, a
+ * marca de ausência, ou a marca de alteração posterior, sempre ao lado do rótulo
+ * "Rascunho" já existente, sem alterá-lo (FR-028-010). */
+function versionStampText(version: VersionStampForPdf | null): string {
+  if (version === null) return 'Sem versão fechada.';
+
+  const base = `Versão ${version.number} — verificado até ${formatLegislativeClosureDate(version.legislativeClosureDate)}`;
+  if (!version.alteredAfterClosure) return base;
+
+  return `${base} — alterado após o fechamento da Versão ${version.number}`;
+}
+
+/**
  * Rótulo de rascunho + Variante (`meta.variant`, lida do valor — nunca hardcoded, AC-024-005
  * exige que o rótulo diga TAMBÉM qual Variante a página representa) + `meta.generatedAt`
- * (FR-024-001/AC-024-005) — chamada uma vez por página recém-criada, nunca só na 1ª (tanto
- * no laço de `buildStripPdf` quanto na(s) página(s) de `buildSummaryPdf`).
+ * (FR-024-001/AC-024-005) + carimbo de Versão (`meta.version`, FR-028-008/009/011,
+ * TASK-029-003) — chamada uma vez por página recém-criada, nunca só na 1ª (tanto no laço
+ * de `buildStripPdf` quanto na(s) página(s) de `buildSummaryPdf`); a 4ª linha é desenhada
+ * SEMPRE (mesmo padrão das 3 já existentes — nunca condicionalmente omitida).
  */
 function drawDraftHeader(page: PDFPage, font: PDFFont, meta: PublicationPdfMeta): void {
   page.drawText(DRAFT_LABEL, { x: MARGIN_X, y: LABEL_LINE_Y, size: LABEL_FONT_SIZE, font });
@@ -116,6 +160,12 @@ function drawDraftHeader(page: PDFPage, font: PDFFont, meta: PublicationPdfMeta)
   page.drawText(`Gerado em: ${formatGeneratedAt(meta.generatedAt)}`, {
     x: MARGIN_X,
     y: GENERATED_AT_LINE_Y,
+    size: LABEL_FONT_SIZE,
+    font,
+  });
+  page.drawText(versionStampText(meta.version), {
+    x: MARGIN_X,
+    y: VERSION_LINE_Y,
     size: LABEL_FONT_SIZE,
     font,
   });

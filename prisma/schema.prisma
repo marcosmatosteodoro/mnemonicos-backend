@@ -82,9 +82,13 @@ enum ProductionStageType {
   // Compartilhado pelos 3 registros autorados desta fatia (Contraste, Pegadinha
   // elaborada, Flashcard) — DEC-027-004: granularidade por REGISTRO, não por TIPO.
   MATERIAL_REFORCO
-  // Fatias futuras (F8 versionamento, F9 QC) acrescentam valores aqui —
-  // migração aditiva, sem redesenho do mecanismo (NFR-009-001/DEC-010-001,
-  // agora também NFR-011-004).
+  // NOVO (F8) — aditivo, sem redesenho do mecanismo (NFR-009-001/DEC-010-001).
+  // Emitido sempre como CONCLUSAO direto pelo fechamento de ContentVersion,
+  // nunca via decideStageTransition (DEC-029-005) — Versão editorial não tem
+  // ciclo abertura/retrabalho.
+  VERSAO_EDITORIAL
+  // Fatias futuras (F9 QC) acrescentam valores aqui — migração aditiva, sem
+  // redesenho do mecanismo (NFR-009-001/DEC-010-001, agora também NFR-011-004).
 }
 
 enum ProductionEventTransition {
@@ -127,6 +131,8 @@ model User {
 
   contrasts            Contrast[]            @relation("ContrastAuthor")
   productionFlashcards ProductionFlashcard[] @relation("ProductionFlashcardAuthor")
+
+  contentVersions ContentVersion[]
 
   @@map("users")
 }
@@ -341,6 +347,8 @@ model RawContent {
 
   contrasts            Contrast[]
   productionFlashcards ProductionFlashcard[]
+
+  contentVersions ContentVersion[]
 
   @@index([authorId])
   @@index([topicId])
@@ -575,4 +583,32 @@ model ProductionFlashcard {
 
   @@index([rawContentId, createdAt(sort: Asc)])
   @@map("production_flashcards")
+}
+
+/// Versão editorial — registro append-only do fechamento explícito de um
+/// Conteúdo bruto (F8, SPEC-028). Restrict nos dois FKs: mesma razão de
+/// Contrast/ProductionFlashcard (apagar o RawContent/autor fica bloqueado
+/// enquanto a Versão existir, até uma fatia futura definir expurgo
+/// (RISK-028-005)).
+model ContentVersion {
+  id String @id @default(uuid(7))
+
+  rawContentId String
+  rawContent   RawContent @relation(fields: [rawContentId], references: [id], onDelete: Restrict)
+
+  number Int
+
+  legislativeClosureDate DateTime
+
+  authorId String
+  author   User   @relation(fields: [authorId], references: [id], onDelete: Restrict)
+
+  closedAt DateTime @default(now())
+
+  /// Copia integral dos campos versionados de RawContent + RuleBreakdown no momento do
+  /// fechamento (DEC-029-003) — nunca exposto à UI.
+  contentSnapshot Json
+
+  @@unique([rawContentId, number])
+  @@map("content_versions")
 }

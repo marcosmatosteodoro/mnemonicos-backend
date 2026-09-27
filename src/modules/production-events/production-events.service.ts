@@ -34,6 +34,14 @@ export interface ProductionStageEventInput {
   actorId: string;
   /** Instante do registro, injetado pelo chamador — nunca `new Date()`/`now()` do banco (DEC-010-002). */
   now: Date;
+  /**
+   * Override explícito da transição (COMP-029-004 / TASK-029-002, DEC-029-005):
+   * quando informado, é usado DIRETO — a leitura de histórico
+   * (`tx.productionStageEvent.findMany`) e `decideStageTransition` são
+   * inteiramente puladas. Omitido → comportamento existente (decisão
+   * automática ABERTURA/CONCLUSAO/RETRABALHO por histórico), sem alteração.
+   */
+  transitionType?: ProductionEventTransition;
 }
 
 /** Cliente Prisma injetável — recebe o `tx` da transação interativa do chamador (DEC-010-003). */
@@ -47,12 +55,16 @@ export async function recordProductionStageEvent(
   tx: ProductionStageEventClient,
   input: ProductionStageEventInput,
 ): Promise<void> {
-  const existing = await tx.productionStageEvent.findMany({
-    where: { rawContentId: input.rawContentId, stageType: input.stageType },
-    select: { transitionType: true },
-  });
-
-  const transitionType = decideStageTransition(existing.map((event) => event.transitionType));
+  let transitionType: ProductionEventTransition;
+  if (input.transitionType !== undefined) {
+    transitionType = input.transitionType;
+  } else {
+    const existing = await tx.productionStageEvent.findMany({
+      where: { rawContentId: input.rawContentId, stageType: input.stageType },
+      select: { transitionType: true },
+    });
+    transitionType = decideStageTransition(existing.map((event) => event.transitionType));
+  }
 
   await tx.productionStageEvent.create({
     data: {

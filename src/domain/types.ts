@@ -87,6 +87,7 @@ export const PRODUCTION_STAGE_TYPES = [
   'ASSOCIACAO_VISUAL',
   'PUBLICACAO_PDF',
   'MATERIAL_REFORCO',
+  'VERSAO_EDITORIAL',
 ] as const;
 
 export type ProductionStageType = (typeof PRODUCTION_STAGE_TYPES)[number];
@@ -186,4 +187,24 @@ export interface ProductionFlashcard {
   answer: string;
   createdAt: Date;
   updatedAt: Date;
+}
+
+/**
+ * Versão editorial fechada de um Conteúdo bruto (F8, SPEC-028) — espelha o
+ * model `ContentVersion` de `prisma/schema.prisma`, só os 6 dados imutáveis
+ * expostos para leitura (`id`/`rawContentId`/`number`/`legislativeClosureDate`/
+ * `authorId`/`closedAt`). **Sem** `contentSnapshot` (dado interno de verificação, nunca
+ * exposto à UI, DEC-029-003). Espelhado em
+ * `mnemonicos-frontend/src/types/domain.ts`: mudança de um lado entra no
+ * mesmo diff que o outro, ou o contrato quebra em runtime sem o typecheck
+ * acusar — rede de paridade cross-repo:
+ * `mnemonicos-backend/tests/unit/contents-frontend-contract.test.ts`.
+ */
+export interface ContentVersion {
+  id: string;
+  rawContentId: string;
+  number: number;
+  legislativeClosureDate: Date;
+  authorId: string;
+  closedAt: Date;
 }
