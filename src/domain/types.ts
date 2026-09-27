@@ -88,6 +88,7 @@ export const PRODUCTION_STAGE_TYPES = [
   'PUBLICACAO_PDF',
   'MATERIAL_REFORCO',
   'VERSAO_EDITORIAL',
+  'APROVACAO_VERSAO',
 ] as const;
 
 export type ProductionStageType = (typeof PRODUCTION_STAGE_TYPES)[number];
