@@ -163,3 +163,81 @@ describe('closeContentVersion — ordem das guardas (TASK-029-002, estrutural)',
     expect(afterRecord).not.toMatch(/tx\.\w+\.(create|update|delete|findFirst|findUnique)\(/);
   });
 });
+
+/**
+ * Prova ESTRUTURAL da ORDEM exigida dentro do corpo de `approveContentVersion`
+ * (TASK-031-003, PLAN-031 §6 DEC-031-001/009): mesmo mecanismo de
+ * `extractFunctionBody` acima.
+ *
+ * Prova COMPORTAMENTAL completa vive em
+ * `content-versions.service.integration.test.ts` — não duplicada aqui.
+ */
+describe('approveContentVersion — ordem das guardas (TASK-031-003, estrutural)', () => {
+  const source = readSource(CONTENT_VERSIONS_SERVICE);
+  const body = extractFunctionBody(source, 'export async function approveContentVersion');
+
+  it('(a) tx.$queryRaw com FOR UPDATE é a 1ª chamada do corpo, ANTES de assertRawContentReachable', () => {
+    const queryRawIndex = body.indexOf('tx.$queryRaw');
+    const forUpdateIndex = body.indexOf('FOR UPDATE');
+    const reachableIndex = body.indexOf('assertRawContentReachable(');
+
+    expect(queryRawIndex).toBeGreaterThan(-1);
+    // Mutante: mover qualquer leitura/checagem para ANTES do lock faz esta
+    // asserção reprovar — DEC-031-001 herdada exige o lock como 1ª decisão.
+    expect(forUpdateIndex).toBeGreaterThan(queryRawIndex);
+    expect(reachableIndex).toBeGreaterThan(forUpdateIndex);
+  });
+
+  it('(b) ruleBreakdown.findUniqueOrThrow ANTES de contentVersion.findFirst', () => {
+    const ruleBreakdownIndex = body.indexOf('ruleBreakdown.findUniqueOrThrow(');
+    const findFirstIndex = body.indexOf('contentVersion.findFirst(');
+
+    expect(ruleBreakdownIndex).toBeGreaterThan(-1);
+    expect(findFirstIndex).toBeGreaterThan(-1);
+    expect(ruleBreakdownIndex).toBeLessThan(findFirstIndex);
+  });
+
+  it('(c) contentVersion.findFirst ANTES da 1ª comparação producerIds.has', () => {
+    const findFirstIndex = body.indexOf('contentVersion.findFirst(');
+    const producerIdsIndex = body.indexOf('producerIds.has(');
+
+    expect(findFirstIndex).toBeGreaterThan(-1);
+    expect(producerIdsIndex).toBeGreaterThan(-1);
+    expect(findFirstIndex).toBeLessThan(producerIdsIndex);
+  });
+
+  it('(d) producerIds.has ANTES de resolveAlterationSignal', () => {
+    const producerIdsIndex = body.indexOf('producerIds.has(');
+    const resolveIndex = body.indexOf('resolveAlterationSignal(');
+
+    expect(producerIdsIndex).toBeGreaterThan(-1);
+    expect(resolveIndex).toBeGreaterThan(-1);
+    // Mutante: trocar a ordem dos guards 8/9 faz esta asserção reprovar.
+    expect(producerIdsIndex).toBeLessThan(resolveIndex);
+  });
+
+  it('(e) resolveAlterationSignal ANTES de contentVersion.updateMany', () => {
+    const resolveIndex = body.indexOf('resolveAlterationSignal(');
+    const updateManyIndex = body.indexOf('contentVersion.updateMany(');
+
+    expect(resolveIndex).toBeGreaterThan(-1);
+    expect(updateManyIndex).toBeGreaterThan(-1);
+    expect(resolveIndex).toBeLessThan(updateManyIndex);
+  });
+
+  it('(f) recordProductionStageEvent é a ÚLTIMA chamada do corpo, depois de contentVersion.updateMany', () => {
+    const updateManyIndex = body.indexOf('contentVersion.updateMany(');
+    const recordIndex = body.indexOf('recordProductionStageEvent(');
+
+    expect(updateManyIndex).toBeGreaterThan(-1);
+    expect(recordIndex).toBeGreaterThan(-1);
+    // Mutante: mover a emissão do evento para ANTES do updateMany faz esta
+    // asserção reprovar — DEC-031-008 exige o registro como último ato.
+    expect(updateManyIndex).toBeLessThan(recordIndex);
+
+    const afterRecord = body.slice(recordIndex + 'recordProductionStageEvent('.length);
+    expect(afterRecord).not.toMatch(
+      /tx\.\w+\.(create|update|updateMany|delete|findFirst|findUnique|findUniqueOrThrow)\(/,
+    );
+  });
+});

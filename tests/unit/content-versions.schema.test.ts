@@ -1,4 +1,8 @@
-import { closeContentVersionSchema } from '../../src/modules/content-versions/content-versions.schema';
+import {
+  approveContentVersionParamsSchema,
+  approveContentVersionSchema,
+  closeContentVersionSchema,
+} from '../../src/modules/content-versions/content-versions.schema';
 
 /**
  * `closeContentVersionSchema` (COMP-029-002 / TASK-029-002, DEC-029-006):
@@ -36,5 +40,116 @@ describe('closeContentVersionSchema — recusa futura, sem monotonicidade (DEC-0
     // Versão anterior (nenhum parâmetro além do body é aceito pelo schema).
     const result = closeContentVersionSchema.safeParse({ legislativeClosureDate: '2026-09-01' });
     expect(result.success).toBe(true);
+  });
+});
+
+/**
+ * `approveContentVersionSchema` (COMP-031-002): as 2 confirmações só aceitam
+ * `true` literal — qualquer outro valor falha ANTES de qualquer leitura do
+ * service (A-030-004).
+ */
+describe('approveContentVersionSchema', () => {
+  it('legalCheckConfirmed: false → ZodError', () => {
+    const result = approveContentVersionSchema.safeParse({
+      legalCheckConfirmed: false,
+      pedagogicalCheckConfirmed: true,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('legalCheckConfirmed ausente → ZodError', () => {
+    const result = approveContentVersionSchema.safeParse({
+      pedagogicalCheckConfirmed: true,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('legalCheckConfirmed: string ("true") → ZodError', () => {
+    const result = approveContentVersionSchema.safeParse({
+      legalCheckConfirmed: 'true',
+      pedagogicalCheckConfirmed: true,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('pedagogicalCheckConfirmed: false → ZodError', () => {
+    const result = approveContentVersionSchema.safeParse({
+      legalCheckConfirmed: true,
+      pedagogicalCheckConfirmed: false,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('pedagogicalCheckConfirmed ausente → ZodError', () => {
+    const result = approveContentVersionSchema.safeParse({
+      legalCheckConfirmed: true,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('pedagogicalCheckConfirmed: string ("true") → ZodError', () => {
+    const result = approveContentVersionSchema.safeParse({
+      legalCheckConfirmed: true,
+      pedagogicalCheckConfirmed: 'true',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('os 2 campos true → aceito', () => {
+    const result = approveContentVersionSchema.safeParse({
+      legalCheckConfirmed: true,
+      pedagogicalCheckConfirmed: true,
+    });
+    expect(result.success).toBe(true);
+  });
+});
+
+/**
+ * `approveContentVersionParamsSchema` (COMP-031-002): `id` reusa a mensagem de
+ * `rawContentIdParamSchema`, `number` coage string→number (req.params sempre
+ * chega como string) e recusa não-positivo/não-inteiro.
+ */
+describe('approveContentVersionParamsSchema', () => {
+  it('number como string numérica ("3", vindo de req.params) → coagido para 3 (number)', () => {
+    const result = approveContentVersionParamsSchema.safeParse({
+      id: '00000000-0000-4000-8000-000000000000',
+      number: '3',
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.number).toBe(3);
+    }
+  });
+
+  it('number: "0" → ZodError', () => {
+    const result = approveContentVersionParamsSchema.safeParse({
+      id: '00000000-0000-4000-8000-000000000000',
+      number: '0',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('number: "-1" → ZodError', () => {
+    const result = approveContentVersionParamsSchema.safeParse({
+      id: '00000000-0000-4000-8000-000000000000',
+      number: '-1',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('number: "abc" → ZodError', () => {
+    const result = approveContentVersionParamsSchema.safeParse({
+      id: '00000000-0000-4000-8000-000000000000',
+      number: 'abc',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('id não-uuid → ZodError', () => {
+    const result = approveContentVersionParamsSchema.safeParse({
+      id: 'nao-e-um-uuid',
+      number: '1',
+    });
+    expect(result.success).toBe(false);
   });
 });

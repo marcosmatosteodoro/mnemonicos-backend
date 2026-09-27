@@ -26,3 +26,27 @@ export const closeContentVersionSchema = z.object({
 });
 
 export type CloseContentVersionInput = z.infer<typeof closeContentVersionSchema>;
+
+/**
+ * Schema de aprovação de Versão vigente (COMP-031-002): exatamente 2
+ * confirmações, cada uma só aceita `true` — `false`, ausente ou string
+ * falha o `parse` com 422 (A-030-004, ato único atômico, sem estado parcial).
+ */
+export const approveContentVersionSchema = z.object({
+  legalCheckConfirmed: z.literal(true, 'Confirmação da checagem jurídica é obrigatória.'),
+  pedagogicalCheckConfirmed: z.literal(true, 'Confirmação da checagem pedagógica é obrigatória.'),
+});
+
+export type ApproveContentVersionInput = z.infer<typeof approveContentVersionSchema>;
+
+/**
+ * `:id`/`:number` da rota de aprovação — schema PRÓPRIO (não reexporta
+ * `rawContentIdParamSchema` isoladamente): o duplo travamento de FR-030-014
+ * exige o número como parte do MESMO objeto de params desta rota.
+ */
+export const approveContentVersionParamsSchema = z.object({
+  id: z.uuid('Identificador de conteúdo bruto inválido.'),
+  number: z.coerce.number('Número de Versão inválido.').int().positive(),
+});
+
+export type ApproveContentVersionParams = z.infer<typeof approveContentVersionParamsSchema>;

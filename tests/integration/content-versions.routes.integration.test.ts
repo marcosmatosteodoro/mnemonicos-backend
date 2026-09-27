@@ -102,3 +102,100 @@ describe('NFR-028-001/002 (fail-secure, camada HTTP): erro não previsto na emis
     expect(countAfter).toBe(countBefore);
   });
 });
+
+const EVIL_ORIGIN = 'https://evil.example';
+
+/**
+ * `POST /contents/:id/versions/:number/approve` (COMP-031-006 / TASK-031-003)
+ * ponta-a-ponta: guarda composta e idempotência já provadas no NÍVEL DE
+ * SERVICE em `content-versions.service.integration.test.ts`; aqui a mesma
+ * garantia é provada na CAMADA HTTP (`verifyOrigin` + `requireRole` + fail-secure).
+ * A topologia adversarial (papel declarado, EDITOR/sem sessão recusados) vive
+ * em `route-authz-matrix.integration.test.ts` — não duplicada aqui.
+ */
+describe('POST /contents/:id/versions/:number/approve — camada HTTP', () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  async function seedClosedVersion(): Promise<{
+    rawContentId: string;
+    number: number;
+    editorAccess: string;
+    adminAccess: string;
+    adminId: string;
+  }> {
+    const editor = await createUser('EDITOR');
+    const admin = await createUser('ADMIN');
+    const editorAccess = await seedSession(editor.id);
+    const adminAccess = await seedSession(admin.id);
+    const topicId = await createTopic();
+    const rawContent = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdown(rawContent.id);
+    await testPrisma.rawContent.update({
+      where: { id: rawContent.id },
+      data: { sourceType: 'LEI', sourceCitation: 'Lei 5.172/1966' },
+    });
+
+    const closeRes = await request(app)
+      .post(`/api/v1/contents/${rawContent.id}/versions`)
+      .set(...withCookie(editorAccess))
+      .send({ legislativeClosureDate: '2026-09-01' });
+
+    return {
+      rawContentId: rawContent.id,
+      number: closeRes.body.number,
+      editorAccess,
+      adminAccess,
+      adminId: admin.id,
+    };
+  }
+
+  it('fluxo feliz ponta a ponta: 200, corpo com approvedById/approvedAt preenchidos', async () => {
+    const { rawContentId, number, adminAccess, adminId } = await seedClosedVersion();
+
+    const res = await request(app)
+      .post(`/api/v1/contents/${rawContentId}/versions/${number}/approve`)
+      .set(...withCookie(adminAccess))
+      .send({ legalCheckConfirmed: true, pedagogicalCheckConfirmed: true });
+
+    expect(res.status).toBe(200);
+    expect(res.body.approvedById).toBe(adminId);
+    expect(res.body.approvedAt).not.toBeNull();
+  });
+
+  it('verifyOrigin recusa origem forjada (Origin fora da allowlist) → 403, mesmo padrão já provado para as rotas irmãs', async () => {
+    const { rawContentId, number, adminAccess } = await seedClosedVersion();
+
+    const res = await request(app)
+      .post(`/api/v1/contents/${rawContentId}/versions/${number}/approve`)
+      .set(...withCookie(adminAccess))
+      .set('Origin', EVIL_ORIGIN)
+      .send({ legalCheckConfirmed: true, pedagogicalCheckConfirmed: true });
+
+    expect(res.status).toBe(403);
+  });
+
+  it('NFR-030-001/002 fail-secure na camada HTTP: recordProductionStageEvent rejeitando → 500 genérico, approvedById permanece null (rollback completo)', async () => {
+    const { rawContentId, number, adminAccess } = await seedClosedVersion();
+
+    jest
+      .spyOn(productionEventsService, 'recordProductionStageEvent')
+      .mockRejectedValueOnce(new Error('falha simulada na emissão'));
+
+    const res = await request(app)
+      .post(`/api/v1/contents/${rawContentId}/versions/${number}/approve`)
+      .set(...withCookie(adminAccess))
+      .send({ legalCheckConfirmed: true, pedagogicalCheckConfirmed: true });
+
+    expect(res.status).toBe(500);
+    expect(res.body).toEqual({
+      error: { code: 'INTERNAL_SERVER_ERROR', message: 'Erro interno.' },
+    });
+
+    const row = await testPrisma.contentVersion.findFirstOrThrow({
+      where: { rawContentId, number },
+    });
+    expect(row.approvedById).toBeNull();
+  });
+});

@@ -151,7 +151,7 @@ afterAll(async () => {
 });
 
 describe('fonte de medição da métrica §1.3 — censo das rotas montadas', () => {
-  it('a árvore montada é exatamente estes 46 pares método+caminho (tripwire: rota nova sem atualizar a suíte falha aqui — TASK-029-002 somou as 2 rotas de Versão editorial, 44→46)', () => {
+  it('a árvore montada é exatamente estes 47 pares método+caminho (tripwire: rota nova sem atualizar a suíte falha aqui — TASK-031-003 somou a rota de aprovação de Versão, 46→47)', () => {
     expect(ROUTES.map(key).sort()).toEqual(
       [
         'GET /health',
@@ -200,6 +200,7 @@ describe('fonte de medição da métrica §1.3 — censo das rotas montadas', ()
         'POST /contents/:id/publication',
         'POST /contents/:id/versions',
         'GET /contents/:id/versions',
+        'POST /contents/:id/versions/:number/approve',
       ].sort(),
     );
   });
@@ -593,8 +594,11 @@ describe('TASK-029-002 — as 2 rotas de Versão editorial sob a barreira (topol
   });
 
   it('STUDENT recusado (403) nas 2 rotas', async () => {
+    // Comparação por CAMINHO EXATO (não `startsWith`): a rota de aprovação
+    // (TASK-031-003) compartilha o mesmo PREFIXO `/contents/:id/versions` —
+    // `startsWith` a incluiria aqui, quebrando a asserção de exatamente 2.
     const contentVersionRoutes = NON_PUBLIC.filter((route) =>
-      route.path.startsWith('/contents/:id/versions'),
+      CONTENT_VERSION_ROUTE_KEYS.includes(key(route)),
     );
     expect(contentVersionRoutes.map(key).sort()).toEqual([...CONTENT_VERSION_ROUTE_KEYS].sort());
 
@@ -607,6 +611,54 @@ describe('TASK-029-002 — as 2 rotas de Versão editorial sob a barreira (topol
       );
       expect(res.status).toBe(403);
     }
+  });
+});
+
+describe('TASK-031-003 — a rota de aprovação sob a barreira (topologia adversarial)', () => {
+  const APPROVE_ROUTE_KEY = 'POST /contents/:id/versions/:number/approve';
+
+  /**
+   * URL concreta PRÓPRIA (não o `concrete()` genérico do arquivo): `concrete`
+   * troca TODO segmento `:param` por um `randomUUID()`, o que corromperia
+   * `:number` (`z.coerce.number()`, não um uuid) — aqui só `:id` precisa ser
+   * um uuid; `:number` é um inteiro literal.
+   */
+  function approveUrl(): string {
+    return `/api/v1/contents/${randomUUID()}/versions/1/approve`;
+  }
+
+  it('REGISTRY.get(APPROVE_ROUTE_KEY) é EXATAMENTE {ADMIN} — nunca {EDITOR, ADMIN} herdado das 2 rotas irmãs por cópia', () => {
+    expect(REGISTRY.get(APPROVE_ROUTE_KEY)).toEqual(new Set<UserRole>(['ADMIN']));
+    expect(ROUTE_ROLES.has(APPROVE_ROUTE_KEY)).toBe(true);
+  });
+
+  it('com sessão de EDITOR → 403 (cobertura automática de AC-002-011/012, confirmação ESPECÍFICA de que a rota entrou no conjunto {ADMIN})', async () => {
+    const { access } = await seedSession('EDITOR');
+
+    const res = await request(app)
+      .post(approveUrl())
+      .set('Cookie', `${ACCESS_COOKIE}=${access}`)
+      .send({});
+
+    expect(res.status).toBe(403);
+  });
+
+  it('sem sessão → 401 (cobertura automática de AC-002-010, confirmação ESPECÍFICA)', async () => {
+    const res = await request(app).post(approveUrl());
+
+    expect(res.status).toBe(401);
+  });
+
+  it('com sessão de ADMIN elegível (não produtor) → NÃO 403/401 (chega ao service; 200/404/409 dependendo do fixture)', async () => {
+    const { access } = await seedSession('ADMIN');
+
+    const res = await request(app)
+      .post(approveUrl())
+      .set('Cookie', `${ACCESS_COOKIE}=${access}`)
+      .send({ legalCheckConfirmed: true, pedagogicalCheckConfirmed: true });
+
+    expect(res.status).not.toBe(401);
+    expect(res.status).not.toBe(403);
   });
 });
 

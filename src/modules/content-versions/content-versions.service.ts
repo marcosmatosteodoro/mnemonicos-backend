@@ -1,9 +1,12 @@
 import type { Prisma } from '../../generated/prisma/client';
-import { ForbiddenError, NotFoundError } from '../../http/errors';
+import { ConflictError, ForbiddenError, NotFoundError } from '../../http/errors';
 import { prisma } from '../../lib/prisma';
 import { assertRawContentReachable, type ContentActor } from '../contents/contents.service';
 import { recordProductionStageEvent } from '../production-events/production-events.service';
-import type { CloseContentVersionInput } from './content-versions.schema';
+import type {
+  ApproveContentVersionInput,
+  CloseContentVersionInput,
+} from './content-versions.schema';
 import {
   hasVersionedContentChanged,
   toVersionedContentFields,
@@ -55,6 +58,8 @@ const CONTENT_VERSION_DETAIL_SELECT = {
   legislativeClosureDate: true,
   authorId: true,
   closedAt: true,
+  approvedById: true,
+  approvedAt: true,
 } as const satisfies Prisma.ContentVersionSelect;
 
 export interface ContentVersionDetail {
@@ -64,6 +69,8 @@ export interface ContentVersionDetail {
   legislativeClosureDate: Date;
   authorId: string;
   closedAt: Date;
+  approvedById: string | null;
+  approvedAt: Date | null;
 }
 
 /**
@@ -89,6 +96,7 @@ const RAW_CONTENT_VERSIONED_SELECT = {
   sourceType: true,
   sourceCitation: true,
   sourceUrl: true,
+  lastEditedById: true,
 } as const satisfies Prisma.RawContentSelect;
 
 /** Campos versionados da `RuleBreakdown` (passo 4/6) — os 5 blocos + a síntese. */
@@ -244,4 +252,123 @@ export async function resolveAlterationSignal(
   });
 
   return latestTiraEvent !== null && latestTiraEvent.occurredAt > version.closedAt;
+}
+
+/**
+ * Aprova a Versão vigente de `rawContentId` (FR-030-001 a 005/009/013 a 018),
+ * dentro de uma `$transaction`, guardas nesta ordem (DEC-031-001 herdada, DEC-031-009):
+ *
+ *   1. Lock da linha do `RawContent` pai — 1ª chamada, serializa fechamentos/
+ *      aprovações concorrentes do mesmo `rawContentId`.
+ *   2. `assertRawContentReachable` (FR-030-018).
+ *   3-4. Detalhe do `RawContent`/`RuleBreakdown` versionados.
+ *   5. Versão vigente inexistente → `NotFoundError` (FR-030-003).
+ *   6. Número informado ≠ vigente → `ConflictError` (FR-030-014, duplo travamento).
+ *   7. Já aprovada → `ConflictError` (checagem antecipada — a garantia real é o
+ *      passo 11).
+ *   8. Segregação de funções: ator ∈ {autor da Versão, autor do RawContent,
+ *      último editor} → `ForbiddenError` genérico (FR-030-004, NFR-030-002 —
+ *      nunca revela qual identidade bateu).
+ *   9. Fonte normativa ausente no `contentSnapshot` da Versão vigente →
+ *      `ConflictError` (FR-030-013).
+ *   10. Sinal de alteração pós-fechamento (conteúdo OU Tira) aceso →
+ *       `ConflictError` (FR-030-015).
+ *   11. `updateMany` condicionado a `approvedById: null` — a garantia REAL de
+ *       exatamente 1 escrita (DEC-031-009); `count !== 1` → `ConflictError`.
+ *   12. `recordProductionStageEvent` sempre `CONCLUSAO` direto (DEC-031-008) —
+ *       ÚLTIMA chamada do corpo.
+ *
+ * Qualquer falha nos passos 1-11 propaga sem gravar nada (fail-secure,
+ * NFR-030-001/002).
+ */
+export async function approveContentVersion(
+  rawContentId: string,
+  number: number,
+  input: ApproveContentVersionInput,
+  actor: ContentActor,
+  db: ContentVersionClient = prisma,
+): Promise<ContentVersionDetail> {
+  return db.$transaction(async (tx) => {
+    const locked = await tx.$queryRaw<Array<{ id: string }>>`
+      SELECT id FROM raw_contents WHERE id = ${rawContentId} FOR UPDATE
+    `;
+    if (locked[0] === undefined) {
+      throw new NotFoundError('Conteúdo bruto não encontrado.');
+    }
+
+    await assertRawContentReachable(rawContentId, actor, tx);
+
+    const rawContent = await tx.rawContent.findUniqueOrThrow({
+      where: { id: rawContentId },
+      select: RAW_CONTENT_VERSIONED_SELECT,
+    });
+
+    const ruleBreakdown = await tx.ruleBreakdown.findUniqueOrThrow({
+      where: { rawContentId },
+      select: RULE_BREAKDOWN_VERSIONED_SELECT,
+    });
+
+    const vigente = await tx.contentVersion.findFirst({
+      where: { rawContentId },
+      orderBy: { number: 'desc' },
+      select: { ...CONTENT_VERSION_DETAIL_SELECT, contentSnapshot: true },
+    });
+    if (vigente === null) {
+      throw new NotFoundError('Não há Versão para aprovar.');
+    }
+
+    if (vigente.number !== number) {
+      throw new ConflictError('O número informado não é mais o da Versão vigente.');
+    }
+
+    if (vigente.approvedById !== null) {
+      throw new ConflictError('Esta Versão já foi aprovada.');
+    }
+
+    const producerIds = new Set([vigente.authorId, rawContent.authorId, rawContent.lastEditedById]);
+    if (producerIds.has(actor.id)) {
+      throw new ForbiddenError('Você não tem permissão para aprovar esta Versão.');
+    }
+
+    const snapshot = vigente.contentSnapshot as unknown as VersionedContentFields;
+    if (snapshot.sourceType === null || snapshot.sourceCitation === null) {
+      throw new ConflictError('Falta fonte normativa registrada nesta Versão.');
+    }
+
+    const current = toVersionedContentFields(rawContent, ruleBreakdown);
+    const altered = await resolveAlterationSignal(rawContentId, current, vigente, tx);
+    if (altered) {
+      throw new ConflictError(
+        'O conteúdo ou a Tira mnemônica foram alterados após o fechamento desta Versão.',
+      );
+    }
+
+    const now = new Date();
+    const result = await tx.contentVersion.updateMany({
+      where: { id: vigente.id, approvedById: null },
+      data: { approvedById: actor.id, approvedAt: now },
+    });
+    if (result.count !== 1) {
+      throw new ConflictError('Esta Versão já foi aprovada.');
+    }
+
+    await recordProductionStageEvent(tx, {
+      rawContentId,
+      stageType: 'APROVACAO_VERSAO',
+      transitionType: 'CONCLUSAO',
+      actorId: actor.id,
+      now,
+    });
+
+    return {
+      id: vigente.id,
+      rawContentId,
+      number: vigente.number,
+      legislativeClosureDate: vigente.legislativeClosureDate,
+      authorId: vigente.authorId,
+      closedAt: vigente.closedAt,
+      approvedById: actor.id,
+      approvedAt: now,
+    };
+  });
 }
