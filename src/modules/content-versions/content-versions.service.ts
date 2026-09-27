@@ -15,8 +15,10 @@ import {
 
 /**
  * Ciclo de vida de Versão editorial (COMP-029-004/005 / TASK-029-002):
- * `closeContentVersion` (escrita, ÚNICA — append-only, FR-028-004: nenhuma
- * função de update/delete existe neste módulo) e `listContentVersions`
+ * `closeContentVersion` (escrita de criação, append-only, FR-028-004 —
+ * nenhuma função de update/delete SOBRE UMA VERSÃO existe neste módulo;
+ * `approveContentVersion`, abaixo, é a única escrita de UPDATE, condicionada
+ * a `approvedById: null` e restrita a 2 colunas, DEC-031-009), `listContentVersions`
  * (leitura do histórico completo). Guarda composta de `closeContentVersion`,
  * NESTA ORDEM (DEC-029-004/DEC-029-001, PLAN §6):
  *
@@ -85,9 +87,12 @@ type ContentVersionClient = Pick<
 >;
 
 /**
- * Campos versionados do `RawContent` lidos na MESMA linha travada no passo 1
- * (nenhuma 3ª leitura de `RawContent`) — usados para a checagem autor-ou-ADMIN
- * (passo 3) e para montar o `contentSnapshot` (passo 6).
+ * Campos do `RawContent` lidos na MESMA linha travada no passo 1 (nenhuma 3ª
+ * leitura de `RawContent`): os versionados (`rawText`/`radarClass`/
+ * `sourceType`/`sourceCitation`/`sourceUrl`, usados para montar o
+ * `contentSnapshot`, DEC-029-003) mais `authorId`/`lastEditedById`
+ * (segregação de funções, FR-030-004) e `lastEditedAt` (guarda de edição
+ * pós-fechamento, DEC-031-006 emendada).
  */
 const RAW_CONTENT_VERSIONED_SELECT = {
   authorId: true,
@@ -97,6 +102,7 @@ const RAW_CONTENT_VERSIONED_SELECT = {
   sourceCitation: true,
   sourceUrl: true,
   lastEditedById: true,
+  lastEditedAt: true,
 } as const satisfies Prisma.RawContentSelect;
 
 /** Campos versionados da `RuleBreakdown` (passo 4/6) — os 5 blocos + a síntese. */
@@ -261,24 +267,33 @@ export async function resolveAlterationSignal(
  *   1. Lock da linha do `RawContent` pai — 1ª chamada, serializa fechamentos/
  *      aprovações concorrentes do mesmo `rawContentId`.
  *   2. `assertRawContentReachable` (FR-030-018).
- *   3-4. Detalhe do `RawContent`/`RuleBreakdown` versionados.
- *   5. Versão vigente inexistente → `NotFoundError` (FR-030-003).
- *   6. Número informado ≠ vigente → `ConflictError` (FR-030-014, duplo travamento).
- *   7. Já aprovada → `ConflictError` (checagem antecipada — a garantia real é o
- *      passo 11).
- *   8. Segregação de funções: ator ∈ {autor da Versão, autor do RawContent,
+ *   3. Detalhe do `RawContent` versionado.
+ *   4. Versão vigente inexistente → `NotFoundError` (FR-030-003) — ANTES da
+ *      leitura de `RuleBreakdown` (passo 9): `*OrThrow` só depois da guarda
+ *      que torna a ausência impossível (a invariante "toda ContentVersion
+ *      tem RuleBreakdown", herdada de F8/F2, só vale a partir daqui — um
+ *      RawContent sem Versão pode legitimamente não ter RuleBreakdown salva).
+ *   5. Número informado ≠ vigente → `ConflictError` (FR-030-014, duplo travamento).
+ *   6. Já aprovada → `ConflictError` (checagem antecipada — a garantia real é o
+ *      passo 12).
+ *   7. Segregação de funções: ator ∈ {autor da Versão, autor do RawContent,
  *      último editor} → `ForbiddenError` genérico (FR-030-004, NFR-030-002 —
  *      nunca revela qual identidade bateu).
+ *   8. Edição pós-fechamento sem mudança versionada (DEC-031-006 emendada):
+ *      `lastEditedAt` do RawContent posterior a `closedAt` da Versão vigente
+ *      → `ConflictError` (o último editor pré-fechamento deixou de ser
+ *      conhecido, fail-secure).
  *   9. Fonte normativa ausente no `contentSnapshot` da Versão vigente →
  *      `ConflictError` (FR-030-013).
- *   10. Sinal de alteração pós-fechamento (conteúdo OU Tira) aceso →
+ *   10. `RuleBreakdown` versionada (só agora — passo 4 já garante que existe).
+ *   11. Sinal de alteração pós-fechamento (conteúdo OU Tira) aceso →
  *       `ConflictError` (FR-030-015).
- *   11. `updateMany` condicionado a `approvedById: null` — a garantia REAL de
+ *   12. `updateMany` condicionado a `approvedById: null` — a garantia REAL de
  *       exatamente 1 escrita (DEC-031-009); `count !== 1` → `ConflictError`.
- *   12. `recordProductionStageEvent` sempre `CONCLUSAO` direto (DEC-031-008) —
+ *   13. `recordProductionStageEvent` sempre `CONCLUSAO` direto (DEC-031-008) —
  *       ÚLTIMA chamada do corpo.
  *
- * Qualquer falha nos passos 1-11 propaga sem gravar nada (fail-secure,
+ * Qualquer falha nos passos 1-12 propaga sem gravar nada (fail-secure,
  * NFR-030-001/002).
  */
 export async function approveContentVersion(
@@ -303,43 +318,53 @@ export async function approveContentVersion(
       select: RAW_CONTENT_VERSIONED_SELECT,
     });
 
-    const ruleBreakdown = await tx.ruleBreakdown.findUniqueOrThrow({
-      where: { rawContentId },
-      select: RULE_BREAKDOWN_VERSIONED_SELECT,
-    });
-
     const vigente = await tx.contentVersion.findFirst({
       where: { rawContentId },
       orderBy: { number: 'desc' },
       select: { ...CONTENT_VERSION_DETAIL_SELECT, contentSnapshot: true },
     });
     if (vigente === null) {
-      throw new NotFoundError('Não há Versão para aprovar.');
+      throw new NotFoundError('Não há versão para aprovar.');
     }
 
     if (vigente.number !== number) {
-      throw new ConflictError('O número informado não é mais o da Versão vigente.');
+      throw new ConflictError(
+        'A versão exibida não é mais a vigente. Atualize a página para ver a versão atual.',
+      );
     }
 
     if (vigente.approvedById !== null) {
-      throw new ConflictError('Esta Versão já foi aprovada.');
+      throw new ConflictError('Esta versão já foi aprovada.');
     }
 
     const producerIds = new Set([vigente.authorId, rawContent.authorId, rawContent.lastEditedById]);
     if (producerIds.has(actor.id)) {
-      throw new ForbiddenError('Você não tem permissão para aprovar esta Versão.');
+      throw new ForbiddenError('Você não tem permissão para aprovar esta versão.');
+    }
+
+    if (rawContent.lastEditedAt !== null && rawContent.lastEditedAt > vigente.closedAt) {
+      throw new ConflictError(
+        'O conteúdo foi editado depois do fechamento desta versão. É preciso fechar uma nova versão para aprovar.',
+      );
     }
 
     const snapshot = vigente.contentSnapshot as unknown as VersionedContentFields;
     if (snapshot.sourceType === null || snapshot.sourceCitation === null) {
-      throw new ConflictError('Falta fonte normativa registrada nesta Versão.');
+      throw new ConflictError(
+        'Esta versão foi fechada sem fonte normativa. Registre a fonte no conteúdo e feche uma nova versão para aprovação.',
+      );
     }
+
+    const ruleBreakdown = await tx.ruleBreakdown.findUniqueOrThrow({
+      where: { rawContentId },
+      select: RULE_BREAKDOWN_VERSIONED_SELECT,
+    });
 
     const current = toVersionedContentFields(rawContent, ruleBreakdown);
     const altered = await resolveAlterationSignal(rawContentId, current, vigente, tx);
     if (altered) {
       throw new ConflictError(
-        'O conteúdo ou a Tira mnemônica foram alterados após o fechamento desta Versão.',
+        'O conteúdo ou a Tira mnemônica foram alterados depois do fechamento desta versão. É preciso fechar uma nova versão para aprovar.',
       );
     }
 
@@ -349,7 +374,7 @@ export async function approveContentVersion(
       data: { approvedById: actor.id, approvedAt: now },
     });
     if (result.count !== 1) {
-      throw new ConflictError('Esta Versão já foi aprovada.');
+      throw new ConflictError('Esta versão já foi aprovada.');
     }
 
     await recordProductionStageEvent(tx, {

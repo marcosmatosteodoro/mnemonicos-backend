@@ -7,6 +7,7 @@ import {
 } from '../../src/modules/production-events/production-events.service';
 import { createRawContent, createTopic, createUser } from '../support/production-events-fixtures';
 import { withQueryProbe } from '../support/query-probe';
+import { stripComments } from '../support/strip-comments';
 import { closeTestDb, resetDb, testPrisma } from './db';
 
 /**
@@ -163,14 +164,11 @@ describe('listProductionStageEvents — ordem determinística e estável entre c
  * novo que vier a importar o service em fatia futura (F4-F9) não é coberto
  * por este teste.
  *
- * Comentários/docblocks são removidos do texto antes do match, para que a
- * asserção fique ancorada na CHAMADA real (`.productionStageEvent.update(` em
- * código executável), nunca numa menção em prosa dentro de um comentário.
+ * Comentários/docblocks são removidos do texto antes do match (`stripComments`,
+ * `tests/support/`), para que a asserção fique ancorada na CHAMADA real
+ * (`.productionStageEvent.update(` em código executável), nunca numa menção em
+ * prosa dentro de um comentário.
  */
-function stripComments(source: string): string {
-  return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
-}
-
 const MUTATION_CALL_PATTERN =
   /\.productionStageEvent\.(update|updateMany|delete|deleteMany|upsert)\s*\(/;
 

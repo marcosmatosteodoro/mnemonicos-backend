@@ -595,8 +595,8 @@ describe('TASK-029-002 — as 2 rotas de Versão editorial sob a barreira (topol
 
   it('STUDENT recusado (403) nas 2 rotas', async () => {
     // Comparação por CAMINHO EXATO (não `startsWith`): a rota de aprovação
-    // (TASK-031-003) compartilha o mesmo PREFIXO `/contents/:id/versions` —
-    // `startsWith` a incluiria aqui, quebrando a asserção de exatamente 2.
+    // compartilha o mesmo PREFIXO `/contents/:id/versions` — `startsWith` a
+    // incluiria aqui, quebrando a asserção de exatamente 2.
     const contentVersionRoutes = NON_PUBLIC.filter((route) =>
       CONTENT_VERSION_ROUTE_KEYS.includes(key(route)),
     );

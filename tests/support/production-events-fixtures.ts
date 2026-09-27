@@ -34,13 +34,18 @@ export async function createTopic(): Promise<string> {
   return topic.id;
 }
 
+/** `rawText`/`radarClass` default — única fonte, reusada por `createRawContent` e pelo builder de `VersionedContentFields` (`versioned-content-fields-fixtures.ts`). */
+export const RAW_CONTENT_TEXT_FIELDS = {
+  rawText: 'Art. 113 do CTN define a obrigação tributária.',
+  radarClass: 'ALTA',
+} as const;
+
 export async function createRawContent(authorId: string, topicId: string) {
   return testPrisma.rawContent.create({
     data: {
       authorId,
       topicId,
-      rawText: 'Art. 113 do CTN define a obrigação tributária.',
-      radarClass: 'ALTA',
+      ...RAW_CONTENT_TEXT_FIELDS,
     },
   });
 }

@@ -12,6 +12,8 @@ import {
   closeContentVersion,
   listContentVersions,
 } from '../../src/modules/content-versions/content-versions.service';
+import type { VersionedContentFields } from '../../src/modules/content-versions/versioned-content-diff';
+import { withFailingTiraSignal } from '../support/failing-tira-signal';
 import {
   createRawContent,
   createTopic,
@@ -19,6 +21,7 @@ import {
   seedRuleBreakdown,
 } from '../support/production-events-fixtures';
 import { withQueryProbe } from '../support/query-probe';
+import { stripComments } from '../support/strip-comments';
 import { buildVersionedContentFields } from '../support/versioned-content-fields-fixtures';
 import { closeTestDb, resetDb, testPrisma } from './db';
 
@@ -51,42 +54,28 @@ async function seedElegibleRawContent(authorId: string, topicId: string) {
 }
 
 /**
- * `RawContent`+`RuleBreakdown` elegíveis para `approveContentVersion`
- * (fonte normativa presente por padrão — sourceType/sourceCitation, ausentes
- * em `createRawContent`/A necessário para passar a barreira de FR-030-013)
- * a partir do MESMO builder (`buildVersionedContentFields`, `tests/support/`)
- * que também alimenta `contentSnapshot` no fechamento real via
- * `closeContentVersion` — nenhuma duplicação dos 11 campos versionados.
+ * `RawContent`+`RuleBreakdown` elegíveis para `approveContentVersion` — reusa
+ * `createRawContent`/`seedRuleBreakdown` (mesmas fixtures do restante deste
+ * arquivo) e só sobrescreve `sourceType`/`sourceCitation`/`sourceUrl`
+ * (ausentes por padrão em `createRawContent` — necessário para passar a
+ * barreira de FR-030-013). Fonte dos valores de override:
+ * `buildVersionedContentFields` (`tests/support/`) — nenhuma duplicação dos
+ * campos versionados.
  */
 async function seedApprovableRawContent(
   authorId: string,
   topicId: string,
-  overrides: Partial<ReturnType<typeof buildVersionedContentFields>> = {},
+  overrides: Partial<
+    Pick<VersionedContentFields, 'sourceType' | 'sourceCitation' | 'sourceUrl'>
+  > = {},
 ) {
-  const fields = buildVersionedContentFields(overrides);
-  const rawContent = await testPrisma.rawContent.create({
-    data: {
-      authorId,
-      topicId,
-      rawText: fields.rawText,
-      radarClass: fields.radarClass,
-      sourceType: fields.sourceType,
-      sourceCitation: fields.sourceCitation,
-      sourceUrl: fields.sourceUrl,
-    },
+  const { sourceType, sourceCitation, sourceUrl } = buildVersionedContentFields(overrides);
+  const rawContent = await createRawContent(authorId, topicId);
+  await seedRuleBreakdown(rawContent.id);
+  return testPrisma.rawContent.update({
+    where: { id: rawContent.id },
+    data: { sourceType, sourceCitation, sourceUrl },
   });
-  await testPrisma.ruleBreakdown.create({
-    data: {
-      rawContentId: rawContent.id,
-      concept: fields.concept,
-      action: fields.action,
-      object: fields.object,
-      condition: fields.condition,
-      exception: fields.exception,
-      essence: fields.essence,
-    },
-  });
-  return rawContent;
 }
 
 const APPROVE_INPUT = { legalCheckConfirmed: true, pedagogicalCheckConfirmed: true } as const;
@@ -513,7 +502,7 @@ describe('AC-030-002 (FR-030-002): approveContentVersionSchema recusa confirmaç
 });
 
 describe('AC-030-003 (FR-030-003): RawContent alcançável sem nenhuma Versão fechada', () => {
-  it('recusa com NotFoundError "Não há Versão para aprovar."', async () => {
+  it('recusa com NotFoundError "Não há versão para aprovar."', async () => {
     const editor = await createUser('EDITOR');
     const admin = await createUser('ADMIN');
     const topicId = await createTopic();
@@ -522,7 +511,19 @@ describe('AC-030-003 (FR-030-003): RawContent alcançável sem nenhuma Versão f
     const message = await captureMessage(() =>
       approveContentVersion(rawContent.id, 1, APPROVE_INPUT, actorOf(admin), testPrisma),
     );
-    expect(message).toBe('Não há Versão para aprovar.');
+    expect(message).toBe('Não há versão para aprovar.');
+  });
+
+  it('RawContent alcançável SEM RuleBreakdown e SEM Versão fechada → mesma recusa, nunca exceção não prevista (regressão gate 1)', async () => {
+    const editor = await createUser('EDITOR');
+    const admin = await createUser('ADMIN');
+    const topicId = await createTopic();
+    const rawContent = await createRawContent(editor.id, topicId); // sem seedRuleBreakdown
+
+    const message = await captureMessage(() =>
+      approveContentVersion(rawContent.id, 1, APPROVE_INPUT, actorOf(admin), testPrisma),
+    );
+    expect(message).toBe('Não há versão para aprovar.');
   });
 });
 
@@ -547,7 +548,7 @@ describe('AC-030-004 (FR-030-004, NFR-030-002) + AC-030-023: segregação de fun
         testPrisma,
       ),
     );
-    expect(message).toBe('Você não tem permissão para aprovar esta Versão.');
+    expect(message).toBe('Você não tem permissão para aprovar esta versão.');
 
     const row = await testPrisma.contentVersion.findUniqueOrThrow({ where: { id: closed.id } });
     expect(row.approvedById).toBeNull();
@@ -574,7 +575,7 @@ describe('AC-030-004 (FR-030-004, NFR-030-002) + AC-030-023: segregação de fun
         testPrisma,
       ),
     );
-    expect(message).toBe('Você não tem permissão para aprovar esta Versão.');
+    expect(message).toBe('Você não tem permissão para aprovar esta versão.');
 
     const row = await testPrisma.contentVersion.findUniqueOrThrow({ where: { id: closed.id } });
     expect(row.approvedById).toBeNull();
@@ -593,8 +594,8 @@ describe('AC-030-004 (FR-030-004, NFR-030-002) + AC-030-023: segregação de fun
     );
 
     // Nenhum campo versionado muda (input vazio) — só lastEditedById/lastEditedAt
-    // são tocados, então o sinal de alteração (guard 10) segue apagado e a
-    // segregação (guard 8) é quem recusa.
+    // são tocados; a segregação de funções recusa antes mesmo de chegar à
+    // guarda de edição pós-fechamento (o ator É o último editor).
     await updateRawContent(rawContent.id, {}, actorOf(lastEditorAdmin), testPrisma);
 
     const message = await captureMessage(() =>
@@ -606,7 +607,7 @@ describe('AC-030-004 (FR-030-004, NFR-030-002) + AC-030-023: segregação de fun
         testPrisma,
       ),
     );
-    expect(message).toBe('Você não tem permissão para aprovar esta Versão.');
+    expect(message).toBe('Você não tem permissão para aprovar esta versão.');
 
     const row = await testPrisma.contentVersion.findUniqueOrThrow({ where: { id: closed.id } });
     expect(row.approvedById).toBeNull();
@@ -614,17 +615,88 @@ describe('AC-030-004 (FR-030-004, NFR-030-002) + AC-030-023: segregação de fun
 });
 
 /**
+ * Guarda de edição pós-fechamento (DEC-031-006 emendada, gate 8 da Wave 2):
+ * `updateRawContent` carimba `lastEditedById`/`lastEditedAt` em todo PATCH,
+ * mesmo sem mudar campo versionado — a identidade do último editor
+ * pré-fechamento pode ser sobrescrita por um 3º ator, abrindo um bypass da
+ * segregação de funções (o `Set` de produtores já não contém o verdadeiro
+ * último editor). Par: (i) o vetor exato de regressão — vermelho antes da
+ * correção; (ii) o caso legítimo (sem edição posterior) sobrevive.
+ */
+describe('Guarda de edição pós-fechamento (DEC-031-006 emendada): updateRawContent sem mudança versionada não pode apagar o bypass', () => {
+  it('W edita o texto normativo, X fecha a Versão, um 3º ator faz updateRawContent(id, {}) → W tenta aprovar → ConflictError (edição pós-fechamento); approvedById permanece null', async () => {
+    const author = await createUser('EDITOR');
+    const w = await createUser('ADMIN');
+    const x = await createUser('ADMIN');
+    const thirdActor = await createUser('ADMIN');
+    const topicId = await createTopic();
+    const rawContent = await seedApprovableRawContent(author.id, topicId);
+
+    // W edita um campo versionado ANTES do fechamento — W vira o último
+    // editor conhecido no momento do fechamento.
+    await updateRawContent(
+      rawContent.id,
+      { rawText: 'Texto revisado por W antes do fechamento.' },
+      actorOf(w),
+      testPrisma,
+    );
+
+    const closed = await closeContentVersion(
+      rawContent.id,
+      { legislativeClosureDate: '2026-09-01' },
+      actorOf(x),
+      testPrisma,
+    );
+
+    // Um 3º ator re-salva sem mudar NENHUM campo versionado — o sinal de
+    // alteração (guard do conteúdo) segue apagado, mas lastEditedById/
+    // lastEditedAt são sobrescritos: a identidade de W como último editor
+    // pré-fechamento deixa de ser conhecida (o bypass exato do achado).
+    await updateRawContent(rawContent.id, {}, actorOf(thirdActor), testPrisma);
+
+    const message = await captureMessage(() =>
+      approveContentVersion(rawContent.id, closed.number, APPROVE_INPUT, actorOf(w), testPrisma),
+    );
+    expect(message).toBe(
+      'O conteúdo foi editado depois do fechamento desta versão. É preciso fechar uma nova versão para aprovar.',
+    );
+
+    const row = await testPrisma.contentVersion.findUniqueOrThrow({ where: { id: closed.id } });
+    expect(row.approvedById).toBeNull();
+  });
+
+  it('Versão fechada SEM edição posterior, aprovador elegível → aprova com sucesso (o caso legítimo sobrevive)', async () => {
+    const author = await createUser('EDITOR');
+    const admin = await createUser('ADMIN');
+    const topicId = await createTopic();
+    const rawContent = await seedApprovableRawContent(author.id, topicId);
+    const closed = await closeContentVersion(
+      rawContent.id,
+      { legislativeClosureDate: '2026-09-01' },
+      actorOf(author),
+      testPrisma,
+    );
+
+    const approved = await approveContentVersion(
+      rawContent.id,
+      closed.number,
+      APPROVE_INPUT,
+      actorOf(admin),
+      testPrisma,
+    );
+
+    expect(approved.approvedById).toBe(admin.id);
+  });
+});
+
+/**
  * AC-030-005 (FR-030-005) — prova de AUSÊNCIA, universo declarado = `src`
  * inteiro (lição "[Testes] Prova de ausência por leitura de texto-fonte
  * precisa declarar o universo lido"): varredura recursiva real de todo
- * `src/` (exclui `generated`), comentários removidos antes do match (mesmo
- * `stripComments` de `production-events.service.integration.test.ts`) —
- * nenhuma outra função grava/apaga um `ContentVersion`.
+ * `src/` (exclui `generated`), comentários removidos antes do match
+ * (`stripComments`, `tests/support/`) — nenhuma outra função grava/apaga um
+ * `ContentVersion`.
  */
-function stripCommentsForMutationScan(source: string): string {
-  return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
-}
-
 function listTsFilesRecursive(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
     const full = join(dir, entry.name);
@@ -643,7 +715,7 @@ describe('AC-030-005 (FR-030-005): nenhuma outra função em src grava/apaga um 
     const matches: Array<{ file: string; snippet: string }> = [];
 
     for (const file of listTsFilesRecursive(SRC_ROOT)) {
-      const source = stripCommentsForMutationScan(readFileSync(file, 'utf8'));
+      const source = stripComments(readFileSync(file, 'utf8'));
       for (const match of source.matchAll(CONTENT_VERSION_MUTATION_PATTERN)) {
         const start = match.index ?? 0;
         matches.push({ file, snippet: source.slice(start, start + 150) });
@@ -658,7 +730,7 @@ describe('AC-030-005 (FR-030-005): nenhuma outra função em src grava/apaga um 
 });
 
 describe('AC-030-014 (FR-030-013): Versão vigente sem fonte normativa registrada no contentSnapshot', () => {
-  it('recusa com ConflictError "Falta fonte normativa registrada nesta Versão."; nenhum approvedById gravado', async () => {
+  it('recusa com ConflictError "Esta versão foi fechada sem fonte normativa. Registre a fonte no conteúdo e feche uma nova versão para aprovação."; nenhum approvedById gravado', async () => {
     const editor = await createUser('EDITOR');
     const admin = await createUser('ADMIN');
     const topicId = await createTopic();
@@ -682,7 +754,9 @@ describe('AC-030-014 (FR-030-013): Versão vigente sem fonte normativa registrad
         testPrisma,
       ),
     );
-    expect(message).toBe('Falta fonte normativa registrada nesta Versão.');
+    expect(message).toBe(
+      'Esta versão foi fechada sem fonte normativa. Registre a fonte no conteúdo e feche uma nova versão para aprovação.',
+    );
 
     const row = await testPrisma.contentVersion.findUniqueOrThrow({ where: { id: closed.id } });
     expect(row.approvedById).toBeNull();
@@ -690,7 +764,7 @@ describe('AC-030-014 (FR-030-013): Versão vigente sem fonte normativa registrad
 });
 
 describe('AC-030-015 (FR-030-014): duplo travamento pelo número — corrida por ESTADO sequencial', () => {
-  it('aprovar informando o number de uma Versão que DEIXOU de ser a vigente → ConflictError "O número informado não é mais o da Versão vigente."; nenhum approvedById gravado', async () => {
+  it('aprovar informando o number de uma Versão que DEIXOU de ser a vigente → ConflictError "A versão exibida não é mais a vigente. Atualize a página para ver a versão atual."; nenhum approvedById gravado', async () => {
     const editor = await createUser('EDITOR');
     const admin = await createUser('ADMIN');
     const topicId = await createTopic();
@@ -728,7 +802,9 @@ describe('AC-030-015 (FR-030-014): duplo travamento pelo número — corrida por
         testPrisma,
       ),
     );
-    expect(message).toBe('O número informado não é mais o da Versão vigente.');
+    expect(message).toBe(
+      'A versão exibida não é mais a vigente. Atualize a página para ver a versão atual.',
+    );
 
     const rows = await testPrisma.contentVersion.findMany({
       where: { rawContentId: rawContent.id },
@@ -750,12 +826,14 @@ describe('AC-030-016 (FR-030-015): sinal de alteração pós-fechamento (conteú
       testPrisma,
     );
 
-    await updateRawContent(
-      rawContent.id,
-      { rawText: 'Texto alterado depois do fechamento.' },
-      actorOf(editor),
-      testPrisma,
-    );
+    // Escrita DIRETA (não `updateRawContent`): isola o sinal de CONTEÚDO
+    // (guard 11, hasVersionedContentChanged) do sinal de EDIÇÃO pós-fechamento
+    // por timestamp (guard 8b) — `updateRawContent` sempre toca `lastEditedAt`,
+    // o que faria a guarda 8b vencer primeiro e mascarar esta prova.
+    await testPrisma.rawContent.update({
+      where: { id: rawContent.id },
+      data: { rawText: 'Texto alterado depois do fechamento.' },
+    });
 
     const message = await captureMessage(() =>
       approveContentVersion(
@@ -767,7 +845,7 @@ describe('AC-030-016 (FR-030-015): sinal de alteração pós-fechamento (conteú
       ),
     );
     expect(message).toBe(
-      'O conteúdo ou a Tira mnemônica foram alterados após o fechamento desta Versão.',
+      'O conteúdo ou a Tira mnemônica foram alterados depois do fechamento desta versão. É preciso fechar uma nova versão para aprovar.',
     );
 
     const row = await testPrisma.contentVersion.findUniqueOrThrow({ where: { id: closed.id } });
@@ -804,7 +882,7 @@ describe('AC-030-016 (FR-030-015): sinal de alteração pós-fechamento (conteú
       ),
     );
     expect(message).toBe(
-      'O conteúdo ou a Tira mnemônica foram alterados após o fechamento desta Versão.',
+      'O conteúdo ou a Tira mnemônica foram alterados depois do fechamento desta versão. É preciso fechar uma nova versão para aprovar.',
     );
 
     const row = await testPrisma.contentVersion.findUniqueOrThrow({ where: { id: closed.id } });
@@ -855,7 +933,7 @@ describe('AC-030-018 (FR-030-017, NFR-030-001): idempotência sob concorrência 
     expect(fulfilled).toHaveLength(1);
     expect(rejected).toHaveLength(1);
     expect((rejected[0] as PromiseRejectedResult).reason.message).toBe(
-      'Esta Versão já foi aprovada.',
+      'Esta versão já foi aprovada.',
     );
 
     const approvedRows = await testPrisma.contentVersion.findMany({
@@ -901,7 +979,7 @@ describe('AC-030-018 (FR-030-017, NFR-030-001): idempotência sob concorrência 
         testPrisma,
       ),
     );
-    expect(message).toBe('Esta Versão já foi aprovada.');
+    expect(message).toBe('Esta versão já foi aprovada.');
 
     const row = await testPrisma.contentVersion.findUniqueOrThrow({ where: { id: closed.id } });
     expect(row.approvedById).toBe(adminA.id);
@@ -982,7 +1060,9 @@ describe('approveContentVersion — precedência entre guardas (um caso por par 
         testPrisma,
       ),
     );
-    expect(message).toBe('O número informado não é mais o da Versão vigente.');
+    expect(message).toBe(
+      'A versão exibida não é mais a vigente. Atualize a página para ver a versão atual.',
+    );
   });
 
   it('(ii) já aprovada (7) vence sobre segregação (8): Versão vigente já aprovada por outro ator; 2ª tentativa é de um PRODUTOR → mensagem de "já aprovada"', async () => {
@@ -1015,7 +1095,7 @@ describe('approveContentVersion — precedência entre guardas (um caso por par 
         testPrisma,
       ),
     );
-    expect(message).toBe('Esta Versão já foi aprovada.');
+    expect(message).toBe('Esta versão já foi aprovada.');
   });
 
   it('(iii) segregação (8) vence sobre fonte ausente (9): ator é produtor E a Versão não tem fonte normativa → mensagem de PERMISSÃO', async () => {
@@ -1041,10 +1121,10 @@ describe('approveContentVersion — precedência entre guardas (um caso por par 
         testPrisma,
       ),
     );
-    expect(message).toBe('Você não tem permissão para aprovar esta Versão.');
+    expect(message).toBe('Você não tem permissão para aprovar esta versão.');
   });
 
-  it('(iv) fonte ausente (9) vence sobre sinal de alteração (10): Versão sem fonte normativa E com conteúdo alterado após o fechamento → mensagem de FONTE', async () => {
+  it('(iv) edição pós-fechamento (8b) vence sobre fonte ausente (9): Versão sem fonte normativa E RawContent editado depois do fechamento → mensagem de EDIÇÃO', async () => {
     const editor = await createUser('EDITOR');
     const admin = await createUser('ADMIN');
     const topicId = await createTopic();
@@ -1058,6 +1138,8 @@ describe('approveContentVersion — precedência entre guardas (um caso por par 
       actorOf(editor),
       testPrisma,
     );
+    // `updateRawContent` toca lastEditedAt (guard 8b) — a mesma ação também
+    // mudaria o conteúdo, mas 8b vem ANTES na ordem e vence.
     await updateRawContent(
       rawContent.id,
       { rawText: 'Texto alterado depois do fechamento.' },
@@ -1074,14 +1156,55 @@ describe('approveContentVersion — precedência entre guardas (um caso por par 
         testPrisma,
       ),
     );
-    expect(message).toBe('Falta fonte normativa registrada nesta Versão.');
+    expect(message).toBe(
+      'O conteúdo foi editado depois do fechamento desta versão. É preciso fechar uma nova versão para aprovar.',
+    );
+  });
+
+  it('(v) fonte ausente (9) vence sobre sinal de alteração da Tira (11): Versão sem fonte normativa E Tira alterada depois do fechamento → mensagem de FONTE', async () => {
+    const editor = await createUser('EDITOR');
+    const admin = await createUser('ADMIN');
+    const topicId = await createTopic();
+    const rawContent = await seedApprovableRawContent(editor.id, topicId, {
+      sourceType: null,
+      sourceCitation: null,
+    });
+    const closed = await closeContentVersion(
+      rawContent.id,
+      { legislativeClosureDate: '2026-09-01' },
+      actorOf(editor),
+      testPrisma,
+    );
+    // Evento de Tira (via productionEventsService direto): NÃO toca
+    // RawContent.lastEditedAt — a guarda 8b não acende, e o par testado aqui
+    // é genuinamente fonte ausente (9) vs. sinal de alteração (11).
+    await productionEventsService.recordProductionStageEvent(testPrisma, {
+      rawContentId: rawContent.id,
+      stageType: 'TIRA_MNEMONICA',
+      transitionType: 'CONCLUSAO',
+      actorId: editor.id,
+      now: new Date(closed.closedAt.getTime() + 1000),
+    });
+
+    const message = await captureMessage(() =>
+      approveContentVersion(
+        rawContent.id,
+        closed.number,
+        APPROVE_INPUT,
+        actorOf(admin),
+        testPrisma,
+      ),
+    );
+    expect(message).toBe(
+      'Esta versão foi fechada sem fonte normativa. Registre a fonte no conteúdo e feche uma nova versão para aprovação.',
+    );
   });
 });
 
 /**
- * Herança N1 (gate 8 da Wave 1, security-engineer): a Versão vigente é
- * resolvida pelo PRÓPRIO `rawContentId` do path — o `number` de outro
- * Conteúdo bruto nunca é confundido com o vigente daquele.
+ * Herança N1: a Versão vigente é resolvida pelo PRÓPRIO `rawContentId` do
+ * path — o `number` de outro Conteúdo bruto nunca é confundido com o vigente
+ * daquele.
  */
 describe('approveContentVersion — herança N1 (gate 8 W1): Versão resolvida pelo rawContentId do path', () => {
   it('aprovar rawContentId de A informando o number da Versão de B (que não existe em A) → recusa de número; 0 aprovações gravadas nas 2', async () => {
@@ -1120,7 +1243,9 @@ describe('approveContentVersion — herança N1 (gate 8 W1): Versão resolvida p
         testPrisma,
       ),
     );
-    expect(message).toBe('O número informado não é mais o da Versão vigente.');
+    expect(message).toBe(
+      'A versão exibida não é mais a vigente. Atualize a página para ver a versão atual.',
+    );
 
     const rowsA = await testPrisma.contentVersion.findMany({
       where: { rawContentId: rawContentA.id },
@@ -1133,32 +1258,12 @@ describe('approveContentVersion — herança N1 (gate 8 W1): Versão resolvida p
 });
 
 /**
- * Herança N2 (gate 8 da Wave 1, security-engineer): fail-secure do sinal de
- * alteração — `resolveAlterationSignal` rejeitando propaga o erro, nenhuma
- * escrita acontece. O `db` injetado intercepta SÓ `productionStageEvent.findFirst`
- * dentro da transação real (via `Proxy`, delegando tudo mais por
- * `Reflect.get`) — nunca o client raiz (`prisma`), que produziria falso
+ * Herança N2: fail-secure do sinal de alteração — `resolveAlterationSignal`
+ * rejeitando propaga o erro, nenhuma escrita acontece. `withFailingTiraSignal`
+ * (`tests/support/`) intercepta SÓ `productionStageEvent.findFirst` dentro da
+ * transação real — nunca o client raiz (`prisma`), que produziria falso
  * positivo por não ser o objeto realmente usado dentro do `$transaction`.
  */
-function withFailingTiraSignal<T extends object>(tx: T): T {
-  return new Proxy(tx, {
-    get(target, prop) {
-      if (prop === 'productionStageEvent') {
-        const real = Reflect.get(target, prop, target) as Record<string, unknown>;
-        return new Proxy(real, {
-          get(innerTarget, innerProp) {
-            if (innerProp === 'findFirst') {
-              return () => Promise.reject(new Error('falha simulada na leitura do sinal'));
-            }
-            return Reflect.get(innerTarget, innerProp, innerTarget) as unknown;
-          },
-        });
-      }
-      return Reflect.get(target, prop, target);
-    },
-  });
-}
-
 describe('approveContentVersion — herança N2 (gate 8 W1): fail-secure do sinal de alteração', () => {
   it('productionStageEvent.findFirst rejeitando DENTRO da transação → approveContentVersion rejeita; approvedById permanece null', async () => {
     const editor = await createUser('EDITOR');
