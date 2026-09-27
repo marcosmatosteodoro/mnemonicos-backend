@@ -14,8 +14,11 @@ import * as pdfComposer from '../../src/modules/publication/pdf-composer';
 import type { StripFrameForPdf } from '../../src/modules/publication/pdf-composer';
 import { exportPublication } from '../../src/modules/publication/publication.service';
 import { getReviewProtocolMarks } from '../../src/modules/publication/review-protocol';
-import { closeContentVersion } from '../../src/modules/content-versions/content-versions.service';
-import { saveRuleBreakdown } from '../../src/modules/contents/contents.service';
+import {
+  approveContentVersion,
+  closeContentVersion,
+} from '../../src/modules/content-versions/content-versions.service';
+import { saveRuleBreakdown, updateRawContent } from '../../src/modules/contents/contents.service';
 import * as visualAssociationsService from '../../src/modules/visual-associations/visual-associations.service';
 import { seedContrast, seedFlashcard } from '../support/material-reforco-fixtures';
 import { decodedDocumentText, decodedPageTexts, hexOfAscii } from '../support/pdf-text';
@@ -1026,6 +1029,8 @@ describe('exportPublication — carimbo de Versão editorial no cabeçalho de ra
       expect(pageTexts.every((text) => text.includes(versionStampHex))).toBe(true);
 
       // AC-028-011 (FR-028-010): o rótulo de RASCUNHO continua presente, sem substituição.
+      // Não-regressão (AC-030-010): nenhuma Versão aqui foi aprovada — approvedAndValid é
+      // false por construção, mesma asserção acima.
       const draftLabelHex = hexOfAscii('RASCUNHO');
       expect(pageTexts.every((text) => text.includes(draftLabelHex))).toBe(true);
 
@@ -1054,6 +1059,8 @@ describe('exportPublication — carimbo de Versão editorial no cabeçalho de ra
       const noVersionHex = hexOfAscii('Sem versão fechada.');
       expect(pageTexts.every((text) => text.includes(noVersionHex))).toBe(true);
 
+      // Não-regressão (AC-030-021): version === null nunca alcança o cálculo de
+      // approvedAndValid, mesma asserção abaixo.
       const draftLabelHex = hexOfAscii('RASCUNHO');
       expect(pageTexts.every((text) => text.includes(draftLabelHex))).toBe(true);
     },
@@ -1160,5 +1167,313 @@ describe('exportPublication — carimbo de Versão editorial no cabeçalho de ra
     // Controle negativo: nem a Versão 1 nem a Versão 2 (menor number) aparecem estampadas.
     expect(pageTexts.some((text) => text.includes(hexOfAscii('Versão 1 —')))).toBe(false);
     expect(pageTexts.some((text) => text.includes(hexOfAscii('Versão 2 —')))).toBe(false);
+  });
+});
+
+const APPROVE_INPUT = { legalCheckConfirmed: true, pedagogicalCheckConfirmed: true } as const;
+
+/**
+ * Carimbo de Versão APROVADA no cabeçalho (FEAT-030-002): FR-030-010/011/012. Cada caso
+ * seta `sourceType`/`sourceCitation` no `RawContent` (ausentes por padrão em
+ * `createRawContent`) via `updateRawContent` — pré-condição de `approveContentVersion`
+ * (FR-030-013) — ANTES do fechamento, para o snapshot da Versão carregar a fonte
+ * normativa. `closeContentVersion`/`approveContentVersion` reusados sem duplicar fixture.
+ */
+describe('exportPublication — carimbo de Versão aprovada no cabeçalho (FEAT-030-002)', () => {
+  it.each(['RESUMO', 'TIRA'] as const)(
+    'Variante %s — AC-030-009 (FR-030-010): Versão 3 aprovada, sem alteração de conteúdo nem de Tira → TODAS as páginas SUBSTITUEM "RASCUNHO" pela marca de alcance explícito; a 4ª linha (Versão/Data) permanece',
+    async (variant) => {
+      const editor = await createUser('EDITOR');
+      const admin = await createUser('ADMIN');
+      const topicId = await createTopic();
+      const rawContent = await createRawContent(editor.id, topicId);
+      await seedRuleBreakdown(rawContent.id);
+      const actor = actorOf(editor);
+      await updateRawContent(
+        rawContent.id,
+        { sourceType: 'LEI', sourceCitation: 'Lei 5.172/1966' },
+        actor,
+        testPrisma,
+      );
+
+      await closeContentVersion(
+        rawContent.id,
+        { legislativeClosureDate: '2026-07-01' },
+        actor,
+        testPrisma,
+      );
+      await closeContentVersion(
+        rawContent.id,
+        { legislativeClosureDate: '2026-08-01' },
+        actor,
+        testPrisma,
+      );
+      const closed = await closeContentVersion(
+        rawContent.id,
+        { legislativeClosureDate: '2026-09-01' },
+        actor,
+        testPrisma,
+      );
+      await approveContentVersion(
+        rawContent.id,
+        closed.number,
+        APPROVE_INPUT,
+        actorOf(admin),
+        testPrisma,
+      );
+
+      const result = await exportPublication(rawContent.id, { variant }, actor, testPrisma);
+      const doc = await PDFDocument.load(result.buffer);
+      const pageTexts = decodedPageTexts(doc);
+
+      expect(doc.getPageCount()).toBeGreaterThanOrEqual(2);
+      expect(pageTexts).toHaveLength(doc.getPageCount());
+
+      const approvedLabelHex = hexOfAscii(
+        'Conteúdo normativo e Tira mnemônica — Versão 3 aprovada',
+      );
+      expect(pageTexts.every((text) => text.includes(approvedLabelHex))).toBe(true);
+
+      // Substituição, não coexistência: nenhuma página carrega o rótulo antigo (ao
+      // contrário da linha de Versão/Data, que nunca muda — verificada logo abaixo).
+      const draftLabelHex = hexOfAscii('RASCUNHO');
+      expect(pageTexts.some((text) => text.includes(draftLabelHex))).toBe(false);
+
+      const versionStampHex = hexOfAscii('Versão 3 — verificado até 01/09/2026');
+      expect(pageTexts.every((text) => text.includes(versionStampHex))).toBe(true);
+    },
+  );
+
+  it.each(['RESUMO', 'TIRA'] as const)(
+    'Variante %s — AC-030-011 (FR-030-011): Versão 2 aprovada, Versão 3 fechada depois SEM aprovação própria → TODAS as páginas trazem "RASCUNHO" (a aprovação da 2 não se propaga, FR-030-006), NENHUMA traz a marca de aprovação',
+    async (variant) => {
+      const editor = await createUser('EDITOR');
+      const admin = await createUser('ADMIN');
+      const topicId = await createTopic();
+      const rawContent = await createRawContent(editor.id, topicId);
+      await seedRuleBreakdown(rawContent.id);
+      const actor = actorOf(editor);
+      await updateRawContent(
+        rawContent.id,
+        { sourceType: 'LEI', sourceCitation: 'Lei 5.172/1966' },
+        actor,
+        testPrisma,
+      );
+
+      await closeContentVersion(
+        rawContent.id,
+        { legislativeClosureDate: '2026-07-01' },
+        actor,
+        testPrisma,
+      );
+      const closedV2 = await closeContentVersion(
+        rawContent.id,
+        { legislativeClosureDate: '2026-08-01' },
+        actor,
+        testPrisma,
+      );
+      await approveContentVersion(
+        rawContent.id,
+        closedV2.number,
+        APPROVE_INPUT,
+        actorOf(admin),
+        testPrisma,
+      );
+      await closeContentVersion(
+        rawContent.id,
+        { legislativeClosureDate: '2026-09-01' },
+        actor,
+        testPrisma,
+      );
+
+      const result = await exportPublication(rawContent.id, { variant }, actor, testPrisma);
+      const doc = await PDFDocument.load(result.buffer);
+      const pageTexts = decodedPageTexts(doc);
+
+      const draftLabelHex = hexOfAscii('RASCUNHO');
+      expect(pageTexts.every((text) => text.includes(draftLabelHex))).toBe(true);
+
+      const approvedMarkerHex = hexOfAscii('aprovada');
+      expect(pageTexts.some((text) => text.includes(approvedMarkerHex))).toBe(false);
+    },
+  );
+
+  it.each(['RESUMO', 'TIRA'] as const)(
+    'Variante %s — AC-030-012 (FR-030-012) fail-secure: Versão aprovada, rawText alterado DEPOIS via updateRawContent → volta a "RASCUNHO" com a marca de alteração posterior, NENHUMA página traz a marca de aprovação',
+    async (variant) => {
+      const editor = await createUser('EDITOR');
+      const admin = await createUser('ADMIN');
+      const topicId = await createTopic();
+      const rawContent = await createRawContent(editor.id, topicId);
+      await seedRuleBreakdown(rawContent.id);
+      const actor = actorOf(editor);
+      await updateRawContent(
+        rawContent.id,
+        { sourceType: 'LEI', sourceCitation: 'Lei 5.172/1966' },
+        actor,
+        testPrisma,
+      );
+
+      const closed = await closeContentVersion(
+        rawContent.id,
+        { legislativeClosureDate: '2026-09-01' },
+        actor,
+        testPrisma,
+      );
+      await approveContentVersion(
+        rawContent.id,
+        closed.number,
+        APPROVE_INPUT,
+        actorOf(admin),
+        testPrisma,
+      );
+
+      await updateRawContent(
+        rawContent.id,
+        { rawText: 'Texto alterado depois do fechamento.' },
+        actor,
+        testPrisma,
+      );
+
+      const result = await exportPublication(rawContent.id, { variant }, actor, testPrisma);
+      const doc = await PDFDocument.load(result.buffer);
+      const pageTexts = decodedPageTexts(doc);
+
+      const alteredStampHex = hexOfAscii(
+        'Versão 1 — verificado até 01/09/2026 — alterado após o fechamento da Versão 1',
+      );
+      expect(pageTexts.every((text) => text.includes(alteredStampHex))).toBe(true);
+
+      const draftLabelHex = hexOfAscii('RASCUNHO');
+      expect(pageTexts.every((text) => text.includes(draftLabelHex))).toBe(true);
+
+      const approvedMarkerHex = hexOfAscii('aprovada');
+      expect(pageTexts.some((text) => text.includes(approvedMarkerHex))).toBe(false);
+    },
+  );
+
+  it.each(['RESUMO', 'TIRA'] as const)(
+    'Variante %s — AC-030-024 (FR-030-012) fail-secure, eixo TIRA: Versão aprovada, ProductionStageEvent TIRA_MNEMONICA registrado com occurredAt DEPOIS de closedAt → volta a "RASCUNHO" com a marca de alteração posterior, NENHUMA página traz a marca de aprovação (prova de fiação ponta a ponta)',
+    async (variant) => {
+      const editor = await createUser('EDITOR');
+      const admin = await createUser('ADMIN');
+      const topicId = await createTopic();
+      const rawContent = await createRawContent(editor.id, topicId);
+      await seedRuleBreakdown(rawContent.id);
+      const actor = actorOf(editor);
+      await updateRawContent(
+        rawContent.id,
+        { sourceType: 'LEI', sourceCitation: 'Lei 5.172/1966' },
+        actor,
+        testPrisma,
+      );
+
+      const closed = await closeContentVersion(
+        rawContent.id,
+        { legislativeClosureDate: '2026-09-01' },
+        actor,
+        testPrisma,
+      );
+      await approveContentVersion(
+        rawContent.id,
+        closed.number,
+        APPROVE_INPUT,
+        actorOf(admin),
+        testPrisma,
+      );
+
+      await testPrisma.productionStageEvent.create({
+        data: {
+          rawContentId: rawContent.id,
+          stageType: 'TIRA_MNEMONICA',
+          transitionType: 'CONCLUSAO',
+          actorId: editor.id,
+          occurredAt: new Date(closed.closedAt.getTime() + 1000),
+        },
+      });
+
+      const result = await exportPublication(rawContent.id, { variant }, actor, testPrisma);
+      const doc = await PDFDocument.load(result.buffer);
+      const pageTexts = decodedPageTexts(doc);
+
+      const alteredStampHex = hexOfAscii(
+        'Versão 1 — verificado até 01/09/2026 — alterado após o fechamento da Versão 1',
+      );
+      expect(pageTexts.every((text) => text.includes(alteredStampHex))).toBe(true);
+
+      const approvedMarkerHex = hexOfAscii('aprovada');
+      expect(pageTexts.some((text) => text.includes(approvedMarkerHex))).toBe(false);
+    },
+  );
+});
+
+/**
+ * `productionStageEvent.findFirst` rejeitando dentro de `resolveVersionStampForPdf`
+ * (chamado ANTES do `$transaction` de `exportPublication`) propaga o erro — nenhum PDF
+ * devolvido, nenhum evento gravado (fail-secure: nunca um `catch` silencioso que
+ * estamparia RASCUNHO escondendo a falha). O `db` injetado intercepta só esse método (via
+ * `Proxy`, delegando tudo mais por `Reflect.get`).
+ */
+function withFailingProductionStageEventFindFirst<T extends object>(db: T): T {
+  return new Proxy(db, {
+    get(target, prop) {
+      if (prop === 'productionStageEvent') {
+        const real = Reflect.get(target, prop, target) as Record<string, unknown>;
+        return new Proxy(real, {
+          get(innerTarget, innerProp) {
+            if (innerProp === 'findFirst') {
+              return () => Promise.reject(new Error('falha simulada na leitura do sinal'));
+            }
+            return Reflect.get(innerTarget, innerProp, innerTarget) as unknown;
+          },
+        });
+      }
+      return Reflect.get(target, prop, target);
+    },
+  });
+}
+
+describe('exportPublication — productionStageEvent.findFirst rejeitando propaga (fail-secure)', () => {
+  it('productionStageEvent.findFirst rejeitando → exportPublication rejeita; nenhum PDF devolvido, nenhum evento gravado', async () => {
+    const editor = await createUser('EDITOR');
+    const admin = await createUser('ADMIN');
+    const topicId = await createTopic();
+    const rawContent = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdown(rawContent.id);
+    const actor = actorOf(editor);
+    await updateRawContent(
+      rawContent.id,
+      { sourceType: 'LEI', sourceCitation: 'Lei 5.172/1966' },
+      actor,
+      testPrisma,
+    );
+
+    const closed = await closeContentVersion(
+      rawContent.id,
+      { legislativeClosureDate: '2026-09-01' },
+      actor,
+      testPrisma,
+    );
+    // Aprovada e sem alteração: hasVersionedContentChanged (curto-circuito) devolve
+    // false, então resolveAlterationSignal de fato alcança productionStageEvent.findFirst.
+    await approveContentVersion(
+      rawContent.id,
+      closed.number,
+      APPROVE_INPUT,
+      actorOf(admin),
+      testPrisma,
+    );
+
+    const failingDb = withFailingProductionStageEventFindFirst(testPrisma) as unknown as Parameters<
+      typeof exportPublication
+    >[3];
+
+    const err = await captureError(() =>
+      exportPublication(rawContent.id, { variant: 'RESUMO' }, actor, failingDb),
+    );
+    expect((err as Error).message).toBe('falha simulada na leitura do sinal');
+
+    const counts = await countEventsFor(rawContent.id);
+    expect(counts).toEqual({ productionStageEvents: 0, publicationEvents: 0 });
   });
 });
