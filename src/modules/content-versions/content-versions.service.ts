@@ -4,7 +4,11 @@ import { prisma } from '../../lib/prisma';
 import { assertRawContentReachable, type ContentActor } from '../contents/contents.service';
 import { recordProductionStageEvent } from '../production-events/production-events.service';
 import type { CloseContentVersionInput } from './content-versions.schema';
-import { toVersionedContentFields } from './versioned-content-diff';
+import {
+  hasVersionedContentChanged,
+  toVersionedContentFields,
+  type VersionedContentFields,
+} from './versioned-content-diff';
 
 /**
  * Ciclo de vida de Versão editorial (COMP-029-004/005 / TASK-029-002):
@@ -65,11 +69,14 @@ export interface ContentVersionDetail {
 /**
  * Cliente Prisma injetável (mesmo padrão de `ContrastClient`): cobre
  * `contentVersion`, `rawContent` (exigido pelo tipo de `assertRawContentReachable`),
- * `ruleBreakdown` (leitura do par versionado) e `$transaction`.
+ * `ruleBreakdown` (leitura do par versionado), `$transaction` e
+ * `productionStageEvent` (COMP-031-003/DEC-031-007 — `resolveAlterationSignal`
+ * lê o evento de Tira emitido por `tira.service.ts`, sem importar nada desse
+ * módulo além do valor do enum `stageType`).
  */
 type ContentVersionClient = Pick<
   typeof prisma,
-  'contentVersion' | 'rawContent' | 'ruleBreakdown' | '$transaction'
+  'contentVersion' | 'rawContent' | 'ruleBreakdown' | 'productionStageEvent' | '$transaction'
 >;
 
 /**
@@ -209,4 +216,44 @@ export async function listContentVersions(
     orderBy: { number: 'asc' },
     select: CONTENT_VERSION_DETAIL_SELECT,
   });
+}
+
+/**
+ * Sinal combinado de alteração pós-fechamento (COMP-031-003/DEC-031-007,
+ * PLAN §1/§6) — ÚNICO ponto de manutenção da combinação para os 3
+ * consumidores da fatia (leitura do histórico, gate de aprovação, carimbo do
+ * PDF: TASK-031-003/004/005), nenhum dos quais monta a combinação por conta
+ * própria. Por OU lógico:
+ *
+ *   1. `hasVersionedContentChanged` (F8, `versioned-content-diff.ts`,
+ *      intocado) — os 11 campos versionados de CONTEÚDO/Quebra da regra.
+ *   2. Evento de Tira mnemônica mais recente (`ProductionStageEvent`,
+ *      `stageType: 'TIRA_MNEMONICA'`, já emitido por `tira.service.ts` em todo
+ *      CRUD/reordenação de Quadro, intocado aqui) posterior ao fechamento da
+ *      Versão.
+ *
+ * Short-circuit (TRISK-031-002): se o CONTEÚDO já mudou, devolve sem
+ * consultar `productionStageEvent` — custo evitado quando desnecessário.
+ * `orderBy: { sequence: 'desc' }` (nunca `occurredAt`) — mesmo critério de
+ * desempate determinístico já usado por `listProductionStageEvents`
+ * (AC-009-008). Sem leitura de relógio: o "agora" implícito é
+ * `version.closedAt`, já passado pelo chamador.
+ */
+export async function resolveAlterationSignal(
+  rawContentId: string,
+  current: VersionedContentFields,
+  version: Pick<{ contentSnapshot: unknown; closedAt: Date }, 'contentSnapshot' | 'closedAt'>,
+  db: Pick<typeof prisma, 'productionStageEvent'>,
+): Promise<boolean> {
+  if (hasVersionedContentChanged(current, version.contentSnapshot as VersionedContentFields)) {
+    return true;
+  }
+
+  const latestTiraEvent = await db.productionStageEvent.findFirst({
+    where: { rawContentId, stageType: 'TIRA_MNEMONICA' },
+    orderBy: { sequence: 'desc' },
+    select: { occurredAt: true },
+  });
+
+  return latestTiraEvent !== null && latestTiraEvent.occurredAt > version.closedAt;
 }
