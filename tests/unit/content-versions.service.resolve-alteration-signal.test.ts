@@ -6,9 +6,7 @@ import type { VersionedContentFields } from '../../src/modules/content-versions/
  * de alteração pós-fechamento: dublê de `db`
  * (`{ productionStageEvent: { findFirst: jest.fn() } }`) — o MESMO objeto que
  * `resolveAlterationSignal` recebe como `db`, então a asserção de ausência de
- * chamada (caso a) é válida por construção (lição ativa "[Testes] Espião de
- * ausência num client Prisma que não é o mesmo objeto recebido pelo código
- * sob teste nunca falsifica").
+ * chamada (caso a) é válida por construção.
  *
  * Mutantes-alvo:
  *  - remover o `if (hasVersionedContentChanged(...)) return true;` faz o
