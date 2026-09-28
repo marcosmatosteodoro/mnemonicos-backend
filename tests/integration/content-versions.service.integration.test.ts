@@ -12,7 +12,7 @@ import {
   closeContentVersion,
   listContentVersions,
 } from '../../src/modules/content-versions/content-versions.service';
-import type { VersionedContentFields } from '../../src/modules/content-versions/versioned-content-diff';
+import { seedApprovableRawContent } from '../support/approvable-raw-content-fixtures';
 import { withFailingTiraSignal } from '../support/failing-tira-signal';
 import {
   createRawContent,
@@ -22,7 +22,6 @@ import {
 } from '../support/production-events-fixtures';
 import { withQueryProbe } from '../support/query-probe';
 import { stripComments } from '../support/strip-comments';
-import { buildVersionedContentFields } from '../support/versioned-content-fields-fixtures';
 import { closeTestDb, resetDb, testPrisma } from './db';
 
 /**
@@ -51,31 +50,6 @@ async function seedElegibleRawContent(authorId: string, topicId: string) {
   const rawContent = await createRawContent(authorId, topicId);
   await seedRuleBreakdown(rawContent.id);
   return rawContent;
-}
-
-/**
- * `RawContent`+`RuleBreakdown` elegíveis para `approveContentVersion` — reusa
- * `createRawContent`/`seedRuleBreakdown` (mesmas fixtures do restante deste
- * arquivo) e só sobrescreve `sourceType`/`sourceCitation`/`sourceUrl`
- * (ausentes por padrão em `createRawContent` — necessário para passar a
- * barreira de FR-030-013). Fonte dos valores de override:
- * `buildVersionedContentFields` (`tests/support/`) — nenhuma duplicação dos
- * campos versionados.
- */
-async function seedApprovableRawContent(
-  authorId: string,
-  topicId: string,
-  overrides: Partial<
-    Pick<VersionedContentFields, 'sourceType' | 'sourceCitation' | 'sourceUrl'>
-  > = {},
-) {
-  const { sourceType, sourceCitation, sourceUrl } = buildVersionedContentFields(overrides);
-  const rawContent = await createRawContent(authorId, topicId);
-  await seedRuleBreakdown(rawContent.id);
-  return testPrisma.rawContent.update({
-    where: { id: rawContent.id },
-    data: { sourceType, sourceCitation, sourceUrl },
-  });
 }
 
 const APPROVE_INPUT = { legalCheckConfirmed: true, pedagogicalCheckConfirmed: true } as const;

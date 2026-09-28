@@ -20,6 +20,7 @@ import {
 } from '../../src/modules/content-versions/content-versions.service';
 import { saveRuleBreakdown, updateRawContent } from '../../src/modules/contents/contents.service';
 import * as visualAssociationsService from '../../src/modules/visual-associations/visual-associations.service';
+import { seedApprovableRawContent } from '../support/approvable-raw-content-fixtures';
 import { withFailingTiraSignal } from '../support/failing-tira-signal';
 import { seedContrast, seedFlashcard } from '../support/material-reforco-fixtures';
 import { decodedDocumentText, decodedPageTexts, hexOfAscii } from '../support/pdf-text';
@@ -1172,21 +1173,6 @@ describe('exportPublication — carimbo de Versão editorial no cabeçalho de ra
 });
 
 const APPROVE_INPUT = { legalCheckConfirmed: true, pedagogicalCheckConfirmed: true } as const;
-
-/**
- * `RawContent`+`RuleBreakdown` elegíveis para `approveContentVersion` — mesmo padrão de
- * `content-versions.service.integration.test.ts`: `createRawContent`/`seedRuleBreakdown`
- * mais um `update` direto de `sourceType`/`sourceCitation` (ausentes por padrão,
- * FR-030-013), sem tocar `lastEditedById`/`lastEditedAt`.
- */
-async function seedApprovableRawContent(authorId: string, topicId: string) {
-  const rawContent = await createRawContent(authorId, topicId);
-  await seedRuleBreakdown(rawContent.id);
-  return testPrisma.rawContent.update({
-    where: { id: rawContent.id },
-    data: { sourceType: 'LEI', sourceCitation: 'Lei 5.172/1966' },
-  });
-}
 
 /**
  * Carimbo de Versão APROVADA no cabeçalho (FEAT-030-002): FR-030-010/011/012.
