@@ -178,11 +178,7 @@ describe('closeContentVersion — ordem das guardas (TASK-029-002, estrutural)',
 /**
  * Prova ESTRUTURAL da ORDEM exigida dentro do corpo de `approveContentVersion`
  * (PLAN-031 §6 DEC-031-001/006 emendada/009): mesmo mecanismo de
- * `extractFunctionBody` acima. Ordem real do corpo: lock → alcance → detalhe
- * do RawContent → Versão vigente (guarda de existência, ANTES da leitura de
- * RuleBreakdown — regra "`*OrThrow` só depois da guarda que torna a ausência
- * impossível") → número → já aprovada → segregação → edição pós-fechamento →
- * fonte ausente → RuleBreakdown → sinal de alteração → updateMany → evento.
+ * `extractFunctionBody` acima.
  *
  * Prova COMPORTAMENTAL completa vive em
  * `content-versions.service.integration.test.ts` — não duplicada aqui.
@@ -213,33 +209,32 @@ describe('approveContentVersion — ordem das guardas (estrutural)', () => {
     expect(ruleBreakdownIndex).toBeGreaterThan(-1);
 
     // Mutante: mover a leitura de RuleBreakdown para ANTES da guarda de
-    // existência da Versão faz esta asserção reprovar — é o regresso exato
-    // do gate 1 (RawContent sem RuleBreakdown nem Versão virava 500).
+    // existência da Versão faz esta asserção reprovar.
     expect(findFirstIndex).toBeLessThan(ruleBreakdownIndex);
   });
 
-  it('(c) producerIds.has (segregação) ANTES de rawContent.lastEditedAt (edição pós-fechamento)', () => {
+  it('(c) producerIds.has (segregação) ANTES de closureEvent (edição pós-fechamento)', () => {
     const producerIdsIndex = body.indexOf('producerIds.has(');
-    const editedAfterClosureIndex = body.indexOf('rawContent.lastEditedAt');
+    const closureEventIndex = body.indexOf('closureEvent');
 
     expect(producerIdsIndex).toBeGreaterThan(-1);
-    expect(editedAfterClosureIndex).toBeGreaterThan(-1);
+    expect(closureEventIndex).toBeGreaterThan(-1);
 
     // Mutante: trocar a ordem das 2 guardas faz esta asserção reprovar —
     // precedência exigida: identidade (403 genérico) vence edição pós-fechamento.
-    expect(producerIdsIndex).toBeLessThan(editedAfterClosureIndex);
+    expect(producerIdsIndex).toBeLessThan(closureEventIndex);
   });
 
-  it('(d) rawContent.lastEditedAt (edição pós-fechamento) ANTES de snapshot.sourceType (fonte ausente)', () => {
-    const editedAfterClosureIndex = body.indexOf('rawContent.lastEditedAt');
+  it('(d) closureEvent (edição pós-fechamento) ANTES de snapshot.sourceType (fonte ausente)', () => {
+    const closureEventIndex = body.indexOf('closureEvent');
     const sourceTypeIndex = body.indexOf('snapshot.sourceType');
 
-    expect(editedAfterClosureIndex).toBeGreaterThan(-1);
+    expect(closureEventIndex).toBeGreaterThan(-1);
     expect(sourceTypeIndex).toBeGreaterThan(-1);
 
     // Mutante: trocar a ordem das 2 guardas faz esta asserção reprovar —
     // precedência exigida: edição pós-fechamento vence fonte ausente.
-    expect(editedAfterClosureIndex).toBeLessThan(sourceTypeIndex);
+    expect(closureEventIndex).toBeLessThan(sourceTypeIndex);
   });
 
   it('(e) ruleBreakdown.findUniqueOrThrow ANTES de resolveAlterationSignal', () => {

@@ -91,8 +91,9 @@ type ContentVersionClient = Pick<
  * leitura de `RawContent`): os versionados (`rawText`/`radarClass`/
  * `sourceType`/`sourceCitation`/`sourceUrl`, usados para montar o
  * `contentSnapshot`, DEC-029-003) mais `authorId`/`lastEditedById`
- * (segregação de funções, FR-030-004) e `lastEditedAt` (guarda de edição
- * pós-fechamento, DEC-031-006 emendada).
+ * (segregação de funções, FR-030-004). A guarda de edição pós-fechamento
+ * (DEC-031-006 emendada) ordena por `ProductionStageEvent.sequence`, não por
+ * `lastEditedAt` — nenhum carimbo de tempo do `RawContent` entra aqui.
  */
 const RAW_CONTENT_VERSIONED_SELECT = {
   authorId: true,
@@ -102,7 +103,6 @@ const RAW_CONTENT_VERSIONED_SELECT = {
   sourceCitation: true,
   sourceUrl: true,
   lastEditedById: true,
-  lastEditedAt: true,
 } as const satisfies Prisma.RawContentSelect;
 
 /** Campos versionados da `RuleBreakdown` (passo 4/6) — os 5 blocos + a síntese. */
@@ -269,10 +269,10 @@ export async function resolveAlterationSignal(
  *   2. `assertRawContentReachable` (FR-030-018).
  *   3. Detalhe do `RawContent` versionado.
  *   4. Versão vigente inexistente → `NotFoundError` (FR-030-003) — ANTES da
- *      leitura de `RuleBreakdown` (passo 9): `*OrThrow` só depois da guarda
- *      que torna a ausência impossível (a invariante "toda ContentVersion
- *      tem RuleBreakdown", herdada de F8/F2, só vale a partir daqui — um
- *      RawContent sem Versão pode legitimamente não ter RuleBreakdown salva).
+ *      leitura de `RuleBreakdown` (passo 10): `*OrThrow` só depois da guarda
+ *      que torna a ausência impossível (a invariante "toda ContentVersion tem
+ *      RuleBreakdown" só vale a partir daqui — um RawContent sem Versão pode
+ *      legitimamente não ter RuleBreakdown salva).
  *   5. Número informado ≠ vigente → `ConflictError` (FR-030-014, duplo travamento).
  *   6. Já aprovada → `ConflictError` (checagem antecipada — a garantia real é o
  *      passo 12).
@@ -280,9 +280,13 @@ export async function resolveAlterationSignal(
  *      último editor} → `ForbiddenError` genérico (FR-030-004, NFR-030-002 —
  *      nunca revela qual identidade bateu).
  *   8. Edição pós-fechamento sem mudança versionada (DEC-031-006 emendada):
- *      `lastEditedAt` do RawContent posterior a `closedAt` da Versão vigente
- *      → `ConflictError` (o último editor pré-fechamento deixou de ser
- *      conhecido, fail-secure).
+ *      existe `ProductionStageEvent` `CONTEUDO_BRUTO` do `rawContentId` com
+ *      `sequence` maior que a do `VERSAO_EDITORIAL` que fechou a Versão
+ *      vigente → `ConflictError` (ordem do BANCO — `sequence` é atribuída no
+ *      INSERT, dentro da transação que espera o lock do passo 1; nunca
+ *      `lastEditedAt`/relógio de aplicação, que uma edição concorrente pode
+ *      commitar com timestamp ANTERIOR ao fechamento apesar de ter sido
+ *      serializada DEPOIS pelo lock).
  *   9. Fonte normativa ausente no `contentSnapshot` da Versão vigente →
  *      `ConflictError` (FR-030-013).
  *   10. `RuleBreakdown` versionada (só agora — passo 4 já garante que existe).
@@ -342,7 +346,20 @@ export async function approveContentVersion(
       throw new ForbiddenError('Você não tem permissão para aprovar esta versão.');
     }
 
-    if (rawContent.lastEditedAt !== null && rawContent.lastEditedAt > vigente.closedAt) {
+    const closureEvent = await tx.productionStageEvent.findFirstOrThrow({
+      where: { rawContentId, stageType: 'VERSAO_EDITORIAL' },
+      orderBy: { sequence: 'desc' },
+      select: { sequence: true },
+    });
+    const editedAfterClosure = await tx.productionStageEvent.findFirst({
+      where: {
+        rawContentId,
+        stageType: 'CONTEUDO_BRUTO',
+        sequence: { gt: closureEvent.sequence },
+      },
+      select: { id: true },
+    });
+    if (editedAfterClosure !== null) {
       throw new ConflictError(
         'O conteúdo foi editado depois do fechamento desta versão. É preciso fechar uma nova versão para aprovar.',
       );

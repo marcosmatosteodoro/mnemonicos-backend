@@ -5,7 +5,11 @@ import { join, resolve } from 'node:path';
 // (NFR-028-002, fail-secure) exige o objeto de módulo para `jest.spyOn` —
 // mesmo padrão de `contrasts.service.integration.test.ts`.
 import * as productionEventsService from '../../src/modules/production-events/production-events.service';
-import { updateRawContent, type ContentActor } from '../../src/modules/contents/contents.service';
+import {
+  saveRuleBreakdown,
+  updateRawContent,
+  type ContentActor,
+} from '../../src/modules/contents/contents.service';
 import { approveContentVersionSchema } from '../../src/modules/content-versions/content-versions.schema';
 import {
   approveContentVersion,
@@ -15,6 +19,7 @@ import {
 import { seedApprovableRawContent } from '../support/approvable-raw-content-fixtures';
 import { withFailingTiraSignal } from '../support/failing-tira-signal';
 import {
+  BREAKDOWN_FIELDS,
   createRawContent,
   createTopic,
   createUser,
@@ -44,6 +49,42 @@ async function captureMessage(fn: () => Promise<unknown>): Promise<string> {
     return (err as Error).message;
   }
   throw new Error('esperava rejeição, mas a chamada resolveu');
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Envolve o `tx` de uma transação Prisma para que `ruleBreakdown.findUnique`
+ * espere `delayMs` antes de resolver — usado para forçar interleaving real
+ * (via lock do Postgres) entre `closeContentVersion` e uma escrita
+ * concorrente na mesma linha. Todo o resto é delegado por `Reflect.get`
+ * (mesmo padrão de `withFailingTiraSignal`, `tests/support/`).
+ */
+function withDelayedRuleBreakdownRead<T extends object>(tx: T, delayMs: number): T {
+  return new Proxy(tx, {
+    get(target, prop) {
+      if (prop === 'ruleBreakdown') {
+        const real = Reflect.get(target, prop, target) as Record<string, unknown>;
+        return new Proxy(real, {
+          get(innerTarget, innerProp) {
+            if (innerProp === 'findUnique') {
+              const original = Reflect.get(innerTarget, innerProp, innerTarget) as (
+                ...args: unknown[]
+              ) => Promise<unknown>;
+              return async (...args: unknown[]) => {
+                await delay(delayMs);
+                return original.apply(innerTarget, args);
+              };
+            }
+            return Reflect.get(innerTarget, innerProp, innerTarget) as unknown;
+          },
+        });
+      }
+      return Reflect.get(target, prop, target);
+    },
+  });
 }
 
 async function seedElegibleRawContent(authorId: string, topicId: string) {
@@ -488,7 +529,7 @@ describe('AC-030-003 (FR-030-003): RawContent alcançável sem nenhuma Versão f
     expect(message).toBe('Não há versão para aprovar.');
   });
 
-  it('RawContent alcançável SEM RuleBreakdown e SEM Versão fechada → mesma recusa, nunca exceção não prevista (regressão gate 1)', async () => {
+  it('RawContent alcançável SEM RuleBreakdown e SEM Versão fechada → mesma recusa, nunca exceção não prevista', async () => {
     const editor = await createUser('EDITOR');
     const admin = await createUser('ADMIN');
     const topicId = await createTopic();
@@ -589,15 +630,13 @@ describe('AC-030-004 (FR-030-004, NFR-030-002) + AC-030-023: segregação de fun
 });
 
 /**
- * Guarda de edição pós-fechamento (DEC-031-006 emendada, gate 8 da Wave 2):
- * `updateRawContent` carimba `lastEditedById`/`lastEditedAt` em todo PATCH,
- * mesmo sem mudar campo versionado — a identidade do último editor
- * pré-fechamento pode ser sobrescrita por um 3º ator, abrindo um bypass da
- * segregação de funções (o `Set` de produtores já não contém o verdadeiro
- * último editor). Par: (i) o vetor exato de regressão — vermelho antes da
- * correção; (ii) o caso legítimo (sem edição posterior) sobrevive.
+ * Guarda de edição pós-fechamento (DEC-031-006 emendada): recusa quando
+ * existe `ProductionStageEvent` `CONTEUDO_BRUTO` do `rawContentId` com
+ * `sequence` maior que a do `VERSAO_EDITORIAL` que fechou a Versão vigente —
+ * ordenação do BANCO (`sequence`, atribuída no INSERT dentro da transação),
+ * nunca do relógio de aplicação. Não importa qual identidade editou.
  */
-describe('Guarda de edição pós-fechamento (DEC-031-006 emendada): updateRawContent sem mudança versionada não pode apagar o bypass', () => {
+describe('Guarda de edição pós-fechamento (DEC-031-006 emendada): CONTEUDO_BRUTO com sequence posterior ao VERSAO_EDITORIAL recusa', () => {
   it('W edita o texto normativo, X fecha a Versão, um 3º ator faz updateRawContent(id, {}) → W tenta aprovar → ConflictError (edição pós-fechamento); approvedById permanece null', async () => {
     const author = await createUser('EDITOR');
     const w = await createUser('ADMIN');
@@ -606,8 +645,8 @@ describe('Guarda de edição pós-fechamento (DEC-031-006 emendada): updateRawCo
     const topicId = await createTopic();
     const rawContent = await seedApprovableRawContent(author.id, topicId);
 
-    // W edita um campo versionado ANTES do fechamento — W vira o último
-    // editor conhecido no momento do fechamento.
+    // W edita um campo versionado ANTES do fechamento — emite um
+    // CONTEUDO_BRUTO com sequence MENOR que o VERSAO_EDITORIAL do fechamento.
     await updateRawContent(
       rawContent.id,
       { rawText: 'Texto revisado por W antes do fechamento.' },
@@ -622,10 +661,9 @@ describe('Guarda de edição pós-fechamento (DEC-031-006 emendada): updateRawCo
       testPrisma,
     );
 
-    // Um 3º ator re-salva sem mudar NENHUM campo versionado — o sinal de
-    // alteração (guard do conteúdo) segue apagado, mas lastEditedById/
-    // lastEditedAt são sobrescritos: a identidade de W como último editor
-    // pré-fechamento deixa de ser conhecida (o bypass exato do achado).
+    // Um 3º ator re-salva sem mudar NENHUM campo versionado — emite um
+    // CONTEUDO_BRUTO com sequence MAIOR que o VERSAO_EDITORIAL do fechamento,
+    // o suficiente para a guarda recusar, independente de qual identidade.
     await updateRawContent(rawContent.id, {}, actorOf(thirdActor), testPrisma);
 
     const message = await captureMessage(() =>
@@ -637,6 +675,92 @@ describe('Guarda de edição pós-fechamento (DEC-031-006 emendada): updateRawCo
 
     const row = await testPrisma.contentVersion.findUniqueOrThrow({ where: { id: closed.id } });
     expect(row.approvedById).toBeNull();
+  });
+
+  /**
+   * Vetor CONCORRENTE (DEC-031-006 emenda 2): interleaving forçado por lock
+   * real do Postgres — `closeContentVersion` recebe um `db` cujo
+   * `ruleBreakdown.findUnique` espera ~400ms DEPOIS de já ter tomado o
+   * `FOR UPDATE` (passo 1), enquanto um 3º ator dispara `updateRawContent`
+   * concorrente: a `UPDATE` dele fica bloqueada pelo lock do Postgres e só
+   * comita DEPOIS do fechamento — com `now` (relógio de aplicação) capturado
+   * ANTES de esperar o lock, ou seja, ANTERIOR a `closedAt`. A guarda por
+   * `sequence` (banco) recusa mesmo assim; a guarda antiga por
+   * `lastEditedAt`/relógio não recusaria.
+   */
+  it('Guarda 8b — vetor CONCORRENTE (emenda 2): edição concorrente que commita DEPOIS do fechamento recusa mesmo com timestamp de aplicação ANTERIOR ao fechamento', async () => {
+    const author = await createUser('EDITOR');
+    const w = await createUser('ADMIN');
+    const x = await createUser('ADMIN');
+    const thirdActor = await createUser('ADMIN');
+    const topicId = await createTopic();
+    const rawContent = await seedApprovableRawContent(author.id, topicId);
+
+    const delayingDb = {
+      $transaction: (callback: (tx: unknown) => Promise<unknown>) =>
+        testPrisma.$transaction((tx) => callback(withDelayedRuleBreakdownRead(tx, 400))),
+    } as unknown as Parameters<typeof closeContentVersion>[3];
+
+    const closePromise = closeContentVersion(
+      rawContent.id,
+      { legislativeClosureDate: '2026-09-01' },
+      actorOf(x),
+      delayingDb,
+    );
+    const updatePromise = (async () => {
+      // Cabeça de partida: garante que closeContentVersion já tomou o
+      // FOR UPDATE antes de a UPDATE concorrente tentar a mesma linha —
+      // sem isso a ordem de chegada ao Postgres seria indeterminada.
+      await delay(50);
+      await updateRawContent(rawContent.id, {}, actorOf(thirdActor), testPrisma);
+    })();
+
+    const [closed] = await Promise.all([closePromise, updatePromise]);
+
+    const message = await captureMessage(() =>
+      approveContentVersion(rawContent.id, closed.number, APPROVE_INPUT, actorOf(w), testPrisma),
+    );
+    expect(message).toBe(
+      'O conteúdo foi editado depois do fechamento desta versão. É preciso fechar uma nova versão para aprovar.',
+    );
+
+    const row = await testPrisma.contentVersion.findUniqueOrThrow({ where: { id: closed.id } });
+    expect(row.approvedById).toBeNull();
+  });
+
+  it('edição de campo versionado ANTES do fechamento (via updateRawContent), sem edição posterior → aprova com sucesso (eixo legítimo)', async () => {
+    const author = await createUser('EDITOR');
+    const admin = await createUser('ADMIN');
+    const topicId = await createTopic();
+    const rawContent = await seedApprovableRawContent(author.id, topicId);
+
+    // O único CONTEUDO_BRUTO deste RawContent tem sequence MENOR que o
+    // VERSAO_EDITORIAL emitido pelo fechamento abaixo — um predicado que
+    // recusasse por "existe algum CONTEUDO_BRUTO", sem comparar sequence,
+    // reprovaria este caso legítimo.
+    await updateRawContent(
+      rawContent.id,
+      { rawText: 'Texto revisado ANTES do fechamento.' },
+      actorOf(author),
+      testPrisma,
+    );
+
+    const closed = await closeContentVersion(
+      rawContent.id,
+      { legislativeClosureDate: '2026-09-01' },
+      actorOf(author),
+      testPrisma,
+    );
+
+    const approved = await approveContentVersion(
+      rawContent.id,
+      closed.number,
+      APPROVE_INPUT,
+      actorOf(admin),
+      testPrisma,
+    );
+
+    expect(approved.approvedById).toBe(admin.id);
   });
 
   it('Versão fechada SEM edição posterior, aprovador elegível → aprova com sucesso (o caso legítimo sobrevive)', async () => {
@@ -788,7 +912,7 @@ describe('AC-030-015 (FR-030-014): duplo travamento pelo número — corrida por
 });
 
 describe('AC-030-016 (FR-030-015): sinal de alteração pós-fechamento (conteúdo OU Tira) bloqueia a aprovação', () => {
-  it('conteúdo alterado após o fechamento (campo versionado do RawContent) → ConflictError', async () => {
+  it('MECANISMO: hasVersionedContentChanged sozinho recusa (escrita DIRETA no Prisma, sem emitir CONTEUDO_BRUTO — isola o sinal de conteúdo da guarda de edição pós-fechamento)', async () => {
     const editor = await createUser('EDITOR');
     const admin = await createUser('ADMIN');
     const topicId = await createTopic();
@@ -800,14 +924,56 @@ describe('AC-030-016 (FR-030-015): sinal de alteração pós-fechamento (conteú
       testPrisma,
     );
 
-    // Escrita DIRETA (não `updateRawContent`): isola o sinal de CONTEÚDO
-    // (guard 11, hasVersionedContentChanged) do sinal de EDIÇÃO pós-fechamento
-    // por timestamp (guard 8b) — `updateRawContent` sempre toca `lastEditedAt`,
-    // o que faria a guarda 8b vencer primeiro e mascarar esta prova.
+    // Escrita DIRETA (não `updateRawContent`): não emite ProductionStageEvent
+    // nenhum, então a guarda de edição pós-fechamento nunca teria como
+    // recusar aqui — só `hasVersionedContentChanged` fecha este caso.
     await testPrisma.rawContent.update({
       where: { id: rawContent.id },
       data: { rawText: 'Texto alterado depois do fechamento.' },
     });
+
+    const message = await captureMessage(() =>
+      approveContentVersion(
+        rawContent.id,
+        closed.number,
+        APPROVE_INPUT,
+        actorOf(admin),
+        testPrisma,
+      ),
+    );
+    expect(message).toBe(
+      'O conteúdo ou a Tira mnemônica foram alterados depois do fechamento desta versão. É preciso fechar uma nova versão para aprovar.',
+    );
+
+    const row = await testPrisma.contentVersion.findUniqueOrThrow({ where: { id: closed.id } });
+    expect(row.approvedById).toBeNull();
+  });
+
+  it('RuleBreakdown alterada após o fechamento via saveRuleBreakdown (escritor real que não emite CONTEUDO_BRUTO, não passa pela guarda de edição pós-fechamento) → ConflictError de alteração', async () => {
+    const editor = await createUser('EDITOR');
+    const admin = await createUser('ADMIN');
+    const topicId = await createTopic();
+    const rawContent = await seedApprovableRawContent(editor.id, topicId);
+    const closed = await closeContentVersion(
+      rawContent.id,
+      { legislativeClosureDate: '2026-09-01' },
+      actorOf(editor),
+      testPrisma,
+    );
+
+    await saveRuleBreakdown(
+      rawContent.id,
+      {
+        concept: BREAKDOWN_FIELDS.concept,
+        action: BREAKDOWN_FIELDS.action,
+        object: BREAKDOWN_FIELDS.object,
+        condition: BREAKDOWN_FIELDS.condition,
+        exception: BREAKDOWN_FIELDS.exception,
+        essence: 'Síntese alterada depois do fechamento.',
+      },
+      actorOf(editor),
+      testPrisma,
+    );
 
     const message = await captureMessage(() =>
       approveContentVersion(
