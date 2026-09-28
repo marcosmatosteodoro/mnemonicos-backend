@@ -20,6 +20,7 @@ import {
 } from '../../src/modules/content-versions/content-versions.service';
 import { saveRuleBreakdown, updateRawContent } from '../../src/modules/contents/contents.service';
 import * as visualAssociationsService from '../../src/modules/visual-associations/visual-associations.service';
+import { withFailingTiraSignal } from '../support/failing-tira-signal';
 import { seedContrast, seedFlashcard } from '../support/material-reforco-fixtures';
 import { decodedDocumentText, decodedPageTexts, hexOfAscii } from '../support/pdf-text';
 import { buildValidPngNxN } from '../support/png-fixtures';
@@ -1173,11 +1174,23 @@ describe('exportPublication — carimbo de Versão editorial no cabeçalho de ra
 const APPROVE_INPUT = { legalCheckConfirmed: true, pedagogicalCheckConfirmed: true } as const;
 
 /**
- * Carimbo de Versão APROVADA no cabeçalho (FEAT-030-002): FR-030-010/011/012. Cada caso
- * seta `sourceType`/`sourceCitation` no `RawContent` (ausentes por padrão em
- * `createRawContent`) via `updateRawContent` — pré-condição de `approveContentVersion`
- * (FR-030-013) — ANTES do fechamento, para o snapshot da Versão carregar a fonte
- * normativa. `closeContentVersion`/`approveContentVersion` reusados sem duplicar fixture.
+ * `RawContent`+`RuleBreakdown` elegíveis para `approveContentVersion` — mesmo padrão de
+ * `content-versions.service.integration.test.ts`: `createRawContent`/`seedRuleBreakdown`
+ * mais um `update` direto de `sourceType`/`sourceCitation` (ausentes por padrão,
+ * FR-030-013), sem tocar `lastEditedById`/`lastEditedAt`.
+ */
+async function seedApprovableRawContent(authorId: string, topicId: string) {
+  const rawContent = await createRawContent(authorId, topicId);
+  await seedRuleBreakdown(rawContent.id);
+  return testPrisma.rawContent.update({
+    where: { id: rawContent.id },
+    data: { sourceType: 'LEI', sourceCitation: 'Lei 5.172/1966' },
+  });
+}
+
+/**
+ * Carimbo de Versão APROVADA no cabeçalho (FEAT-030-002): FR-030-010/011/012.
+ * `closeContentVersion`/`approveContentVersion` reusados sem duplicar fixture.
  */
 describe('exportPublication — carimbo de Versão aprovada no cabeçalho (FEAT-030-002)', () => {
   it.each(['RESUMO', 'TIRA'] as const)(
@@ -1186,15 +1199,8 @@ describe('exportPublication — carimbo de Versão aprovada no cabeçalho (FEAT-
       const editor = await createUser('EDITOR');
       const admin = await createUser('ADMIN');
       const topicId = await createTopic();
-      const rawContent = await createRawContent(editor.id, topicId);
-      await seedRuleBreakdown(rawContent.id);
+      const rawContent = await seedApprovableRawContent(editor.id, topicId);
       const actor = actorOf(editor);
-      await updateRawContent(
-        rawContent.id,
-        { sourceType: 'LEI', sourceCitation: 'Lei 5.172/1966' },
-        actor,
-        testPrisma,
-      );
 
       await closeContentVersion(
         rawContent.id,
@@ -1234,8 +1240,7 @@ describe('exportPublication — carimbo de Versão aprovada no cabeçalho (FEAT-
       );
       expect(pageTexts.every((text) => text.includes(approvedLabelHex))).toBe(true);
 
-      // Substituição, não coexistência: nenhuma página carrega o rótulo antigo (ao
-      // contrário da linha de Versão/Data, que nunca muda — verificada logo abaixo).
+      // AC-030-009: substituição, não coexistência.
       const draftLabelHex = hexOfAscii('RASCUNHO');
       expect(pageTexts.some((text) => text.includes(draftLabelHex))).toBe(false);
 
@@ -1250,15 +1255,8 @@ describe('exportPublication — carimbo de Versão aprovada no cabeçalho (FEAT-
       const editor = await createUser('EDITOR');
       const admin = await createUser('ADMIN');
       const topicId = await createTopic();
-      const rawContent = await createRawContent(editor.id, topicId);
-      await seedRuleBreakdown(rawContent.id);
+      const rawContent = await seedApprovableRawContent(editor.id, topicId);
       const actor = actorOf(editor);
-      await updateRawContent(
-        rawContent.id,
-        { sourceType: 'LEI', sourceCitation: 'Lei 5.172/1966' },
-        actor,
-        testPrisma,
-      );
 
       await closeContentVersion(
         rawContent.id,
@@ -1304,15 +1302,8 @@ describe('exportPublication — carimbo de Versão aprovada no cabeçalho (FEAT-
       const editor = await createUser('EDITOR');
       const admin = await createUser('ADMIN');
       const topicId = await createTopic();
-      const rawContent = await createRawContent(editor.id, topicId);
-      await seedRuleBreakdown(rawContent.id);
+      const rawContent = await seedApprovableRawContent(editor.id, topicId);
       const actor = actorOf(editor);
-      await updateRawContent(
-        rawContent.id,
-        { sourceType: 'LEI', sourceCitation: 'Lei 5.172/1966' },
-        actor,
-        testPrisma,
-      );
 
       const closed = await closeContentVersion(
         rawContent.id,
@@ -1358,15 +1349,8 @@ describe('exportPublication — carimbo de Versão aprovada no cabeçalho (FEAT-
       const editor = await createUser('EDITOR');
       const admin = await createUser('ADMIN');
       const topicId = await createTopic();
-      const rawContent = await createRawContent(editor.id, topicId);
-      await seedRuleBreakdown(rawContent.id);
+      const rawContent = await seedApprovableRawContent(editor.id, topicId);
       const actor = actorOf(editor);
-      await updateRawContent(
-        rawContent.id,
-        { sourceType: 'LEI', sourceCitation: 'Lei 5.172/1966' },
-        actor,
-        testPrisma,
-      );
 
       const closed = await closeContentVersion(
         rawContent.id,
@@ -1401,52 +1385,22 @@ describe('exportPublication — carimbo de Versão aprovada no cabeçalho (FEAT-
       );
       expect(pageTexts.every((text) => text.includes(alteredStampHex))).toBe(true);
 
+      const draftLabelHex = hexOfAscii('RASCUNHO');
+      expect(pageTexts.every((text) => text.includes(draftLabelHex))).toBe(true);
+
       const approvedMarkerHex = hexOfAscii('aprovada');
       expect(pageTexts.some((text) => text.includes(approvedMarkerHex))).toBe(false);
     },
   );
 });
 
-/**
- * `productionStageEvent.findFirst` rejeitando dentro de `resolveVersionStampForPdf`
- * (chamado ANTES do `$transaction` de `exportPublication`) propaga o erro — nenhum PDF
- * devolvido, nenhum evento gravado (fail-secure: nunca um `catch` silencioso que
- * estamparia RASCUNHO escondendo a falha). O `db` injetado intercepta só esse método (via
- * `Proxy`, delegando tudo mais por `Reflect.get`).
- */
-function withFailingProductionStageEventFindFirst<T extends object>(db: T): T {
-  return new Proxy(db, {
-    get(target, prop) {
-      if (prop === 'productionStageEvent') {
-        const real = Reflect.get(target, prop, target) as Record<string, unknown>;
-        return new Proxy(real, {
-          get(innerTarget, innerProp) {
-            if (innerProp === 'findFirst') {
-              return () => Promise.reject(new Error('falha simulada na leitura do sinal'));
-            }
-            return Reflect.get(innerTarget, innerProp, innerTarget) as unknown;
-          },
-        });
-      }
-      return Reflect.get(target, prop, target);
-    },
-  });
-}
-
 describe('exportPublication — productionStageEvent.findFirst rejeitando propaga (fail-secure)', () => {
   it('productionStageEvent.findFirst rejeitando → exportPublication rejeita; nenhum PDF devolvido, nenhum evento gravado', async () => {
     const editor = await createUser('EDITOR');
     const admin = await createUser('ADMIN');
     const topicId = await createTopic();
-    const rawContent = await createRawContent(editor.id, topicId);
-    await seedRuleBreakdown(rawContent.id);
+    const rawContent = await seedApprovableRawContent(editor.id, topicId);
     const actor = actorOf(editor);
-    await updateRawContent(
-      rawContent.id,
-      { sourceType: 'LEI', sourceCitation: 'Lei 5.172/1966' },
-      actor,
-      testPrisma,
-    );
 
     const closed = await closeContentVersion(
       rawContent.id,
@@ -1464,7 +1418,7 @@ describe('exportPublication — productionStageEvent.findFirst rejeitando propag
       testPrisma,
     );
 
-    const failingDb = withFailingProductionStageEventFindFirst(testPrisma) as unknown as Parameters<
+    const failingDb = withFailingTiraSignal(testPrisma) as unknown as Parameters<
       typeof exportPublication
     >[3];
 

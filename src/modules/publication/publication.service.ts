@@ -141,9 +141,7 @@ async function assertRawContentExportable(
  * `number`, nunca por `closedAt`/`legislativeClosureDate`) — `null` = nenhuma Versão
  * fechada ainda (FR-028-009). Quando existe, `resolveAlterationSignal` compara o estado
  * ATUAL (`current`, já lido nos Passos 1/2 sem 3ª consulta) contra o `contentSnapshot`/
- * `closedAt` da Versão, combinando o sinal de CONTEÚDO com o da Tira mnemônica;
- * `approvedAndValid` só é `true` quando a Versão está aprovada (`approvedById !== null`) E
- * esse sinal combinado está apagado.
+ * `closedAt` da Versão, combinando o sinal de CONTEÚDO com o da Tira mnemônica.
  */
 async function resolveVersionStampForPdf(
   rawContentId: string,

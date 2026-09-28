@@ -143,10 +143,7 @@ function versionStampText(version: VersionStampForPdf | null): string {
   return `${base} — alterado após o fechamento da Versão ${version.number}`;
 }
 
-/** 1ª linha do cabeçalho (FR-030-010/011): a marca de alcance explícito quando a Versão
- * vigente está aprovada e sem sinal de alteração aceso; em qualquer outro caso —
- * `version === null`, nunca aprovada, ou sinal de alteração aceso —, `DRAFT_LABEL`
- * inalterado. */
+/** 1ª linha do cabeçalho (FR-030-010/011). */
 export function resolveHeaderLabel(version: VersionStampForPdf | null): string {
   if (version?.approvedAndValid === true) {
     return `Conteúdo normativo e Tira mnemônica — Versão ${version.number} aprovada`;
@@ -160,8 +157,8 @@ export function resolveHeaderLabel(version: VersionStampForPdf | null): string {
  * TAMBÉM qual Variante a página representa) + `meta.generatedAt` (FR-024-001/AC-024-005) +
  * carimbo de Versão (`meta.version`, FR-028-008/009/011) — chamada uma vez por página
  * recém-criada, nunca só na 1ª (tanto no laço de `buildStripPdf` quanto na(s) página(s) de
- * `buildSummaryPdf`); as 3 linhas seguintes são desenhadas SEMPRE, sem mudança de posição
- * (mesmo padrão já existente — nunca condicionalmente omitidas).
+ * `buildSummaryPdf`); as 3 linhas seguintes são desenhadas SEMPRE, nunca condicionalmente
+ * omitidas.
  */
 function drawDraftHeader(page: PDFPage, font: PDFFont, meta: PublicationPdfMeta): void {
   page.drawText(resolveHeaderLabel(meta.version), {
