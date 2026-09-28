@@ -678,17 +678,15 @@ describe('Guarda de edição pós-fechamento (DEC-031-006 emendada): CONTEUDO_BR
   });
 
   /**
-   * Vetor CONCORRENTE (DEC-031-006 emenda 2): interleaving forçado por lock
-   * real do Postgres — `closeContentVersion` recebe um `db` cujo
+   * Vetor CONCORRENTE (DEC-031-006): interleaving forçado por lock real do
+   * Postgres — `closeContentVersion` recebe um `db` cujo
    * `ruleBreakdown.findUnique` espera ~400ms DEPOIS de já ter tomado o
    * `FOR UPDATE` (passo 1), enquanto um 3º ator dispara `updateRawContent`
    * concorrente: a `UPDATE` dele fica bloqueada pelo lock do Postgres e só
    * comita DEPOIS do fechamento — com `now` (relógio de aplicação) capturado
-   * ANTES de esperar o lock, ou seja, ANTERIOR a `closedAt`. A guarda por
-   * `sequence` (banco) recusa mesmo assim; a guarda antiga por
-   * `lastEditedAt`/relógio não recusaria.
+   * ANTES de esperar o lock, ou seja, ANTERIOR a `closedAt`.
    */
-  it('Guarda 8b — vetor CONCORRENTE (emenda 2): edição concorrente que commita DEPOIS do fechamento recusa mesmo com timestamp de aplicação ANTERIOR ao fechamento', async () => {
+  it('Guarda 8b — vetor CONCORRENTE: edição concorrente que commita DEPOIS do fechamento recusa mesmo com timestamp de aplicação ANTERIOR ao fechamento', async () => {
     const author = await createUser('EDITOR');
     const w = await createUser('ADMIN');
     const x = await createUser('ADMIN');
@@ -716,6 +714,24 @@ describe('Guarda de edição pós-fechamento (DEC-031-006 emendada): CONTEUDO_BR
     })();
 
     const [closed] = await Promise.all([closePromise, updatePromise]);
+
+    // Controle positivo: confirma a pré-condição MEDIDA do interleaving —
+    // sem isso, uma inversão de ordem (pool frio, agendamento) daria
+    // vermelho mudo em vez de apontar a causa.
+    const closureEvent = await testPrisma.productionStageEvent.findFirstOrThrow({
+      where: { rawContentId: rawContent.id, stageType: 'VERSAO_EDITORIAL' },
+      orderBy: { sequence: 'desc' },
+    });
+    const concurrentEvent = await testPrisma.productionStageEvent.findFirstOrThrow({
+      where: { rawContentId: rawContent.id, stageType: 'CONTEUDO_BRUTO' },
+      orderBy: { sequence: 'desc' },
+    });
+    const rawContentAfter = await testPrisma.rawContent.findUniqueOrThrow({
+      where: { id: rawContent.id },
+    });
+    expect(concurrentEvent.sequence).toBeGreaterThan(closureEvent.sequence);
+    expect(rawContentAfter.lastEditedAt).not.toBeNull();
+    expect(rawContentAfter.lastEditedAt?.getTime()).toBeLessThan(closed.closedAt.getTime());
 
     const message = await captureMessage(() =>
       approveContentVersion(rawContent.id, closed.number, APPROVE_INPUT, actorOf(w), testPrisma),
@@ -755,6 +771,49 @@ describe('Guarda de edição pós-fechamento (DEC-031-006 emendada): CONTEUDO_BR
     const approved = await approveContentVersion(
       rawContent.id,
       closed.number,
+      APPROVE_INPUT,
+      actorOf(admin),
+      testPrisma,
+    );
+
+    expect(approved.approvedById).toBe(admin.id);
+  });
+
+  it('duas Versões fechadas com uma edição real entre elas → aprovar a MAIS RECENTE (V2) usa o VERSAO_EDITORIAL de V2 como referência, nunca o de V1', async () => {
+    const author = await createUser('EDITOR');
+    const admin = await createUser('ADMIN');
+    const topicId = await createTopic();
+    const rawContent = await seedApprovableRawContent(author.id, topicId);
+
+    const v1 = await closeContentVersion(
+      rawContent.id,
+      { legislativeClosureDate: '2026-08-01' },
+      actorOf(author),
+      testPrisma,
+    );
+
+    // Edição REAL entre os dois fechamentos — emite um CONTEUDO_BRUTO com
+    // sequence entre o VERSAO_EDITORIAL de V1 e o de V2 (mais antigo que o
+    // vigente): um predicado que usasse o VERSAO_EDITORIAL mais ANTIGO como
+    // referência (em vez do mais recente) recusaria este caso indevidamente.
+    await updateRawContent(
+      rawContent.id,
+      { rawText: 'Texto revisado entre V1 e V2.' },
+      actorOf(author),
+      testPrisma,
+    );
+
+    const v2 = await closeContentVersion(
+      rawContent.id,
+      { legislativeClosureDate: '2026-09-01' },
+      actorOf(author),
+      testPrisma,
+    );
+    expect(v2.number).toBe(v1.number + 1);
+
+    const approved = await approveContentVersion(
+      rawContent.id,
+      v2.number,
       APPROVE_INPUT,
       actorOf(admin),
       testPrisma,

@@ -286,7 +286,10 @@ export async function resolveAlterationSignal(
  *      INSERT, dentro da transação que espera o lock do passo 1; nunca
  *      `lastEditedAt`/relógio de aplicação, que uma edição concorrente pode
  *      commitar com timestamp ANTERIOR ao fechamento apesar de ter sido
- *      serializada DEPOIS pelo lock).
+ *      serializada DEPOIS pelo lock). `findFirstOrThrow` é seguro aqui: toda
+ *      `ContentVersion` nasce com seu próprio `VERSAO_EDITORIAL` na MESMA
+ *      transação de `closeContentVersion` (passo 4 já garante que `vigente`
+ *      existe).
  *   9. Fonte normativa ausente no `contentSnapshot` da Versão vigente →
  *      `ConflictError` (FR-030-013).
  *   10. `RuleBreakdown` versionada (só agora — passo 4 já garante que existe).
