@@ -3,7 +3,7 @@ import { closeTestDb, resetDb, testPrisma } from './db';
 
 /**
  * `ContentVersion.approvedById`/`approvedAt` — prova de contrato do schema
- * (TASK-031-001), sem passar por nenhum service. Grava/lê direto via
+ * (TASK-033-001), sem passar por nenhum service. Grava/lê direto via
  * `testPrisma`, mesmo molde de `content-version.model.integration.test.ts`.
  */
 
@@ -15,7 +15,7 @@ afterAll(async () => {
   await closeTestDb();
 });
 
-describe('ContentVersion.approvedById/approvedAt — estado inicial (FR-030-006 estrutural)', () => {
+describe('ContentVersion.approvedById/approvedAt — estado inicial (FR-032-006 estrutural)', () => {
   it('nasce não aprovada: approvedById e approvedAt são null quando ausentes do data do create', async () => {
     const author = await createUser('EDITOR');
     const topicId = await createTopic();

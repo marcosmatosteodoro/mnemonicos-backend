@@ -177,7 +177,7 @@ describe('closeContentVersion — ordem das guardas (TASK-029-002, estrutural)',
 
 /**
  * Prova ESTRUTURAL da ORDEM exigida dentro do corpo de `approveContentVersion`
- * (PLAN-031 §6 DEC-031-001/006 emendada/009): mesmo mecanismo de
+ * (PLAN-033 §6 DEC-033-001/006 emendada/009): mesmo mecanismo de
  * `extractFunctionBody` acima.
  *
  * Prova COMPORTAMENTAL completa vive em
@@ -189,7 +189,7 @@ describe('approveContentVersion — ordem das guardas (estrutural)', () => {
 
   it('(a) tx.$queryRaw com FOR UPDATE é a 1ª chamada do corpo, ANTES de assertRawContentReachable', () => {
     // Mutante: mover qualquer leitura/checagem para ANTES do lock faz esta
-    // asserção reprovar — DEC-031-001 herdada exige o lock como 1ª decisão.
+    // asserção reprovar — DEC-033-001 herdada exige o lock como 1ª decisão.
     expect(firstExecutableStatement(body)).toContain('tx.$queryRaw');
 
     const queryRawIndex = body.indexOf('tx.$queryRaw');

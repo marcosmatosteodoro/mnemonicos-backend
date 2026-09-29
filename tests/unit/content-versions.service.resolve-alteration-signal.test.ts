@@ -2,7 +2,7 @@ import { resolveAlterationSignal } from '../../src/modules/content-versions/cont
 import type { VersionedContentFields } from '../../src/modules/content-versions/versioned-content-diff';
 
 /**
- * Prova UNITÁRIA (TASK-031-002, COMP-031-003/DEC-031-007) do sinal combinado
+ * Prova UNITÁRIA (TASK-033-002, COMP-033-003/DEC-033-007) do sinal combinado
  * de alteração pós-fechamento: dublê de `db`
  * (`{ productionStageEvent: { findFirst: jest.fn() } }`) — o MESMO objeto que
  * `resolveAlterationSignal` recebe como `db`, então a asserção de ausência de
@@ -43,7 +43,7 @@ function buildDb(findFirstResult: { occurredAt: Date } | null) {
   return { db, findFirst };
 }
 
-describe('resolveAlterationSignal (TASK-031-002)', () => {
+describe('resolveAlterationSignal (TASK-033-002)', () => {
   it('(a) current divergente do contentSnapshot → true, sem consultar productionStageEvent (short-circuit)', async () => {
     const { db, findFirst } = buildDb(null);
     const current: VersionedContentFields = { ...BASE_FIELDS, rawText: 'texto mudou' };

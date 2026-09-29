@@ -28,7 +28,7 @@ export interface PublicationPdfMeta {
   version: VersionStampForPdf | null;
 }
 
-/** Carimbo de Versão vigente a desenhar no cabeçalho (FR-028-008/009/011, FR-030-010/011):
+/** Carimbo de Versão vigente a desenhar no cabeçalho (FR-028-008/009/011, FR-032-010/011):
  * a Versão de MAIOR `number` já fechada, se o Conteúdo/Quebra ou a Tira mnemônica foram
  * alterados depois desse fechamento (`alteredAfterClosure`), e se ela está aprovada e sem
  * esse sinal aceso (`approvedAndValid` — controla se `resolveHeaderLabel` desenha a marca
@@ -143,7 +143,7 @@ function versionStampText(version: VersionStampForPdf | null): string {
   return `${base} — alterado após o fechamento da Versão ${version.number}`;
 }
 
-/** 1ª linha do cabeçalho (FR-030-010/011). */
+/** 1ª linha do cabeçalho (FR-032-010/011). */
 export function resolveHeaderLabel(version: VersionStampForPdf | null): string {
   if (version?.approvedAndValid === true) {
     return `Conteúdo normativo e Tira mnemônica — Versão ${version.number} aprovada`;

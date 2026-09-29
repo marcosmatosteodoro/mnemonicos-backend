@@ -64,7 +64,7 @@ contentVersionsRoutes.get(
 
 /**
  * POST /contents/:id/versions/:number/approve — aprova a Versão vigente
- * `:number` de `:id` (FR-030-016: ADMIN only, sem `'EDITOR'` — deny-by-default).
+ * `:number` de `:id` (FR-032-016: ADMIN only, sem `'EDITOR'` — deny-by-default).
  * Responde `200` (atualiza um recurso já existente, ao contrário do `201` de
  * `POST /contents/:id/versions`, que cria uma Versão nova).
  */

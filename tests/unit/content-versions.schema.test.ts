@@ -44,9 +44,9 @@ describe('closeContentVersionSchema — recusa futura, sem monotonicidade (DEC-0
 });
 
 /**
- * `approveContentVersionSchema` (COMP-031-002): as 2 confirmações só aceitam
+ * `approveContentVersionSchema` (COMP-033-002): as 2 confirmações só aceitam
  * `true` literal — qualquer outro valor falha ANTES de qualquer leitura do
- * service (A-030-004).
+ * service (A-032-004).
  */
 describe('approveContentVersionSchema', () => {
   it('legalCheckConfirmed: false → ZodError', () => {
@@ -105,7 +105,7 @@ describe('approveContentVersionSchema', () => {
 });
 
 /**
- * `approveContentVersionParamsSchema` (COMP-031-002): `id` reusa a mensagem de
+ * `approveContentVersionParamsSchema` (COMP-033-002): `id` reusa a mensagem de
  * `rawContentIdParamSchema`, `number` coage string→number (req.params sempre
  * chega como string) e recusa não-positivo/não-inteiro.
  */

@@ -467,7 +467,7 @@ describe('listContentVersions — custo fixo de round-trips, independente de N (
   });
 });
 
-describe('AC-030-001 (parte ESCRITA) / AC-030-008 (FR-030-009): ADMIN elegível aprova a Versão vigente', () => {
+describe('AC-032-001 (parte ESCRITA) / AC-032-008 (FR-032-009): ADMIN elegível aprova a Versão vigente', () => {
   it('grava approvedById/approvedAt e emite exatamente 1 ProductionStageEvent APROVACAO_VERSAO/CONCLUSAO', async () => {
     const editor = await createUser('EDITOR');
     const admin = await createUser('ADMIN');
@@ -505,7 +505,7 @@ describe('AC-030-001 (parte ESCRITA) / AC-030-008 (FR-030-009): ADMIN elegível 
   });
 });
 
-describe('AC-030-002 (FR-030-002): approveContentVersionSchema recusa confirmação incompleta ANTES do service', () => {
+describe('AC-032-002 (FR-032-002): approveContentVersionSchema recusa confirmação incompleta ANTES do service', () => {
   it.each([
     ['legalCheckConfirmed: false', { legalCheckConfirmed: false, pedagogicalCheckConfirmed: true }],
     ['pedagogicalCheckConfirmed ausente', { legalCheckConfirmed: true }],
@@ -516,7 +516,7 @@ describe('AC-030-002 (FR-030-002): approveContentVersionSchema recusa confirmaç
   });
 });
 
-describe('AC-030-003 (FR-030-003): RawContent alcançável sem nenhuma Versão fechada', () => {
+describe('AC-032-003 (FR-032-003): RawContent alcançável sem nenhuma Versão fechada', () => {
   it('recusa com NotFoundError "Não há versão para aprovar."', async () => {
     const editor = await createUser('EDITOR');
     const admin = await createUser('ADMIN');
@@ -542,7 +542,7 @@ describe('AC-030-003 (FR-030-003): RawContent alcançável sem nenhuma Versão f
   });
 });
 
-describe('AC-030-004 (FR-030-004, NFR-030-002) + AC-030-023: segregação de funções — prova COMPORTAMENTAL própria (escrita nova sobre content_versions)', () => {
+describe('AC-032-004 (FR-032-004, NFR-032-002) + AC-032-023: segregação de funções — prova COMPORTAMENTAL própria (escrita nova sobre content_versions)', () => {
   it('quem fechou a Versão (ContentVersion.authorId) não pode aprová-la', async () => {
     const editor = await createUser('EDITOR');
     const topicId = await createTopic();
@@ -596,7 +596,7 @@ describe('AC-030-004 (FR-030-004, NFR-030-002) + AC-030-023: segregação de fun
     expect(row.approvedById).toBeNull();
   });
 
-  it('último editor do RawContent (RawContent.lastEditedById), setado DEPOIS do fechamento via updateRawContent, ainda bloqueia (leitura AO VIVO, DEC-031-006)', async () => {
+  it('último editor do RawContent (RawContent.lastEditedById), setado DEPOIS do fechamento via updateRawContent, ainda bloqueia (leitura AO VIVO, DEC-033-006)', async () => {
     const author = await createUser('EDITOR');
     const lastEditorAdmin = await createUser('ADMIN');
     const topicId = await createTopic();
@@ -630,13 +630,13 @@ describe('AC-030-004 (FR-030-004, NFR-030-002) + AC-030-023: segregação de fun
 });
 
 /**
- * Guarda de edição pós-fechamento (DEC-031-006 emendada): recusa quando
+ * Guarda de edição pós-fechamento (DEC-033-006 emendada): recusa quando
  * existe `ProductionStageEvent` `CONTEUDO_BRUTO` do `rawContentId` com
  * `sequence` maior que a do `VERSAO_EDITORIAL` que fechou a Versão vigente —
  * ordenação do BANCO (`sequence`, atribuída no INSERT dentro da transação),
  * nunca do relógio de aplicação. Não importa qual identidade editou.
  */
-describe('Guarda de edição pós-fechamento (DEC-031-006 emendada): CONTEUDO_BRUTO com sequence posterior ao VERSAO_EDITORIAL recusa', () => {
+describe('Guarda de edição pós-fechamento (DEC-033-006 emendada): CONTEUDO_BRUTO com sequence posterior ao VERSAO_EDITORIAL recusa', () => {
   it('W edita o texto normativo, X fecha a Versão, um 3º ator faz updateRawContent(id, {}) → W tenta aprovar → ConflictError (edição pós-fechamento); approvedById permanece null', async () => {
     const author = await createUser('EDITOR');
     const w = await createUser('ADMIN');
@@ -678,7 +678,7 @@ describe('Guarda de edição pós-fechamento (DEC-031-006 emendada): CONTEUDO_BR
   });
 
   /**
-   * Vetor CONCORRENTE (DEC-031-006): interleaving forçado por lock real do
+   * Vetor CONCORRENTE (DEC-033-006): interleaving forçado por lock real do
    * Postgres — `closeContentVersion` recebe um `db` cujo
    * `ruleBreakdown.findUnique` espera ~400ms DEPOIS de já ter tomado o
    * `FOR UPDATE` (passo 1), enquanto um 3º ator dispara `updateRawContent`
@@ -847,7 +847,7 @@ describe('Guarda de edição pós-fechamento (DEC-031-006 emendada): CONTEUDO_BR
 });
 
 /**
- * AC-030-005 (FR-030-005) — prova de AUSÊNCIA, universo declarado = `src`
+ * AC-032-005 (FR-032-005) — prova de AUSÊNCIA, universo declarado = `src`
  * inteiro (lição "[Testes] Prova de ausência por leitura de texto-fonte
  * precisa declarar o universo lido"): varredura recursiva real de todo
  * `src/` (exclui `generated`), comentários removidos antes do match
@@ -867,7 +867,7 @@ function listTsFilesRecursive(dir: string): string[] {
 const CONTENT_VERSION_MUTATION_PATTERN = /contentVersion\.(update|updateMany|delete|deleteMany)\(/g;
 const SRC_ROOT = resolve(__dirname, '../../src');
 
-describe('AC-030-005 (FR-030-005): nenhuma outra função em src grava/apaga um ContentVersion — prova de ausência, universo = src inteiro', () => {
+describe('AC-032-005 (FR-032-005): nenhuma outra função em src grava/apaga um ContentVersion — prova de ausência, universo = src inteiro', () => {
   it('exatamente 1 ocorrência em todo src/ — a updateMany desta própria TASK, com where completo (approvedById: null)', () => {
     const matches: Array<{ file: string; snippet: string }> = [];
 
@@ -886,7 +886,7 @@ describe('AC-030-005 (FR-030-005): nenhuma outra função em src grava/apaga um 
   });
 });
 
-describe('AC-030-014 (FR-030-013): Versão vigente sem fonte normativa registrada no contentSnapshot', () => {
+describe('AC-032-014 (FR-032-013): Versão vigente sem fonte normativa registrada no contentSnapshot', () => {
   it('recusa com ConflictError "Esta versão foi fechada sem fonte normativa. Registre a fonte no conteúdo e feche uma nova versão para aprovação."; nenhum approvedById gravado', async () => {
     const editor = await createUser('EDITOR');
     const admin = await createUser('ADMIN');
@@ -920,7 +920,7 @@ describe('AC-030-014 (FR-030-013): Versão vigente sem fonte normativa registrad
   });
 });
 
-describe('AC-030-015 (FR-030-014): duplo travamento pelo número — corrida por ESTADO sequencial', () => {
+describe('AC-032-015 (FR-032-014): duplo travamento pelo número — corrida por ESTADO sequencial', () => {
   it('aprovar informando o number de uma Versão que DEIXOU de ser a vigente → ConflictError "A versão exibida não é mais a vigente. Atualize a página para ver a versão atual."; nenhum approvedById gravado', async () => {
     const editor = await createUser('EDITOR');
     const admin = await createUser('ADMIN');
@@ -970,7 +970,7 @@ describe('AC-030-015 (FR-030-014): duplo travamento pelo número — corrida por
   });
 });
 
-describe('AC-030-016 (FR-030-015): sinal de alteração pós-fechamento (conteúdo OU Tira) bloqueia a aprovação', () => {
+describe('AC-032-016 (FR-032-015): sinal de alteração pós-fechamento (conteúdo OU Tira) bloqueia a aprovação', () => {
   it('MECANISMO: hasVersionedContentChanged sozinho recusa (escrita DIRETA no Prisma, sem emitir CONTEUDO_BRUTO — isola o sinal de conteúdo da guarda de edição pós-fechamento)', async () => {
     const editor = await createUser('EDITOR');
     const admin = await createUser('ADMIN');
@@ -1090,13 +1090,13 @@ describe('AC-030-016 (FR-030-015): sinal de alteração pós-fechamento (conteú
 });
 
 /**
- * AC-030-018 (FR-030-017, NFR-030-001) — prova de CONCORRÊNCIA REAL (lição
+ * AC-032-018 (FR-032-017, NFR-032-001) — prova de CONCORRÊNCIA REAL (lição
  * "[Segurança] Corrida (TOCTOU) só se fecha com prova de CONCORRÊNCIA real
  * contando linhas no fim"): `Promise.all`/`Promise.allSettled` disparando as 2
  * chamadas de fato em paralelo, contagem de linhas no fim como oráculo
  * primário — nunca só a mensagem do erro.
  */
-describe('AC-030-018 (FR-030-017, NFR-030-001): idempotência sob concorrência real — exatamente 1 sucesso, nunca os 2', () => {
+describe('AC-032-018 (FR-032-017, NFR-032-001): idempotência sob concorrência real — exatamente 1 sucesso, nunca os 2', () => {
   it('2 chamadas para a MESMA Versão, por 2 ADMINs elegíveis distintos, disparadas em paralelo → exatamente 1 sucesso e 1 ConflictError; 1 linha aprovada, 1 evento APROVACAO_VERSAO', async () => {
     const editor = await createUser('EDITOR');
     const adminA = await createUser('ADMIN');
@@ -1185,7 +1185,7 @@ describe('AC-030-018 (FR-030-017, NFR-030-001): idempotência sob concorrência 
   });
 });
 
-describe('AC-030-019 (FR-030-018): RawContent soft-deletado com Versão fechada', () => {
+describe('AC-032-019 (FR-032-018): RawContent soft-deletado com Versão fechada', () => {
   it('recusa com NotFoundError "Conteúdo bruto foi removido."; nenhum approvedById gravado', async () => {
     const editor = await createUser('EDITOR');
     const admin = await createUser('ADMIN');

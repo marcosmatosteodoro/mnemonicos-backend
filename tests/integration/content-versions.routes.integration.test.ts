@@ -106,7 +106,7 @@ describe('NFR-028-001/002 (fail-secure, camada HTTP): erro não previsto na emis
 const EVIL_ORIGIN = 'https://evil.example';
 
 /**
- * `POST /contents/:id/versions/:number/approve` (COMP-031-006 / TASK-031-003)
+ * `POST /contents/:id/versions/:number/approve` (COMP-033-006 / TASK-033-003)
  * ponta-a-ponta: guarda composta e idempotência já provadas no NÍVEL DE
  * SERVICE em `content-versions.service.integration.test.ts`; aqui a mesma
  * garantia é provada na CAMADA HTTP (`verifyOrigin` + `requireRole` + fail-secure).
@@ -176,7 +176,7 @@ describe('POST /contents/:id/versions/:number/approve — camada HTTP', () => {
     expect(res.status).toBe(403);
   });
 
-  it('NFR-030-001/002 fail-secure na camada HTTP: recordProductionStageEvent rejeitando → 500 genérico, approvedById permanece null (rollback completo)', async () => {
+  it('NFR-032-001/002 fail-secure na camada HTTP: recordProductionStageEvent rejeitando → 500 genérico, approvedById permanece null (rollback completo)', async () => {
     const { rawContentId, number, adminAccess } = await seedClosedVersion();
 
     jest

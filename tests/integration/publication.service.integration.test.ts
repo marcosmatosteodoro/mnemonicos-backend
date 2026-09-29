@@ -1031,7 +1031,7 @@ describe('exportPublication — carimbo de Versão editorial no cabeçalho de ra
       expect(pageTexts.every((text) => text.includes(versionStampHex))).toBe(true);
 
       // AC-028-011 (FR-028-010): o rótulo de RASCUNHO continua presente, sem substituição.
-      // Não-regressão (AC-030-010): nenhuma Versão aqui foi aprovada — approvedAndValid é
+      // Não-regressão (AC-032-010): nenhuma Versão aqui foi aprovada — approvedAndValid é
       // false por construção, mesma asserção acima.
       const draftLabelHex = hexOfAscii('RASCUNHO');
       expect(pageTexts.every((text) => text.includes(draftLabelHex))).toBe(true);
@@ -1061,7 +1061,7 @@ describe('exportPublication — carimbo de Versão editorial no cabeçalho de ra
       const noVersionHex = hexOfAscii('Sem versão fechada.');
       expect(pageTexts.every((text) => text.includes(noVersionHex))).toBe(true);
 
-      // Não-regressão (AC-030-021): version === null nunca alcança o cálculo de
+      // Não-regressão (AC-032-021): version === null nunca alcança o cálculo de
       // approvedAndValid, mesma asserção abaixo.
       const draftLabelHex = hexOfAscii('RASCUNHO');
       expect(pageTexts.every((text) => text.includes(draftLabelHex))).toBe(true);
@@ -1175,12 +1175,12 @@ describe('exportPublication — carimbo de Versão editorial no cabeçalho de ra
 const APPROVE_INPUT = { legalCheckConfirmed: true, pedagogicalCheckConfirmed: true } as const;
 
 /**
- * Carimbo de Versão APROVADA no cabeçalho (FEAT-030-002): FR-030-010/011/012.
+ * Carimbo de Versão APROVADA no cabeçalho (FEAT-032-002): FR-032-010/011/012.
  * `closeContentVersion`/`approveContentVersion` reusados sem duplicar fixture.
  */
-describe('exportPublication — carimbo de Versão aprovada no cabeçalho (FEAT-030-002)', () => {
+describe('exportPublication — carimbo de Versão aprovada no cabeçalho (FEAT-032-002)', () => {
   it.each(['RESUMO', 'TIRA'] as const)(
-    'Variante %s — AC-030-009 (FR-030-010): Versão 3 aprovada, sem alteração de conteúdo nem de Tira → TODAS as páginas SUBSTITUEM "RASCUNHO" pela marca de alcance explícito; a 4ª linha (Versão/Data) permanece',
+    'Variante %s — AC-032-009 (FR-032-010): Versão 3 aprovada, sem alteração de conteúdo nem de Tira → TODAS as páginas SUBSTITUEM "RASCUNHO" pela marca de alcance explícito; a 4ª linha (Versão/Data) permanece',
     async (variant) => {
       const editor = await createUser('EDITOR');
       const admin = await createUser('ADMIN');
@@ -1226,7 +1226,7 @@ describe('exportPublication — carimbo de Versão aprovada no cabeçalho (FEAT-
       );
       expect(pageTexts.every((text) => text.includes(approvedLabelHex))).toBe(true);
 
-      // AC-030-009: substituição, não coexistência.
+      // AC-032-009: substituição, não coexistência.
       const draftLabelHex = hexOfAscii('RASCUNHO');
       expect(pageTexts.some((text) => text.includes(draftLabelHex))).toBe(false);
 
@@ -1236,7 +1236,7 @@ describe('exportPublication — carimbo de Versão aprovada no cabeçalho (FEAT-
   );
 
   it.each(['RESUMO', 'TIRA'] as const)(
-    'Variante %s — AC-030-011 (FR-030-011): Versão 2 aprovada, Versão 3 fechada depois SEM aprovação própria → TODAS as páginas trazem "RASCUNHO" (a aprovação da 2 não se propaga, FR-030-006), NENHUMA traz a marca de aprovação',
+    'Variante %s — AC-032-011 (FR-032-011): Versão 2 aprovada, Versão 3 fechada depois SEM aprovação própria → TODAS as páginas trazem "RASCUNHO" (a aprovação da 2 não se propaga, FR-032-006), NENHUMA traz a marca de aprovação',
     async (variant) => {
       const editor = await createUser('EDITOR');
       const admin = await createUser('ADMIN');
@@ -1283,7 +1283,7 @@ describe('exportPublication — carimbo de Versão aprovada no cabeçalho (FEAT-
   );
 
   it.each(['RESUMO', 'TIRA'] as const)(
-    'Variante %s — AC-030-012 (FR-030-012) fail-secure: Versão aprovada, rawText alterado DEPOIS via updateRawContent → volta a "RASCUNHO" com a marca de alteração posterior, NENHUMA página traz a marca de aprovação',
+    'Variante %s — AC-032-012 (FR-032-012) fail-secure: Versão aprovada, rawText alterado DEPOIS via updateRawContent → volta a "RASCUNHO" com a marca de alteração posterior, NENHUMA página traz a marca de aprovação',
     async (variant) => {
       const editor = await createUser('EDITOR');
       const admin = await createUser('ADMIN');
@@ -1330,7 +1330,7 @@ describe('exportPublication — carimbo de Versão aprovada no cabeçalho (FEAT-
   );
 
   it.each(['RESUMO', 'TIRA'] as const)(
-    'Variante %s — AC-030-024 (FR-030-012) fail-secure, eixo TIRA: Versão aprovada, ProductionStageEvent TIRA_MNEMONICA registrado com occurredAt DEPOIS de closedAt → volta a "RASCUNHO" com a marca de alteração posterior, NENHUMA página traz a marca de aprovação (prova de fiação ponta a ponta)',
+    'Variante %s — AC-032-024 (FR-032-012) fail-secure, eixo TIRA: Versão aprovada, ProductionStageEvent TIRA_MNEMONICA registrado com occurredAt DEPOIS de closedAt → volta a "RASCUNHO" com a marca de alteração posterior, NENHUMA página traz a marca de aprovação (prova de fiação ponta a ponta)',
     async (variant) => {
       const editor = await createUser('EDITOR');
       const admin = await createUser('ADMIN');

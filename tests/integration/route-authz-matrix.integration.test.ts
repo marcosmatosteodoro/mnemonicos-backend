@@ -151,7 +151,7 @@ afterAll(async () => {
 });
 
 describe('fonte de medição da métrica §1.3 — censo das rotas montadas', () => {
-  it('a árvore montada é exatamente estes 47 pares método+caminho (tripwire: rota nova sem atualizar a suíte falha aqui — TASK-031-003 somou a rota de aprovação de Versão, 46→47)', () => {
+  it('a árvore montada é exatamente estes 47 pares método+caminho (tripwire: rota nova sem atualizar a suíte falha aqui — TASK-033-003 somou a rota de aprovação de Versão, 46→47)', () => {
     expect(ROUTES.map(key).sort()).toEqual(
       [
         'GET /health',
@@ -614,7 +614,7 @@ describe('TASK-029-002 — as 2 rotas de Versão editorial sob a barreira (topol
   });
 });
 
-describe('TASK-031-003 — a rota de aprovação sob a barreira (topologia adversarial)', () => {
+describe('TASK-033-003 — a rota de aprovação sob a barreira (topologia adversarial)', () => {
   const APPROVE_ROUTE_KEY = 'POST /contents/:id/versions/:number/approve';
 
   /**

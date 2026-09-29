@@ -825,7 +825,7 @@ describe('Postura estrutural de pdf-composer.ts (NFR-024-001/002/004, gate 1)', 
   });
 });
 
-describe('resolveHeaderLabel — carimbo de Versão aprovada no cabeçalho (FR-030-010/011)', () => {
+describe('resolveHeaderLabel — carimbo de Versão aprovada no cabeçalho (FR-032-010/011)', () => {
   const DRAFT_LABEL_TEXT = 'RASCUNHO — documento gerado automaticamente, sujeito a revisão.';
 
   it('version: null → DRAFT_LABEL', () => {

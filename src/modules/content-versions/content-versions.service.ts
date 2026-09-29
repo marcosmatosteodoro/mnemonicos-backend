@@ -18,7 +18,7 @@ import {
  * `closeContentVersion` (escrita de criação, append-only, FR-028-004 —
  * nenhuma função de update/delete SOBRE UMA VERSÃO existe neste módulo;
  * `approveContentVersion`, abaixo, é a única escrita de UPDATE, condicionada
- * a `approvedById: null` e restrita a 2 colunas, DEC-031-009), `listContentVersions`
+ * a `approvedById: null` e restrita a 2 colunas, DEC-033-009), `listContentVersions`
  * (leitura do histórico completo). Guarda composta de `closeContentVersion`,
  * NESTA ORDEM (DEC-029-004/DEC-029-001, PLAN §6):
  *
@@ -79,7 +79,7 @@ export interface ContentVersionDetail {
  * Cliente Prisma injetável (mesmo padrão de `ContrastClient`): cobre
  * `contentVersion`, `rawContent` (exigido pelo tipo de `assertRawContentReachable`),
  * `ruleBreakdown` (leitura do par versionado), `$transaction` e
- * `productionStageEvent` (DEC-031-007).
+ * `productionStageEvent` (DEC-033-007).
  */
 type ContentVersionClient = Pick<
   typeof prisma,
@@ -91,8 +91,8 @@ type ContentVersionClient = Pick<
  * leitura de `RawContent`): os versionados (`rawText`/`radarClass`/
  * `sourceType`/`sourceCitation`/`sourceUrl`, usados para montar o
  * `contentSnapshot`, DEC-029-003) mais `authorId`/`lastEditedById`
- * (segregação de funções, FR-030-004). A guarda de edição pós-fechamento
- * (DEC-031-006 emendada) ordena por `ProductionStageEvent.sequence`, não por
+ * (segregação de funções, FR-032-004). A guarda de edição pós-fechamento
+ * (DEC-033-006 emendada) ordena por `ProductionStageEvent.sequence`, não por
  * `lastEditedAt` — nenhum carimbo de tempo do `RawContent` entra aqui.
  */
 const RAW_CONTENT_VERSIONED_SELECT = {
@@ -231,13 +231,13 @@ export async function listContentVersions(
 }
 
 /**
- * Sinal combinado de alteração pós-fechamento (DEC-031-007): OU lógico entre
+ * Sinal combinado de alteração pós-fechamento (DEC-033-007): OU lógico entre
  * `hasVersionedContentChanged` (CONTEÚDO/Quebra da regra) e o evento de Tira
  * mnemônica mais recente (`ProductionStageEvent`, `stageType:
  * 'TIRA_MNEMONICA'`) posterior a `version.closedAt`. Único ponto de
  * manutenção da combinação.
  *
- * Short-circuit (TRISK-031-002): CONTEÚDO alterado retorna sem consultar
+ * Short-circuit (TRISK-033-002): CONTEÚDO alterado retorna sem consultar
  * `productionStageEvent`. `orderBy: { sequence: 'desc' }` (nunca
  * `occurredAt`) — desempate determinístico (AC-009-008).
  */
@@ -261,25 +261,25 @@ export async function resolveAlterationSignal(
 }
 
 /**
- * Aprova a Versão vigente de `rawContentId` (FR-030-001 a 005/009/013 a 018),
- * dentro de uma `$transaction`, guardas nesta ordem (DEC-031-001 herdada, DEC-031-009):
+ * Aprova a Versão vigente de `rawContentId` (FR-032-001 a 005/009/013 a 018),
+ * dentro de uma `$transaction`, guardas nesta ordem (DEC-033-001 herdada, DEC-033-009):
  *
  *   1. Lock da linha do `RawContent` pai — 1ª chamada, serializa fechamentos/
  *      aprovações concorrentes do mesmo `rawContentId`.
- *   2. `assertRawContentReachable` (FR-030-018).
+ *   2. `assertRawContentReachable` (FR-032-018).
  *   3. Detalhe do `RawContent` versionado.
- *   4. Versão vigente inexistente → `NotFoundError` (FR-030-003) — ANTES da
+ *   4. Versão vigente inexistente → `NotFoundError` (FR-032-003) — ANTES da
  *      leitura de `RuleBreakdown` (passo 10): `*OrThrow` só depois da guarda
  *      que torna a ausência impossível (a invariante "toda ContentVersion tem
  *      RuleBreakdown" só vale a partir daqui — um RawContent sem Versão pode
  *      legitimamente não ter RuleBreakdown salva).
- *   5. Número informado ≠ vigente → `ConflictError` (FR-030-014, duplo travamento).
+ *   5. Número informado ≠ vigente → `ConflictError` (FR-032-014, duplo travamento).
  *   6. Já aprovada → `ConflictError` (checagem antecipada — a garantia real é o
  *      passo 12).
  *   7. Segregação de funções: ator ∈ {autor da Versão, autor do RawContent,
- *      último editor} → `ForbiddenError` genérico (FR-030-004, NFR-030-002 —
+ *      último editor} → `ForbiddenError` genérico (FR-032-004, NFR-032-002 —
  *      nunca revela qual identidade bateu).
- *   8. Edição pós-fechamento sem mudança versionada (DEC-031-006 emendada):
+ *   8. Edição pós-fechamento sem mudança versionada (DEC-033-006 emendada):
  *      existe `ProductionStageEvent` `CONTEUDO_BRUTO` do `rawContentId` com
  *      `sequence` maior que a do `VERSAO_EDITORIAL` que fechou a Versão
  *      vigente → `ConflictError` (ordem do BANCO — `sequence` é atribuída no
@@ -291,17 +291,17 @@ export async function resolveAlterationSignal(
  *      transação de `closeContentVersion` (passo 4 já garante que `vigente`
  *      existe).
  *   9. Fonte normativa ausente no `contentSnapshot` da Versão vigente →
- *      `ConflictError` (FR-030-013).
+ *      `ConflictError` (FR-032-013).
  *   10. `RuleBreakdown` versionada (só agora — passo 4 já garante que existe).
  *   11. Sinal de alteração pós-fechamento (conteúdo OU Tira) aceso →
- *       `ConflictError` (FR-030-015).
+ *       `ConflictError` (FR-032-015).
  *   12. `updateMany` condicionado a `approvedById: null` — a garantia REAL de
- *       exatamente 1 escrita (DEC-031-009); `count !== 1` → `ConflictError`.
- *   13. `recordProductionStageEvent` sempre `CONCLUSAO` direto (DEC-031-008) —
+ *       exatamente 1 escrita (DEC-033-009); `count !== 1` → `ConflictError`.
+ *   13. `recordProductionStageEvent` sempre `CONCLUSAO` direto (DEC-033-008) —
  *       ÚLTIMA chamada do corpo.
  *
  * Qualquer falha nos passos 1-12 propaga sem gravar nada (fail-secure,
- * NFR-030-001/002).
+ * NFR-032-001/002).
  */
 export async function approveContentVersion(
   rawContentId: string,

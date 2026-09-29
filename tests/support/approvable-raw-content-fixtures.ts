@@ -7,7 +7,7 @@ import { buildVersionedContentFields } from './versioned-content-fields-fixtures
  * `RawContent`+`RuleBreakdown` elegíveis para `approveContentVersion` — reusa
  * `createRawContent`/`seedRuleBreakdown` e só sobrescreve `sourceType`/
  * `sourceCitation`/`sourceUrl` (ausentes por padrão em `createRawContent` —
- * necessário para passar a barreira de FR-030-013), via `update` direto (sem
+ * necessário para passar a barreira de FR-032-013), via `update` direto (sem
  * tocar `lastEditedById`/`lastEditedAt`). Fonte dos valores de override:
  * `buildVersionedContentFields` (`tests/support/`) — helper único (perfil
  * node-22.md §7), reusado por `content-versions.service.integration.test.ts`
