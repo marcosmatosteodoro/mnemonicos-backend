@@ -8,6 +8,7 @@ import { disciplinesRoutes } from '../modules/disciplines/disciplines.routes';
 import { flashcardsRoutes } from '../modules/flashcards/flashcards.routes';
 import { healthRoutes } from '../modules/health/health.routes';
 import { publicationRoutes } from '../modules/publication/publication.routes';
+import { strategicPanelRoutes } from '../modules/strategic-panel/strategic-panel.routes';
 import { tiraRoutes } from '../modules/tira/tira.routes';
 import { usersRoutes } from '../modules/users/users.routes';
 import { visualAssociationsRoutes } from '../modules/visual-associations/visual-associations.routes';
@@ -27,7 +28,8 @@ import { ROUTE_ROLES, sealRouteRoles, type HttpMethod } from './route-roles';
  *      `ROUTE_ROLES` (403, mesmo com sessão válida — falha fechada);
  *   3. rotas protegidas — `protectedAuthRoutes`, `usersRoutes`,
  *      `disciplinesRoutes`, `contentsRoutes`, `contrastsRoutes`, `flashcardsRoutes`,
- *      `tiraRoutes`, `visualAssociationsRoutes`, `publicationRoutes`, `contentVersionsRoutes`
+ *      `tiraRoutes`, `visualAssociationsRoutes`, `publicationRoutes`, `contentVersionsRoutes`,
+ *      `strategicPanelRoutes`
  *      — cada uma declara
  *      `"<MÉTODO> <caminho>"` em `ROUTE_ROLES` via `requireRole(...)` no ponto de
  *      montagem.
@@ -60,6 +62,7 @@ apiRoutes.use(tiraRoutes);
 apiRoutes.use(visualAssociationsRoutes);
 apiRoutes.use(publicationRoutes);
 apiRoutes.use(contentVersionsRoutes);
+apiRoutes.use(strategicPanelRoutes);
 
 /** Par `<MÉTODO> <caminho-completo>` de uma rota concreta da árvore plana. */
 export interface MountedRoute {

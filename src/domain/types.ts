@@ -74,11 +74,9 @@ export type NormativeSourceType = (typeof NORMATIVE_SOURCE_TYPES)[number];
 /**
  * Tipo de etapa e tipo de transição do evento de etapa de produção (F3,
  * SPEC-009). Fonte canônica: `mnemonicos-backend/prisma/schema.prisma` (enums
- * `ProductionStageType` / `ProductionEventTransition`). O teste de
- * autoconsistência é `mnemonicos-backend/tests/unit/domain-types-parity.test.ts`
- * (TASK-010-001) — **diferente** dos pares acima, este **não** tem espelho em
- * `mnemonicos-frontend/src/types/domain.ts` nesta fatia (DEC-010-006, YAGNI:
- * sem consumidor de tela/rota até F10).
+ * `ProductionStageType` / `ProductionEventTransition`). Espelhado em
+ * `mnemonicos-frontend/src/types/domain.ts`; o teste de paridade cross-repo é
+ * `mnemonicos-backend/tests/unit/domain-types-parity.test.ts`.
  */
 export const PRODUCTION_STAGE_TYPES = [
   'CONTEUDO_BRUTO',
@@ -96,6 +94,23 @@ export type ProductionStageType = (typeof PRODUCTION_STAGE_TYPES)[number];
 export const PRODUCTION_EVENT_TRANSITIONS = ['ABERTURA', 'CONCLUSAO', 'RETRABALHO'] as const;
 
 export type ProductionEventTransition = (typeof PRODUCTION_EVENT_TRANSITIONS)[number];
+
+/**
+ * As 5 etapas de conteúdo cujo retrabalho pós-fechamento conta como "correção
+ * após revisão" (A-034-002, COMP-035-010) — exclui Publicação, Versão
+ * editorial e Aprovação. Espelhado em `mnemonicos-frontend/src/types/domain.ts`;
+ * o teste de paridade cross-repo é
+ * `mnemonicos-backend/tests/unit/domain-types-parity.test.ts`.
+ */
+export const CONTENT_STAGE_TYPES = [
+  'CONTEUDO_BRUTO',
+  'QUEBRA_DA_REGRA',
+  'TIRA_MNEMONICA',
+  'ASSOCIACAO_VISUAL',
+  'MATERIAL_REFORCO',
+] as const;
+
+export type ContentStageType = (typeof CONTENT_STAGE_TYPES)[number];
 
 /**
  * Variante do artefato exportado pelo pipeline de publicação em PDF (F6,

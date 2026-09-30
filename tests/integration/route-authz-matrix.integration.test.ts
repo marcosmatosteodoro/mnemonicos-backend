@@ -151,7 +151,7 @@ afterAll(async () => {
 });
 
 describe('fonte de medição da métrica §1.3 — censo das rotas montadas', () => {
-  it('a árvore montada é exatamente estes 47 pares método+caminho (tripwire: rota nova sem atualizar a suíte falha aqui — TASK-033-003 somou a rota de aprovação de Versão, 46→47)', () => {
+  it('a árvore montada é exatamente estes 48 pares método+caminho (tripwire: rota nova sem atualizar a suíte falha aqui — TASK-035-006 somou GET /strategic-panel, 47→48)', () => {
     expect(ROUTES.map(key).sort()).toEqual(
       [
         'GET /health',
@@ -201,6 +201,7 @@ describe('fonte de medição da métrica §1.3 — censo das rotas montadas', ()
         'POST /contents/:id/versions',
         'GET /contents/:id/versions',
         'POST /contents/:id/versions/:number/approve',
+        'GET /strategic-panel',
       ].sort(),
     );
   });
