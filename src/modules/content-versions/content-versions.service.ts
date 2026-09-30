@@ -105,7 +105,7 @@ type ContentVersionClient = Pick<
  * (DEC-033-006 emendada) ordena por `ProductionStageEvent.sequence`, não por
  * `lastEditedAt` — nenhum carimbo de tempo do `RawContent` entra aqui.
  */
-const RAW_CONTENT_VERSIONED_SELECT = {
+export const RAW_CONTENT_VERSIONED_SELECT = {
   authorId: true,
   rawText: true,
   radarClass: true,
@@ -116,7 +116,7 @@ const RAW_CONTENT_VERSIONED_SELECT = {
 } as const satisfies Prisma.RawContentSelect;
 
 /** Campos versionados da `RuleBreakdown` (passo 4/6) — os 5 blocos + a síntese. */
-const RULE_BREAKDOWN_VERSIONED_SELECT = {
+export const RULE_BREAKDOWN_VERSIONED_SELECT = {
   concept: true,
   action: true,
   object: true,
