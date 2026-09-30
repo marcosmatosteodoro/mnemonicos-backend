@@ -1417,3 +1417,132 @@ describe('exportPublication — productionStageEvent.findFirst rejeitando propag
     expect(counts).toEqual({ productionStageEvents: 0, publicationEvents: 0 });
   });
 });
+
+describe('exportPublication — grava pageCount do documento FINAL (principal + suplementar) em ambas as Variantes (AC-034-001, FR-034-001)', () => {
+  it.each(['RESUMO', 'TIRA'] as const)(
+    'Variante %s: PublicationEvent.pageCount grava o mesmo número de páginas do documento REAL devolvido ao cliente',
+    async (variant) => {
+      const editor = await createUser('EDITOR');
+      const topicId = await createTopic();
+      const rawContent = await createRawContent(editor.id, topicId);
+      await seedRuleBreakdown(rawContent.id);
+      await seedContrast(rawContent.id, editor.id);
+      await seedFlashcard(rawContent.id, editor.id);
+
+      const result = await exportPublication(
+        rawContent.id,
+        { variant },
+        actorOf(editor),
+        testPrisma,
+      );
+
+      const expectedPageCount = await PDFDocument.load(result.buffer).then((doc) =>
+        doc.getPageCount(),
+      );
+
+      const event = await testPrisma.publicationEvent.findFirstOrThrow({
+        where: { rawContentId: rawContent.id },
+      });
+      expect(event.pageCount).toBe(expectedPageCount);
+    },
+  );
+});
+
+describe('exportPublication — falha na contagem não impede a entrega nem falha a Exportação (AC-034-022, FR-034-019)', () => {
+  it('getPageCount lançando na composição: exportPublication resolve normalmente, result.buffer é um PDF válido, PublicationEvent.pageCount gravado é null', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const rawContent = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdown(rawContent.id);
+
+    // `PDFDocument.addPage`/`copyPages` (pdf-lib) chamam `getPageCount` internamente
+    // várias vezes ANTES do ponto que esta TASK adiciona (composição do PDF principal e
+    // do suplementar, e a própria fusão) — mockar a 1ª chamada bruta pegaria uma dessas,
+    // nunca a de `countPagesForExport`. O mock intercepta só a chamada cujo stack aponta
+    // para `countPagesForExport` (nome preservado pelo ts-jest, sem minificação); todas
+    // as outras usam a implementação real de pdf-lib, intacta.
+    // Capturado ANTES do `jest.spyOn` substituir o protótipo — sem isso, a referência
+    // dentro do `mockImplementation` abaixo resolveria para o próprio mock (recursão).
+    // Sempre chamado com `.call(this)`, nunca solto do objeto.
+    // eslint-disable-next-line @typescript-eslint/unbound-method
+    const realGetPageCount = PDFDocument.prototype.getPageCount;
+    jest.spyOn(PDFDocument.prototype, 'getPageCount').mockImplementation(function (
+      this: PDFDocument,
+    ) {
+      if (new Error().stack?.includes('countPagesForExport') === true) {
+        throw new Error('boom');
+      }
+      return realGetPageCount.call(this);
+    });
+
+    const result = await exportPublication(
+      rawContent.id,
+      { variant: 'RESUMO' },
+      actorOf(editor),
+      testPrisma,
+    );
+
+    // `PDFDocument.load` rejeitaria se `result.buffer` não fosse um PDF genuíno —
+    // não rejeitar já prova que a entrega não foi corrompida pela falha de contagem.
+    const reloaded = await PDFDocument.load(result.buffer);
+    expect(reloaded.getPageCount()).toBeGreaterThan(0);
+
+    const event = await testPrisma.publicationEvent.findFirstOrThrow({
+      where: { rawContentId: rawContent.id },
+    });
+    expect(event.pageCount).toBeNull();
+
+    // Controle negativo: sem o mock, o mesmo fluxo grava um pageCount numérico (já
+    // provado no describe acima).
+  });
+});
+
+describe('exportPublication — reexportação da mesma Variante não altera pageCount de eventos anteriores (FR-034-002/021)', () => {
+  it('2 exportações sucessivas do mesmo rawContentId/Variante: 2 linhas de PublicationEvent, cada uma com o pageCount do documento gerado NO MOMENTO em que foi criada', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const rawContent = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdown(rawContent.id);
+
+    const firstResult = await exportPublication(
+      rawContent.id,
+      { variant: 'RESUMO' },
+      actorOf(editor),
+      testPrisma,
+    );
+    const secondResult = await exportPublication(
+      rawContent.id,
+      { variant: 'RESUMO' },
+      actorOf(editor),
+      testPrisma,
+    );
+
+    const [firstExpected, secondExpected] = await Promise.all([
+      PDFDocument.load(firstResult.buffer).then((doc) => doc.getPageCount()),
+      PDFDocument.load(secondResult.buffer).then((doc) => doc.getPageCount()),
+    ]);
+
+    const events = await testPrisma.publicationEvent.findMany({
+      where: { rawContentId: rawContent.id },
+      orderBy: { occurredAt: 'asc' },
+    });
+    expect(events).toHaveLength(2);
+    expect(events[0]?.pageCount).toBe(firstExpected);
+    expect(events[1]?.pageCount).toBe(secondExpected);
+  });
+
+  it('AC-034-002: PublicationEvent gravado direto no Prisma sem pageCount (Exportação anterior a esta capacidade) lê pageCount: null — nenhum código desta TASK reescreve linhas antigas', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const rawContent = await createRawContent(editor.id, topicId);
+
+    const legacyEvent = await testPrisma.publicationEvent.create({
+      data: { rawContentId: rawContent.id, variant: 'RESUMO', occurredAt: new Date() },
+    });
+
+    const reread = await testPrisma.publicationEvent.findUniqueOrThrow({
+      where: { id: legacyEvent.id },
+    });
+    expect(reread.pageCount).toBeNull();
+  });
+});

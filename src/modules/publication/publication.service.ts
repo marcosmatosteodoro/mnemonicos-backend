@@ -346,15 +346,32 @@ async function loadSupplementarySections(
 }
 
 /**
+ * COMP-035-002: contagem fail-safe (FR-034-019/DEC-035-012) — só a chamada de
+ * contagem em si entra no try/catch; falha loga (sem texto de conteúdo, só
+ * `rawContentId`) e devolve `null`, nunca aborta a composição.
+ */
+function countPagesForExport(doc: PDFDocument, rawContentId: string): number | null {
+  try {
+    return doc.getPageCount();
+  } catch (error) {
+    logger.warn({ rawContentId, err: error }, 'Falha ao contar páginas na Exportação');
+    return null;
+  }
+}
+
+/**
  * Funde as páginas do PDF suplementar ao final do PDF principal (DEC-027-006):
  * `PDFDocument.load` dos 2 `Buffer`s já prontos, `copyPages` de TODAS as páginas do
  * suplementar para o principal, `.save()` de novo — 1 único documento final, em AMBAS as
- * Variantes.
+ * Variantes. Conta as páginas do documento final já fundido (F10, FR-034-001/002) DEPOIS
+ * de `copyPages`/`addPage` e ANTES de `.save()` — `countPagesForExport` é fail-safe, nunca
+ * propaga (DEC-035-012).
  */
 async function mergeSupplementaryPages(
+  rawContentId: string,
   primaryBuffer: Buffer,
   supplementaryBuffer: Buffer,
-): Promise<Buffer> {
+): Promise<{ buffer: Buffer; pageCount: number | null }> {
   const primaryDoc = await PDFDocument.load(primaryBuffer);
   const supplementaryDoc = await PDFDocument.load(supplementaryBuffer);
 
@@ -366,8 +383,9 @@ async function mergeSupplementaryPages(
     primaryDoc.addPage(page);
   }
 
+  const pageCount = countPagesForExport(primaryDoc, rawContentId);
   const bytes = await primaryDoc.save();
-  return Buffer.from(bytes);
+  return { buffer: Buffer.from(bytes), pageCount };
 }
 
 /**
@@ -387,7 +405,7 @@ async function composePublicationBuffer(
   pegadinhaText: string | null,
   meta: PublicationPdfMeta,
   db: PublicationClient,
-): Promise<Buffer> {
+): Promise<{ buffer: Buffer; pageCount: number | null }> {
   const [primaryBuffer, sections] = await Promise.all([
     composeVariantBuffer(rawContentId, variant, actor, breakdown, meta, db),
     loadSupplementarySections(rawContentId, pegadinhaText, db),
@@ -395,7 +413,7 @@ async function composePublicationBuffer(
 
   const supplementaryBuffer = await buildSupplementaryPagesPdf(sections, meta);
 
-  return mergeSupplementaryPages(primaryBuffer, supplementaryBuffer);
+  return mergeSupplementaryPages(rawContentId, primaryBuffer, supplementaryBuffer);
 }
 
 /**
@@ -443,7 +461,7 @@ export async function exportPublication(
 
   const meta: PublicationPdfMeta = { variant: input.variant, generatedAt: new Date(), version };
 
-  const buffer = await withDeadline(
+  const { buffer, pageCount } = await withDeadline(
     composePublicationBuffer(
       rawContentId,
       input.variant,
@@ -465,7 +483,7 @@ export async function exportPublication(
       now,
     });
     await tx.publicationEvent.create({
-      data: { rawContentId, variant: input.variant, occurredAt: now },
+      data: { rawContentId, variant: input.variant, occurredAt: now, pageCount },
     });
   });
 
