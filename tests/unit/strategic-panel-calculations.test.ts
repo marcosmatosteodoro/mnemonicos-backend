@@ -474,6 +474,56 @@ describe('computeContentMetrics — início registrado é o sinal de criação, 
     expect(metrics.timePerPage).toBe(expectedMs / 10);
     expect(metrics.ageMs).toBe(new Date('2026-03-01T00:00:00Z').getTime() - start.getTime());
   });
+
+  it('Conteúdo semeado com 2 edições (ABERTURA de CONTEUDO_BRUTO em t1, CONCLUSAO de CONTEUDO_BRUTO em t2 ≠ t1): sem par de criação, então totalTime e idade "sem registro" (mutante "remover a igualdade de occurredAt entre ABERTURA e CONCLUSAO" reprova aqui)', () => {
+    const openingFromFirstEdit = new Date('2026-01-01T00:00:00Z');
+    const closureFromSecondEdit = new Date('2026-01-05T00:00:00Z');
+    const editorialClosure = new Date('2026-01-10T00:00:00Z');
+    const referenceExportAt = new Date('2026-01-15T00:00:00Z');
+
+    const stageEvents: ContentMetricsStageEvent[] = [
+      // Seed cria o Conteúdo fora do fluxo instrumentado: 0 histórico. A 1ª
+      // edição decide ABERTURA; a 2ª edição fecha CONTEUDO_BRUTO num
+      // `occurredAt` distinto — nunca o par de MESMO `occurredAt` que só a
+      // criação instrumentada grava.
+      {
+        stageType: 'CONTEUDO_BRUTO',
+        transitionType: 'ABERTURA',
+        sequence: 1n,
+        occurredAt: openingFromFirstEdit,
+      },
+      {
+        stageType: 'CONTEUDO_BRUTO',
+        transitionType: 'CONCLUSAO',
+        sequence: 2n,
+        occurredAt: closureFromSecondEdit,
+      },
+      {
+        stageType: 'VERSAO_EDITORIAL',
+        transitionType: 'CONCLUSAO',
+        sequence: 3n,
+        occurredAt: editorialClosure,
+      },
+      {
+        stageType: 'PUBLICACAO_PDF',
+        transitionType: 'CONCLUSAO',
+        sequence: 4n,
+        occurredAt: referenceExportAt,
+      },
+    ];
+
+    const metrics = computeContentMetrics(
+      new Date('2026-03-01T00:00:00Z'),
+      buildInput({
+        stageEvents,
+        tiraPublications: [{ occurredAt: referenceExportAt, pageCount: 5 }],
+      }),
+    );
+
+    expect(metrics.totalTime).toEqual({ reason: 'sem-registro' });
+    expect(metrics.timePerPage).toBeNull();
+    expect(metrics.ageMs).toBeNull();
+  });
 });
 
 describe('computeContentMetrics — Exportação de referência sem página (AC-034-019)', () => {
