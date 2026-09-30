@@ -543,7 +543,7 @@ model PublicationEvent {
   variant      PublicationVariant
   occurredAt   DateTime           @default(now())
 
-  /// NOVO (F10, DEC-035-011): número de páginas do documento PDF FINAL (principal +
+  /// DEC-035-011: número de páginas do documento PDF FINAL (principal +
   /// suplementar já fundidos) desta Exportação. `null` = sem medida — Exportação
   /// anterior a esta capacidade, ou falha na contagem (FR-034-019). Nunca recomputado
   /// por reexportação futura (FR-034-002/021).
