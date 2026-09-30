@@ -1449,10 +1449,6 @@ describe('exportPublication — grava pageCount do documento FINAL (principal + 
 });
 
 describe('exportPublication — falha na contagem não impede a entrega nem falha a Exportação (AC-034-022, FR-034-019)', () => {
-  afterEach(() => {
-    jest.restoreAllMocks();
-  });
-
   it.each(['RESUMO', 'TIRA'] as const)(
     'Variante %s: getPageCount lançando na composição — exportPublication resolve normalmente, result.buffer é um PDF válido, PublicationEvent.pageCount gravado é null',
     async (variant) => {
