@@ -3,12 +3,14 @@ import { resolve } from 'node:path';
 
 /**
  * Prova ESTRUTURAL (leitura textual do código-fonte, nunca da resposta em
- * runtime — item b, decisão 4.161): nenhuma das 4 leituras em lote do Painel
+ * runtime — item b, decisão 4.161): nenhuma das leituras em lote do Painel
  * estratégico (TASK-035-005) usa `include` — só `select` aninhado
- * (`RAW_CONTENT_SUMMARY_SELECT`/molde de `contents.service.ts`), que nunca
- * carrega uma relação inteira quando só um campo dela é consumido (lição
- * [Performance] "include/select aninhado de relação não é 1 statement por
- * padrão" não se aplica aqui só porque nenhuma chamada usa `include`).
+ * (`RAW_CONTENT_SUMMARY_SELECT`/molde de `contents.service.ts`). A garantia de
+ * 1 statement por `findMany`, mesmo com `select` aninhado de relação, vem do
+ * preview feature `relationJoins` (`prisma/schema.prisma:13`), ligado
+ * globalmente — provada por medição real em `query-count por função`
+ * (`withQueryProbe`, `strategic-panel.service.integration.test.ts`), nunca
+ * pela ausência de `include` aqui.
  */
 const STRATEGIC_PANEL_SERVICE = resolve(
   __dirname,

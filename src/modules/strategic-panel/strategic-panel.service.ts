@@ -12,16 +12,17 @@ import { prisma } from '../../lib/prisma';
 
 /**
  * Leitura em lote do Painel estratégico (COMP-035-004/005/006/007, TASK-035-005):
- * 4 funções, cada uma 1 `findMany`/consulta `IN (...)` (NFR-034-001 — nunca 1 por
- * Conteúdo), que alimentam o cálculo puro (`strategic-panel-calculations.ts`,
- * TASK-035-004). Leitura FACTORY-WIDE deliberada (DEC-035-013): nenhuma das 4 aplica
+ * 6 funções — 5 fazem 1 `findMany`/consulta `IN (...)` cada, 1
+ * (`listCurrentVersionedFieldsForApprovedContents`) faz 2 — (NFR-034-001 — nunca 1
+ * por Conteúdo), que alimentam o cálculo puro (`strategic-panel-calculations.ts`,
+ * TASK-035-004). Leitura FACTORY-WIDE deliberada (DEC-035-013): nenhuma das 6 aplica
  * `scopeWhere(actor)` — o Painel agrega por Módulo/fábrica/backlog, não por autoria
  * (a persona "conclusão do meu módulo" refere-se ao Tema, não a quem produziu). A
- * orquestração que soma as 4 leituras e chama o cálculo puro é TASK-035-006; este
+ * orquestração que soma as leituras e chama o cálculo puro é TASK-035-006; este
  * módulo cobre só a camada de leitura.
  */
 
-/** Cliente Prisma injetável — cobre os 4 models lidos pelas 5 funções abaixo. */
+/** Cliente Prisma injetável — cobre os 5 models lidos pelas 6 funções abaixo. */
 type PanelClient = Pick<
   typeof prisma,
   'rawContent' | 'productionStageEvent' | 'publicationEvent' | 'contentVersion' | 'ruleBreakdown'
@@ -107,11 +108,19 @@ export async function listTiraPublicationEventsForPanel(
   });
 }
 
+/**
+ * Sem `contentSnapshot` (gate 10, performance-engineer — coluna larga fora do
+ * histórico): esta leitura serve para o CHAMADOR (TASK-035-006) agrupar por
+ * `rawContentId` e achar a Versão vigente; `id` é o que ele repassa a
+ * `listApprovedVersionSnapshots` (abaixo) para buscar o snapshot só das
+ * aprovadas.
+ */
 const PANEL_VERSION_SELECT = {
+  id: true,
   rawContentId: true,
+  number: true,
   closedAt: true,
   approvedById: true,
-  contentSnapshot: true,
 } as const satisfies Prisma.ContentVersionSelect;
 
 export type PanelVersionRow = Prisma.ContentVersionGetPayload<{
@@ -132,6 +141,33 @@ export async function listLatestVersionsForPanel(
     where: { rawContentId: { in: rawContentIds } },
     orderBy: { number: 'asc' },
     select: PANEL_VERSION_SELECT,
+  });
+}
+
+const PANEL_VERSION_SNAPSHOT_SELECT = {
+  id: true,
+  contentSnapshot: true,
+} as const satisfies Prisma.ContentVersionSelect;
+
+export type PanelVersionSnapshotRow = Prisma.ContentVersionGetPayload<{
+  select: typeof PANEL_VERSION_SNAPSHOT_SELECT;
+}>;
+
+/**
+ * `contentSnapshot` só das Versões em `versionIds`, 1 `findMany` `id: { in }`
+ * (gate 10, performance-engineer): separada de `listLatestVersionsForPanel`
+ * porque o Painel só precisa do snapshot das Versões APROVADAS (para
+ * `resolveApprovalStatus`, TASK-035-004) — o CHAMADOR (TASK-035-006) resolve
+ * esse subconjunto de `id`s e passa aqui. Sem `distinct`: `versionIds` já vem
+ * sem repetição do chamador (1 Versão vigente por Conteúdo).
+ */
+export async function listApprovedVersionSnapshots(
+  versionIds: string[],
+  db: PanelClient = prisma,
+): Promise<PanelVersionSnapshotRow[]> {
+  return db.contentVersion.findMany({
+    where: { id: { in: versionIds } },
+    select: PANEL_VERSION_SNAPSHOT_SELECT,
   });
 }
 

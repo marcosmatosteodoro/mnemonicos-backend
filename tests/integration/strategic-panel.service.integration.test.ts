@@ -1,3 +1,6 @@
+import { PrismaPg } from '@prisma/adapter-pg';
+
+import { PrismaClient } from '../../src/generated/prisma/client';
 import { softDeleteRawContent } from '../../src/modules/contents/contents.service';
 import type { ContentActor } from '../../src/modules/contents/contents.service';
 import {
@@ -7,6 +10,7 @@ import {
 import type { VersionedContentFields } from '../../src/modules/content-versions/versioned-content-diff';
 import {
   listActiveContentsForPanel,
+  listApprovedVersionSnapshots,
   listCurrentVersionedFieldsForApprovedContents,
   listLatestVersionsForPanel,
   listStageEventsForPanel,
@@ -14,26 +18,33 @@ import {
 } from '../../src/modules/strategic-panel/strategic-panel.service';
 import { seedApprovableRawContent } from '../support/approvable-raw-content-fixtures';
 import {
-  RAW_CONTENT_TEXT_FIELDS,
   createRawContent,
   createTopic,
   createUser,
   seedRuleBreakdown,
 } from '../support/production-events-fixtures';
+import { TEST_DATABASE_URL } from './db-url';
 import { withQueryProbe } from '../support/query-probe';
 import { buildVersionedContentFields } from '../support/versioned-content-fields-fixtures';
 import { closeTestDb, resetDb, testPrisma } from './db';
 
 /**
  * `strategic-panel.service.ts` (COMP-035-004/005/006/007, TASK-035-005) sobre o
- * Postgres real (molde `content-versions.service.integration.test.ts`): as 4
+ * Postgres real (molde `content-versions.service.integration.test.ts`): as 6
  * leituras em lote (Conteúdos ativos, eventos de etapa, Publicações Tira,
- * Versões + campos versionados atuais dos aprovados) que alimentam o cálculo
- * puro (TASK-035-004) — orquestração completa é TASK-035-006.
+ * Versões sem `contentSnapshot`, snapshots das Versões aprovadas, campos
+ * versionados atuais dos aprovados) que alimentam o cálculo puro
+ * (TASK-035-004) — orquestração completa é TASK-035-006.
  */
 
 function actorOf(user: { id: string; role: 'EDITOR' | 'ADMIN' | 'STUDENT' }): ContentActor {
   return { id: user.id, role: user.role };
+}
+
+function assertDefined<T>(value: T | undefined): asserts value is T {
+  if (value === undefined) {
+    throw new Error('valor esperado definido');
+  }
 }
 
 async function seedElegibleRawContent(authorId: string, topicId: string) {
@@ -194,17 +205,85 @@ describe('listLatestVersionsForPanel: orderBy number asc — a última do array 
     const rows = await listLatestVersionsForPanel([rawContent.id], testPrisma);
 
     expect(rows).toHaveLength(3);
-    // Falsificável: um `orderBy: { number: 'desc' }` inverteria esta
-    // sequência — cada contentSnapshot carrega o rawText vigente NO MOMENTO
-    // do fechamento, então a ordem do array denuncia a ordem de `number`.
-    const rawTexts = rows.map(
-      (row) => (row.contentSnapshot as unknown as VersionedContentFields).rawText,
+    // Falsificável: um `orderBy: { number: 'desc' }` inverteria esta sequência.
+    expect(rows.map((row) => row.number)).toEqual([1, 2, 3]);
+  });
+});
+
+describe('listLatestVersionsForPanel: sem contentSnapshot (gate 10, performance-engineer — coluna larga fora do histórico)', () => {
+  it('Conteúdo com 3 Versões (a vigente NÃO aprovada) → nenhuma linha devolvida tem contentSnapshot (chaves exatas)', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const rawContent = await seedElegibleRawContent(editor.id, topicId);
+
+    await closeContentVersion(
+      rawContent.id,
+      { legislativeClosureDate: '2026-07-01' },
+      actorOf(editor),
+      testPrisma,
     );
-    expect(rawTexts).toEqual([
-      RAW_CONTENT_TEXT_FIELDS.rawText,
-      'Texto da versão 2.',
-      'Texto da versão 3.',
-    ]);
+    await testPrisma.rawContent.update({
+      where: { id: rawContent.id },
+      data: { rawText: 'Texto da versão 2.' },
+    });
+    await closeContentVersion(
+      rawContent.id,
+      { legislativeClosureDate: '2026-08-01' },
+      actorOf(editor),
+      testPrisma,
+    );
+    await testPrisma.rawContent.update({
+      where: { id: rawContent.id },
+      data: { rawText: 'Texto da versão 3.' },
+    });
+    // A 3ª (vigente) fica NÃO aprovada — nunca chama `approveContentVersion`.
+    await closeContentVersion(
+      rawContent.id,
+      { legislativeClosureDate: '2026-09-01' },
+      actorOf(editor),
+      testPrisma,
+    );
+
+    const rows = await listLatestVersionsForPanel([rawContent.id], testPrisma);
+
+    expect(rows).toHaveLength(3);
+    for (const row of rows) {
+      expect(Object.keys(row).sort()).toEqual(
+        ['approvedById', 'closedAt', 'id', 'number', 'rawContentId'].sort(),
+      );
+    }
+  });
+});
+
+describe('listApprovedVersionSnapshots: contentSnapshot só das Versões pedidas (gate 10, performance-engineer)', () => {
+  it('devolve id+contentSnapshot da Versão pedida, sem nenhum outro campo', async () => {
+    const editor = await createUser('EDITOR');
+    const admin = await createUser('ADMIN');
+    const topicId = await createTopic();
+    const approved = await seedApprovableRawContent(editor.id, topicId);
+    const closed = await closeContentVersion(
+      approved.id,
+      { legislativeClosureDate: '2026-09-01' },
+      actorOf(editor),
+      testPrisma,
+    );
+    await approveContentVersion(
+      approved.id,
+      closed.number,
+      APPROVE_INPUT,
+      actorOf(admin),
+      testPrisma,
+    );
+
+    const rows = await listApprovedVersionSnapshots([closed.id], testPrisma);
+
+    expect(rows).toHaveLength(1);
+    const [row] = rows;
+    assertDefined(row);
+    expect(Object.keys(row).sort()).toEqual(['contentSnapshot', 'id']);
+    expect((row.contentSnapshot as unknown as VersionedContentFields).rawText).toBe(
+      buildVersionedContentFields().rawText,
+    );
   });
 });
 
@@ -261,6 +340,188 @@ describe('listCurrentVersionedFieldsForApprovedContents: só devolve o que exist
   });
 });
 
+describe('eixo PERTENCIMENTO — cada leitura filtrada por IN(ids) exclui o que está FORA do array (gate 1, code-reviewer)', () => {
+  it('listStageEventsForPanel: eventos de um Conteúdo fora do array não voltam', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const inside = await seedElegibleRawContent(editor.id, topicId);
+    const outside = await seedElegibleRawContent(editor.id, topicId);
+    await testPrisma.productionStageEvent.create({
+      data: {
+        rawContentId: inside.id,
+        stageType: 'CONTEUDO_BRUTO',
+        transitionType: 'ABERTURA',
+        actorId: editor.id,
+      },
+    });
+    await testPrisma.productionStageEvent.create({
+      data: {
+        rawContentId: outside.id,
+        stageType: 'CONTEUDO_BRUTO',
+        transitionType: 'ABERTURA',
+        actorId: editor.id,
+      },
+    });
+
+    const rows = await listStageEventsForPanel([inside.id], testPrisma);
+
+    expect(rows).not.toHaveLength(0);
+    expect(rows.every((row) => row.rawContentId === inside.id)).toBe(true);
+  });
+
+  it('listTiraPublicationEventsForPanel: Publicações de um Conteúdo fora do array não voltam', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const inside = await seedElegibleRawContent(editor.id, topicId);
+    const outside = await seedElegibleRawContent(editor.id, topicId);
+    await testPrisma.publicationEvent.create({
+      data: { rawContentId: inside.id, variant: 'TIRA', pageCount: 4 },
+    });
+    await testPrisma.publicationEvent.create({
+      data: { rawContentId: outside.id, variant: 'TIRA', pageCount: 9 },
+    });
+
+    const rows = await listTiraPublicationEventsForPanel([inside.id], testPrisma);
+
+    expect(rows).toHaveLength(1);
+    expect(rows.every((row) => row.rawContentId === inside.id)).toBe(true);
+  });
+
+  it('listLatestVersionsForPanel: Versões de um Conteúdo fora do array não voltam', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+    const inside = await seedElegibleRawContent(editor.id, topicId);
+    const outside = await seedElegibleRawContent(editor.id, topicId);
+    await closeContentVersion(
+      inside.id,
+      { legislativeClosureDate: '2026-09-01' },
+      actorOf(editor),
+      testPrisma,
+    );
+    await closeContentVersion(
+      outside.id,
+      { legislativeClosureDate: '2026-09-01' },
+      actorOf(editor),
+      testPrisma,
+    );
+
+    const rows = await listLatestVersionsForPanel([inside.id], testPrisma);
+
+    expect(rows).toHaveLength(1);
+    expect(rows.every((row) => row.rawContentId === inside.id)).toBe(true);
+  });
+
+  it('listApprovedVersionSnapshots: a Versão de um Conteúdo fora do array de ids não volta', async () => {
+    const editor = await createUser('EDITOR');
+    const admin = await createUser('ADMIN');
+    const topicId = await createTopic();
+
+    const inside = await seedApprovableRawContent(editor.id, topicId);
+    const closedInside = await closeContentVersion(
+      inside.id,
+      { legislativeClosureDate: '2026-09-01' },
+      actorOf(editor),
+      testPrisma,
+    );
+    await approveContentVersion(
+      inside.id,
+      closedInside.number,
+      APPROVE_INPUT,
+      actorOf(admin),
+      testPrisma,
+    );
+
+    const outside = await seedApprovableRawContent(editor.id, topicId);
+    const closedOutside = await closeContentVersion(
+      outside.id,
+      { legislativeClosureDate: '2026-09-01' },
+      actorOf(editor),
+      testPrisma,
+    );
+    await approveContentVersion(
+      outside.id,
+      closedOutside.number,
+      APPROVE_INPUT,
+      actorOf(admin),
+      testPrisma,
+    );
+
+    const rows = await listApprovedVersionSnapshots([closedInside.id], testPrisma);
+
+    expect(rows.map((row) => row.id)).toEqual([closedInside.id]);
+    expect(rows.map((row) => row.id)).not.toContain(closedOutside.id);
+  });
+
+  it('listCurrentVersionedFieldsForApprovedContents: id fora do array não entra nos parâmetros das 2 queries internas (RawContent/RuleBreakdown)', async () => {
+    const editor = await createUser('EDITOR');
+    const admin = await createUser('ADMIN');
+    const topicId = await createTopic();
+
+    const inside = await seedApprovableRawContent(editor.id, topicId);
+    const closedInside = await closeContentVersion(
+      inside.id,
+      { legislativeClosureDate: '2026-09-01' },
+      actorOf(editor),
+      testPrisma,
+    );
+    await approveContentVersion(
+      inside.id,
+      closedInside.number,
+      APPROVE_INPUT,
+      actorOf(admin),
+      testPrisma,
+    );
+
+    // Aprovado também, mas deliberadamente FORA do array passado à função —
+    // o filtro é do CHAMADOR; esta prova é sobre as 2 queries internas.
+    const outside = await seedApprovableRawContent(editor.id, topicId);
+    const closedOutside = await closeContentVersion(
+      outside.id,
+      { legislativeClosureDate: '2026-09-01' },
+      actorOf(editor),
+      testPrisma,
+    );
+    await approveContentVersion(
+      outside.id,
+      closedOutside.number,
+      APPROVE_INPUT,
+      actorOf(admin),
+      testPrisma,
+    );
+
+    const probe = new PrismaClient({
+      adapter: new PrismaPg({ connectionString: TEST_DATABASE_URL, max: 1 }),
+      log: [{ emit: 'event', level: 'query' }],
+    });
+    const events: Array<{ query: string; params: string }> = [];
+    probe.$on('query', (event) => events.push({ query: event.query, params: event.params }));
+
+    let map: Awaited<ReturnType<typeof listCurrentVersionedFieldsForApprovedContents>>;
+    try {
+      map = await listCurrentVersionedFieldsForApprovedContents([inside.id], probe);
+    } finally {
+      await probe.$disconnect();
+    }
+
+    expect(map.has(inside.id)).toBe(true);
+    expect(map.has(outside.id)).toBe(false);
+
+    // Falsificável: um `IN` removido de QUALQUER uma das 2 queries internas
+    // faria a query trazer TODOS os ids do banco, `outside.id` incluso nos
+    // parâmetros — mesmo que o merge final ainda excluísse `outside` (a
+    // outra query permanecendo filtrada), o parâmetro em si já denunciaria
+    // o `IN` quebrado.
+    const rawContentQuery = events.find((event) => /"raw_contents"/.test(event.query));
+    const ruleBreakdownQuery = events.find((event) => /"rule_breakdowns"/.test(event.query));
+    assertDefined(rawContentQuery);
+    assertDefined(ruleBreakdownQuery);
+    expect(rawContentQuery.params).toContain(inside.id);
+    expect(rawContentQuery.params).not.toContain(outside.id);
+    expect(ruleBreakdownQuery.params).toContain(inside.id);
+    expect(ruleBreakdownQuery.params).not.toContain(outside.id);
+  });
+});
+
 /**
  * NFR-034-001 — medição real via `withQueryProbe` (`tests/support/query-probe.ts`,
  * molde `content-versions.service.integration.test.ts:445-469`): cada leitura em
@@ -275,6 +536,7 @@ describe('query-count por função (NFR-034-001): fixture de 5 Conteúdos, custo
     const admin = await createUser('ADMIN');
     const topicId = await createTopic();
     const rawContentIds: string[] = [];
+    const versionIds: string[] = [];
     for (let i = 0; i < 5; i += 1) {
       const rawContent = await seedApprovableRawContent(editor.id, topicId);
       const closed = await closeContentVersion(
@@ -291,6 +553,7 @@ describe('query-count por função (NFR-034-001): fixture de 5 Conteúdos, custo
         testPrisma,
       );
       rawContentIds.push(rawContent.id);
+      versionIds.push(closed.id);
     }
 
     const activeContentsQueries = await withQueryProbe((probe) =>
@@ -312,6 +575,11 @@ describe('query-count por função (NFR-034-001): fixture de 5 Conteúdos, custo
       listLatestVersionsForPanel(rawContentIds, probe),
     );
     expect(versionsQueries).toHaveLength(1);
+
+    const versionSnapshotsQueries = await withQueryProbe((probe) =>
+      listApprovedVersionSnapshots(versionIds, probe),
+    );
+    expect(versionSnapshotsQueries).toHaveLength(1);
 
     const versionedFieldsQueries = await withQueryProbe((probe) =>
       listCurrentVersionedFieldsForApprovedContents(rawContentIds, probe),
