@@ -163,6 +163,31 @@ function findReferenceTiraExport(
   return null;
 }
 
+/**
+ * Início registrado (FR-034-026, A-034-011): só a criação (`createRawContent`,
+ * `contents.service.ts`) grava ABERTURA e CONCLUSAO de `CONTEUDO_BRUTO` com o
+ * MESMO `occurredAt` (mesmo `now` da transação) — é o sinal que distingue
+ * criação de uma 1ª edição de Conteúdo semeado fora do fluxo instrumentado
+ * (`decideStageTransition` grava ABERTURA solitária quando não há histórico).
+ * Sem esse par, não há início registrado — mesmo havendo eventos de etapa
+ * posteriores.
+ */
+function findCreationStartEvent(
+  stageEventsByType: Map<ProductionStageType, ContentMetricsStageEvent[]>,
+): ContentMetricsStageEvent | null {
+  const contentBrutoEvents = stageEventsByType.get('CONTEUDO_BRUTO') ?? [];
+  const abertura = contentBrutoEvents.find((event) => event.transitionType === 'ABERTURA');
+  if (abertura === undefined) {
+    return null;
+  }
+  const hasMatchingConclusao = contentBrutoEvents.some(
+    (event) =>
+      event.transitionType === 'CONCLUSAO' &&
+      event.occurredAt.getTime() === abertura.occurredAt.getTime(),
+  );
+  return hasMatchingConclusao ? abertura : null;
+}
+
 interface ContentTimeResult {
   totalTime: ContentMetrics['totalTime'];
   timePerPage: number | null;
@@ -172,10 +197,10 @@ interface ContentTimeResult {
 }
 
 function resolveContentTime(
-  startEvent: ContentMetricsStageEvent | null,
+  creationStartEvent: ContentMetricsStageEvent | null,
   referenceExport: ContentMetricsTiraPublication | null,
 ): ContentTimeResult {
-  if (startEvent === null) {
+  if (creationStartEvent === null) {
     return {
       totalTime: { reason: 'sem-registro' },
       timePerPage: null,
@@ -189,7 +214,7 @@ function resolveContentTime(
       referenceExportPageCount: null,
     };
   }
-  const ms = referenceExport.occurredAt.getTime() - startEvent.occurredAt.getTime();
+  const ms = referenceExport.occurredAt.getTime() - creationStartEvent.occurredAt.getTime();
   const timePerPage = ms / referenceExport.pageCount;
   return {
     totalTime: { ms, pageCount: referenceExport.pageCount },
@@ -269,11 +294,17 @@ function resolveReworkCountByStage(
   return counts;
 }
 
+/**
+ * Etapa mais avançada (FR-034-029): "sem registro" vale só para Conteúdo SEM
+ * NENHUM evento de etapa — não depende do início registrado (A-034-006, gap
+ * separado de `findCreationStartEvent`). Uma ABERTURA órfã (sem par de
+ * criação) ainda conta como etapa alcançada.
+ */
 function resolveMostAdvancedStage(
-  startEvent: ContentMetricsStageEvent | null,
+  hasAnyStageEvent: boolean,
   stageEventsByType: Map<ProductionStageType, ContentMetricsStageEvent[]>,
 ): ProductionStageType | 'sem-registro' {
-  if (startEvent === null) {
+  if (!hasAnyStageEvent) {
     return 'sem-registro';
   }
   let mostAdvanced: ProductionStageType = 'CONTEUDO_BRUTO';
@@ -322,7 +353,7 @@ export function computeContentMetrics(now: Date, input: ContentMetricsInput): Co
   const sortedStageEvents = [...input.stageEvents].sort(compareBySequence);
   const stageEventsByType = groupStageEventsByType(sortedStageEvents);
 
-  const startEvent = findFirstBySequence(stageEventsByType.get('CONTEUDO_BRUTO') ?? []);
+  const creationStartEvent = findCreationStartEvent(stageEventsByType);
   const firstClosureEvent = findFirstBySequence(stageEventsByType.get('VERSAO_EDITORIAL') ?? []);
   const closureSequence = firstClosureEvent === null ? null : firstClosureEvent.sequence;
 
@@ -332,7 +363,7 @@ export function computeContentMetrics(now: Date, input: ContentMetricsInput): Co
     closureSequence,
   );
   const { totalTime, timePerPage, referenceExportPageCount } = resolveContentTime(
-    startEvent,
+    creationStartEvent,
     referenceExport,
   );
 
@@ -357,9 +388,10 @@ export function computeContentMetrics(now: Date, input: ContentMetricsInput): Co
     reworkCountByStage: resolveReworkCountByStage(sortedStageEvents, closureSequence),
     concluded,
     approvedButAltered,
-    mostAdvancedStage: resolveMostAdvancedStage(startEvent, stageEventsByType),
+    mostAdvancedStage: resolveMostAdvancedStage(sortedStageEvents.length > 0, stageEventsByType),
     priority: derivePresentationPriority(input.content.radarClass),
-    ageMs: startEvent === null ? null : now.getTime() - startEvent.occurredAt.getTime(),
+    ageMs:
+      creationStartEvent === null ? null : now.getTime() - creationStartEvent.occurredAt.getTime(),
   };
 }
 

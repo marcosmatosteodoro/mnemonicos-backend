@@ -375,6 +375,107 @@ describe('computeContentMetrics — Conteúdo sem evento de criação (AC-034-02
   });
 });
 
+describe('computeContentMetrics — início registrado é o sinal de criação, não qualquer evento (FR-034-026/029, A-034-006/A-034-011)', () => {
+  it('Conteúdo semeado e depois editado (ABERTURA órfã de CONTEUDO_BRUTO, sem par de criação): tempo total, tempo por página e idade "sem registro", mas a etapa mais avançada é a real alcançada — mesmo com Exportação Tira pós-fechamento casando (mutante "voltar a usar o 1º CONTEUDO_BRUTO de qualquer transição" reprova aqui; mutante "etapa depende do início" também)', () => {
+    const orphanOpeningFromEdit = new Date('2026-01-01T00:00:00Z');
+    const quebraAbertura = new Date('2026-01-02T00:00:00Z');
+    const quebraConclusao = new Date('2026-01-03T00:00:00Z');
+    const closure = new Date('2026-01-10T00:00:00Z');
+    const referenceExportAt = new Date('2026-01-15T00:00:00Z');
+
+    const stageEvents: ContentMetricsStageEvent[] = [
+      // Seed cria o Conteúdo direto no banco (fora do fluxo instrumentado): 0
+      // histórico para o par (CONTEUDO_BRUTO); a 1ª edição decide ABERTURA
+      // (`decideStageTransition`), sem CONCLUSAO pareada no mesmo `occurredAt`.
+      {
+        stageType: 'CONTEUDO_BRUTO',
+        transitionType: 'ABERTURA',
+        sequence: 1n,
+        occurredAt: orphanOpeningFromEdit,
+      },
+      {
+        stageType: 'QUEBRA_DA_REGRA',
+        transitionType: 'ABERTURA',
+        sequence: 2n,
+        occurredAt: quebraAbertura,
+      },
+      {
+        stageType: 'QUEBRA_DA_REGRA',
+        transitionType: 'CONCLUSAO',
+        sequence: 3n,
+        occurredAt: quebraConclusao,
+      },
+      {
+        stageType: 'VERSAO_EDITORIAL',
+        transitionType: 'CONCLUSAO',
+        sequence: 4n,
+        occurredAt: closure,
+      },
+      {
+        stageType: 'PUBLICACAO_PDF',
+        transitionType: 'CONCLUSAO',
+        sequence: 5n,
+        occurredAt: referenceExportAt,
+      },
+    ];
+
+    const metrics = computeContentMetrics(
+      new Date('2026-03-01T00:00:00Z'),
+      buildInput({
+        stageEvents,
+        tiraPublications: [{ occurredAt: referenceExportAt, pageCount: 8 }],
+      }),
+    );
+
+    expect(metrics.totalTime).toEqual({ reason: 'sem-registro' });
+    expect(metrics.timePerPage).toBeNull();
+    expect(metrics.ageMs).toBeNull();
+    expect(metrics.mostAdvancedStage).toBe('VERSAO_EDITORIAL');
+  });
+
+  it('criação instrumentada normal (par ABERTURA+CONCLUSAO no mesmo occurredAt) continua medida mesmo com retrabalho posterior na mesma etapa (regressão)', () => {
+    const start = new Date('2026-01-01T00:00:00Z');
+    const reworkAfterCreation = new Date('2026-01-04T00:00:00Z');
+    const closure = new Date('2026-01-10T00:00:00Z');
+    const referenceExportAt = new Date('2026-01-20T00:00:00Z');
+
+    const stageEvents: ContentMetricsStageEvent[] = [
+      ...contentBrutoEvents(1n, start),
+      {
+        stageType: 'CONTEUDO_BRUTO',
+        transitionType: 'RETRABALHO',
+        sequence: 3n,
+        occurredAt: reworkAfterCreation,
+      },
+      {
+        stageType: 'VERSAO_EDITORIAL',
+        transitionType: 'CONCLUSAO',
+        sequence: 4n,
+        occurredAt: closure,
+      },
+      {
+        stageType: 'PUBLICACAO_PDF',
+        transitionType: 'CONCLUSAO',
+        sequence: 5n,
+        occurredAt: referenceExportAt,
+      },
+    ];
+
+    const metrics = computeContentMetrics(
+      new Date('2026-03-01T00:00:00Z'),
+      buildInput({
+        stageEvents,
+        tiraPublications: [{ occurredAt: referenceExportAt, pageCount: 10 }],
+      }),
+    );
+
+    const expectedMs = referenceExportAt.getTime() - start.getTime();
+    expect(metrics.totalTime).toEqual({ ms: expectedMs, pageCount: 10 });
+    expect(metrics.timePerPage).toBe(expectedMs / 10);
+    expect(metrics.ageMs).toBe(new Date('2026-03-01T00:00:00Z').getTime() - start.getTime());
+  });
+});
+
 describe('computeContentMetrics — Exportação de referência sem página (AC-034-019)', () => {
   it('referência sem pageCount + reexportação posterior COM pageCount → sem medida (reexportação não substitui a referência)', () => {
     const start = new Date('2026-01-01T00:00:00Z');
