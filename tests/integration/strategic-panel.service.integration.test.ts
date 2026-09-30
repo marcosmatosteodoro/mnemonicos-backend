@@ -1,11 +1,17 @@
-import { softDeleteRawContent } from '../../src/modules/contents/contents.service';
+import {
+  createRawContent as createInstrumentedRawContent,
+  saveRuleBreakdown,
+  softDeleteRawContent,
+} from '../../src/modules/contents/contents.service';
 import type { ContentActor } from '../../src/modules/contents/contents.service';
 import {
   approveContentVersion,
   closeContentVersion,
 } from '../../src/modules/content-versions/content-versions.service';
 import type { VersionedContentFields } from '../../src/modules/content-versions/versioned-content-diff';
+import { exportPublication } from '../../src/modules/publication/publication.service';
 import {
+  buildStrategicPanel,
   listActiveContentsForPanel,
   listApprovedVersionSnapshots,
   listCurrentVersionedFieldsForApprovedContents,
@@ -15,9 +21,11 @@ import {
 } from '../../src/modules/strategic-panel/strategic-panel.service';
 import { seedApprovableRawContent } from '../support/approvable-raw-content-fixtures';
 import {
+  BREAKDOWN_FIELDS,
   createRawContent,
   createTopic,
   createUser,
+  RAW_CONTENT_TEXT_FIELDS,
   seedRuleBreakdown,
 } from '../support/production-events-fixtures';
 import { withQueryEventProbe, withQueryProbe } from '../support/query-probe';
@@ -575,5 +583,57 @@ describe('query-count por função (NFR-034-001): fixture de 5 Conteúdos, custo
       listCurrentVersionedFieldsForApprovedContents(rawContentIds, probe),
     );
     expect(versionedFieldsQueries).toHaveLength(2);
+  });
+});
+
+/**
+ * Achado do gate 10 da Wave 3 (performance-engineer): `buildStrategicPanel` agrupa
+ * eventos de etapa e Publicações Tira por `rawContentId` num `Map` antes do laço por
+ * Conteúdo (O(N+E)), nunca `.filter` por Conteúdo dentro do laço (O(N·E)).
+ */
+describe('buildStrategicPanel — agrupamento por rawContentId não redistribui entre Conteúdos', () => {
+  it('2 Conteúdos com eventos/Publicações intercalados → cada um recebe só os próprios, por identidade fixa de contentId', async () => {
+    const editor = await createUser('EDITOR');
+    const actor = actorOf(editor);
+    const topicA = await createTopic();
+    const topicB = await createTopic();
+
+    // Intercalado: A e B criados em sequência (eventos de A e B convivem nas
+    // mesmas coleções lidas em lote); só B fecha/exporta depois.
+    const contentA = await createInstrumentedRawContent(
+      { topicId: topicA, ...RAW_CONTENT_TEXT_FIELDS },
+      editor.id,
+      testPrisma,
+    );
+    const contentB = await createInstrumentedRawContent(
+      { topicId: topicB, ...RAW_CONTENT_TEXT_FIELDS },
+      editor.id,
+      testPrisma,
+    );
+    await saveRuleBreakdown(contentB.id, BREAKDOWN_FIELDS, actor, testPrisma);
+    await closeContentVersion(
+      contentB.id,
+      { legislativeClosureDate: '2026-09-01' },
+      actor,
+      testPrisma,
+    );
+    await exportPublication(contentB.id, { variant: 'TIRA' }, actor, testPrisma);
+
+    const payload = await buildStrategicPanel(new Date(), testPrisma);
+    const byId = new Map(payload.contents.map((content) => [content.contentId, content]));
+    const metricsA = byId.get(contentA.id);
+    const metricsB = byId.get(contentB.id);
+    assertDefined(metricsA);
+    assertDefined(metricsB);
+
+    // Falsificável: um `.get` com a chave errada (ou o Map de eventos trocado
+    // pelo de Publicações) atribuiria os dados de B a A ou vice-versa; um
+    // agrupamento vazio (`.get` sempre `undefined`) faria os 2 caírem no ramo
+    // "sem-medida"/"em-aberto" — em qualquer um dos casos a identidade fixa
+    // por `contentId` (nunca detectada dinamicamente pelo ramo) reprova aqui.
+    expect(metricsA.perStage.QUEBRA_DA_REGRA.status).toBe('em-aberto');
+    expect(metricsB.perStage.QUEBRA_DA_REGRA.status).toBe('medido');
+    expect('reason' in metricsA.totalTime).toBe(true);
+    expect('ms' in metricsB.totalTime).toBe(true);
   });
 });

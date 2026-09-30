@@ -52,7 +52,7 @@ function buildPoisonedPayload(): StrategicPanelPayload {
           VERSAO_EDITORIAL: { status: 'sem-duracao-medida' },
           APROVACAO_VERSAO: { status: 'nao-percorrida' },
         },
-        reworkCountByStage: { [EXTRA_KEY]: 1 },
+        reworkCountByStage: { QUEBRA_DA_REGRA: 2, [EXTRA_KEY]: 1 },
         concluded: false,
         approvedButAltered: false,
         mostAdvancedStage: 'CONTEUDO_BRUTO',
@@ -82,7 +82,7 @@ function buildPoisonedPayload(): StrategicPanelPayload {
     ],
     rework: {
       [EXTRA_KEY]: 'nível rework',
-      byStage: { [EXTRA_KEY]: 1 },
+      byStage: { QUEBRA_DA_REGRA: 2, [EXTRA_KEY]: 1 },
       contentsWithCorrection: 0,
     },
     backlog: [
@@ -153,5 +153,12 @@ describe('GET /strategic-panel — allowlist na fronteira HTTP real', () => {
     const allKeys = new Set<string>();
     collectKeysRecursively(res.body, allKeys);
     expect(allKeys.has(EXTRA_KEY)).toBe(false);
+
+    // Mutante: `toReworkCountByStageResponse` devolvendo `{}` (descarta tudo,
+    // não só a chave envenenada) sobreviveria à checagem de chaves acima — a
+    // contagem LEGÍTIMA ao lado da envenenada prova que o allowlist filtra,
+    // em vez de esvaziar.
+    expect(res.body.contents[0].reworkCountByStage).toEqual({ QUEBRA_DA_REGRA: 2 });
+    expect(res.body.rework.byStage).toEqual({ QUEBRA_DA_REGRA: 2 });
   });
 });

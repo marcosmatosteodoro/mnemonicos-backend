@@ -229,6 +229,25 @@ function groupLatestVersionByContent(versions: PanelVersionRow[]): Map<string, P
 }
 
 /**
+ * Agrupa uma coleção por `rawContentId` num único laço (COMP-035-012, NFR-034-001):
+ * toda coleção redistribuída por Conteúdo dentro de `contents.map` (eventos de etapa,
+ * Publicações Tira) passa por aqui — nunca `.filter` por Conteúdo dentro do laço, que
+ * tornaria o custo O(N·E) em vez de O(N+E).
+ */
+function groupByContentId<T extends { rawContentId: string }>(rows: T[]): Map<string, T[]> {
+  const result = new Map<string, T[]>();
+  for (const row of rows) {
+    const bucket = result.get(row.rawContentId);
+    if (bucket === undefined) {
+      result.set(row.rawContentId, [row]);
+    } else {
+      bucket.push(row);
+    }
+  }
+  return result;
+}
+
+/**
  * Orquestração do Painel estratégico (COMP-035-012, TASK-035-006): soma as 6
  * leituras em lote acima ao cálculo puro (`strategic-panel-calculations.ts`,
  * TASK-035-004). Contagem fixa por chamada (DEC-035-014 v0.2): 1
@@ -282,6 +301,9 @@ export async function buildStrategicPanel(
     currentFieldsByContent = currentFields;
   }
 
+  const stageEventsByContent = groupByContentId(stageEvents);
+  const tiraPublicationsByContent = groupByContentId(tiraPublications);
+
   const metrics = contents.map((content) => {
     const latestVersion = latestVersionByContent.get(content.id) ?? null;
     return computeContentMetrics(now, {
@@ -291,10 +313,8 @@ export async function buildStrategicPanel(
         disciplineName: content.topic.discipline.name,
         topicName: content.topic.name,
       },
-      stageEvents: stageEvents.filter((event) => event.rawContentId === content.id),
-      tiraPublications: tiraPublications.filter(
-        (publication) => publication.rawContentId === content.id,
-      ),
+      stageEvents: stageEventsByContent.get(content.id) ?? [],
+      tiraPublications: tiraPublicationsByContent.get(content.id) ?? [],
       latestVersion:
         latestVersion === null
           ? null
