@@ -87,7 +87,7 @@ enum ProductionStageType {
   // nunca via decideStageTransition (DEC-029-005) — Versão editorial não tem
   // ciclo abertura/retrabalho.
   VERSAO_EDITORIAL
-  // aditivo, sem redesenho do mecanismo (NFR-009-001/DEC-010-001,
+  // Aditivo, sem redesenho do mecanismo (NFR-009-001/DEC-010-001,
   // NFR-011-004). Emitido sempre como CONCLUSAO direto pelo ato de
   // aprovação (DEC-033-008) — aprovação de Versão não tem ciclo
   // abertura/retrabalho, mesma razão de VERSAO_EDITORIAL acima.
