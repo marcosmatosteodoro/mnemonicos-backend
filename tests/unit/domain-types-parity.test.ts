@@ -163,6 +163,7 @@ describe('paridade de tipos de domínio backend ⇆ frontend (NFR-002-007 / AC-0
     const schemaStageTypes = extractPrismaEnum(schemaSource, 'ProductionStageType').sort();
 
     expect(declaredStageTypes).toEqual([
+      'APROVACAO_VERSAO',
       'ASSOCIACAO_VISUAL',
       'CONTEUDO_BRUTO',
       'MATERIAL_REFORCO',

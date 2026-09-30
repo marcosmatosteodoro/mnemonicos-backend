@@ -16,6 +16,7 @@ import {
   buildStripPdf,
   buildSummaryPdf,
   formatLegislativeClosureDate,
+  resolveHeaderLabel,
 } from '../../src/modules/publication/pdf-composer';
 import type {
   ImageSkippedInfo,
@@ -821,6 +822,38 @@ describe('Postura estrutural de pdf-composer.ts (NFR-024-001/002/004, gate 1)', 
       const plantedRequire = `const x = require('node:${moduleName}');\n${nonCommentLines}`;
       expect(importsModule(plantedRequire, moduleName)).toBe(true);
     }
+  });
+});
+
+describe('resolveHeaderLabel — carimbo de Versão aprovada no cabeçalho (FR-032-010/011)', () => {
+  const DRAFT_LABEL_TEXT = 'RASCUNHO — documento gerado automaticamente, sujeito a revisão.';
+
+  it('version: null → DRAFT_LABEL', () => {
+    expect(resolveHeaderLabel(null)).toBe(DRAFT_LABEL_TEXT);
+  });
+
+  it('approvedAndValid: false (nunca aprovada, superada, ou sinal de alteração aceso) → DRAFT_LABEL', () => {
+    const version = {
+      number: 5,
+      legislativeClosureDate: new Date('2026-01-01T00:00:00.000Z'),
+      alteredAfterClosure: false,
+      approvedAndValid: false,
+    };
+
+    expect(resolveHeaderLabel(version)).toBe(DRAFT_LABEL_TEXT);
+  });
+
+  it('approvedAndValid: true → marca de alcance explícito com o número da Versão', () => {
+    const version = {
+      number: 5,
+      legislativeClosureDate: new Date('2026-01-01T00:00:00.000Z'),
+      alteredAfterClosure: false,
+      approvedAndValid: true,
+    };
+
+    expect(resolveHeaderLabel(version)).toBe(
+      'Conteúdo normativo e Tira mnemônica — Versão 5 aprovada',
+    );
   });
 });
 

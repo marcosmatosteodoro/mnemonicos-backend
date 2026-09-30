@@ -6,8 +6,8 @@ import { GenerationTimeoutError, NothingToExportError, NotFoundError } from '../
 import { logger } from '../../lib/logger';
 import { prisma } from '../../lib/prisma';
 import type { PublicationVariant } from '../../domain/types';
+import { resolveAlterationSignal } from '../content-versions/content-versions.service';
 import {
-  hasVersionedContentChanged,
   toVersionedContentFields,
   type VersionedContentFields,
 } from '../content-versions/versioned-content-diff';
@@ -136,37 +136,38 @@ async function assertRawContentExportable(
 }
 
 /**
- * Passo 2b (COMP-029-007, TASK-029-003): a Versão editorial MAIS RECENTE já fechada
- * (`orderBy: { number: 'desc' }`, DEC-029-006 — histórico de datas não implica ordem
- * cronológica, então a busca é por `number`, nunca por `closedAt`/`legislativeClosureDate`)
- * — `null` = nenhuma Versão fechada ainda (FR-028-009). Quando existe, compara o estado
- * ATUAL (`current`, já lido nos Passos 1/2 sem 3ª consulta) contra o `contentSnapshot`
- * gravado no fechamento (`closeContentVersion`, TASK-029-002) via
- * `hasVersionedContentChanged` — o cast é seguro porque `contentSnapshot` só é gravado
- * por aquela função, sempre na mesma forma (allowlist idêntica, ver
- * `versioned-content-diff.ts`).
+ * Passo 2b: a Versão editorial MAIS RECENTE já fechada (`orderBy: { number: 'desc' }`,
+ * DEC-029-006 — histórico de datas não implica ordem cronológica, então a busca é por
+ * `number`, nunca por `closedAt`/`legislativeClosureDate`) — `null` = nenhuma Versão
+ * fechada ainda (FR-028-009). Quando existe, `resolveAlterationSignal` compara o estado
+ * ATUAL (`current`, já lido nos Passos 1/2 sem 3ª consulta) contra o `contentSnapshot`/
+ * `closedAt` da Versão, combinando o sinal de CONTEÚDO com o da Tira mnemônica.
  */
 async function resolveVersionStampForPdf(
   rawContentId: string,
   current: VersionedContentFields,
-  db: Pick<PublicationClient, 'contentVersion'>,
+  db: Pick<PublicationClient, 'contentVersion' | 'productionStageEvent'>,
 ): Promise<VersionStampForPdf | null> {
   const latest = await db.contentVersion.findFirst({
     where: { rawContentId },
     orderBy: { number: 'desc' },
-    select: { number: true, legislativeClosureDate: true, contentSnapshot: true },
+    select: {
+      number: true,
+      legislativeClosureDate: true,
+      contentSnapshot: true,
+      closedAt: true,
+      approvedById: true,
+    },
   });
   if (latest === null) return null;
 
-  const alteredAfterClosure = hasVersionedContentChanged(
-    current,
-    latest.contentSnapshot as unknown as VersionedContentFields,
-  );
+  const alteredAfterClosure = await resolveAlterationSignal(rawContentId, current, latest, db);
 
   return {
     number: latest.number,
     legislativeClosureDate: latest.legislativeClosureDate,
     alteredAfterClosure,
+    approvedAndValid: latest.approvedById !== null && !alteredAfterClosure,
   };
 }
 

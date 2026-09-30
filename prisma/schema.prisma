@@ -87,8 +87,13 @@ enum ProductionStageType {
   // nunca via decideStageTransition (DEC-029-005) — Versão editorial não tem
   // ciclo abertura/retrabalho.
   VERSAO_EDITORIAL
-  // Fatias futuras (F9 QC) acrescentam valores aqui — migração aditiva, sem
-  // redesenho do mecanismo (NFR-009-001/DEC-010-001, agora também NFR-011-004).
+  // Aditivo, sem redesenho do mecanismo (NFR-009-001/DEC-010-001,
+  // NFR-011-004). Emitido sempre como CONCLUSAO direto pelo ato de
+  // aprovação (DEC-033-008) — aprovação de Versão não tem ciclo
+  // abertura/retrabalho, mesma razão de VERSAO_EDITORIAL acima.
+  APROVACAO_VERSAO
+  // Fatias futuras acrescentam valores aqui — migração aditiva, sem redesenho
+  // do mecanismo (NFR-009-001/DEC-010-001, NFR-011-004).
 }
 
 enum ProductionEventTransition {
@@ -132,7 +137,10 @@ model User {
   contrasts            Contrast[]            @relation("ContrastAuthor")
   productionFlashcards ProductionFlashcard[] @relation("ProductionFlashcardAuthor")
 
-  contentVersions ContentVersion[]
+  contentVersions         ContentVersion[]
+  /// DEC-033-004: relação reversa nomeada — distinta de `contentVersions`
+  /// (autoria/default) — de quem aprovou (`approvedById`) para as Versões aprovadas.
+  contentVersionApprovals ContentVersion[] @relation("ContentVersionApprover")
 
   @@map("users")
 }
@@ -608,6 +616,15 @@ model ContentVersion {
   /// Copia integral dos campos versionados de RawContent + RuleBreakdown no momento do
   /// fechamento (DEC-029-003) — nunca exposto à UI.
   contentSnapshot Json
+
+  /// DEC-033-004: estado de aprovação — colunas na MESMA linha, não uma
+  /// tabela 1:1 separada. `null` = ainda não aprovada (estado inicial de toda Versão
+  /// recém-fechada, FR-032-006). Nunca sobrescrito depois de setado uma vez
+  /// (FR-032-005) — a garantia é o `updateMany` condicional em `approveContentVersion`,
+  /// não a ausência de coluna de update.
+  approvedById String?
+  approver     User?     @relation("ContentVersionApprover", fields: [approvedById], references: [id], onDelete: Restrict)
+  approvedAt   DateTime?
 
   @@unique([rawContentId, number])
   @@map("content_versions")

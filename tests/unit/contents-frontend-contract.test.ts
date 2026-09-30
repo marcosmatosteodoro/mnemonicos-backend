@@ -244,12 +244,22 @@ describe('paridade cross-repo — ContentVersion (TASK-029-004)', () => {
   const backendContentVersionsServiceSource = readSourceFile(BACKEND_CONTENT_VERSIONS_SERVICE);
   const frontendSource = readSourceFile(FRONTEND_TYPES);
 
-  it('ContentVersion: exatamente id/rawContentId/number/legislativeClosureDate/authorId/closedAt, nos dois lados — sem contentSnapshot fantasma no frontend (DEC-029-003)', () => {
+  it('ContentVersion: exatamente id/rawContentId/number/legislativeClosureDate/authorId/closedAt/approvedById/approvedAt/validApprovalForExport, nos dois lados — sem contentSnapshot fantasma no frontend (DEC-029-003)', () => {
     const backendFields = extractInterfaceFields(backendDomainSource, 'ContentVersion').sort();
     const frontendFields = extractInterfaceFields(frontendSource, 'ContentVersion').sort();
 
     expect(backendFields).toEqual(
-      ['id', 'rawContentId', 'number', 'legislativeClosureDate', 'authorId', 'closedAt'].sort(),
+      [
+        'id',
+        'rawContentId',
+        'number',
+        'legislativeClosureDate',
+        'authorId',
+        'closedAt',
+        'approvedById',
+        'approvedAt',
+        'validApprovalForExport',
+      ].sort(),
     );
     expect(frontendFields).toEqual(backendFields);
     // Mutante: reintroduzir `contentSnapshot` só no frontend (sem o backend
@@ -271,7 +281,17 @@ describe('paridade cross-repo — ContentVersion (TASK-029-004)', () => {
     // pendência já registrada para `ContrastDetail`/`FlashcardDetail` (ver
     // blocos acima / INDEX do slug).
     expect(backendPayloadFields).toEqual(
-      ['id', 'rawContentId', 'number', 'legislativeClosureDate', 'authorId', 'closedAt'].sort(),
+      [
+        'id',
+        'rawContentId',
+        'number',
+        'legislativeClosureDate',
+        'authorId',
+        'closedAt',
+        'approvedById',
+        'approvedAt',
+        'validApprovalForExport',
+      ].sort(),
     );
   });
 });

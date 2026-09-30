@@ -5,8 +5,16 @@ import { requireRole } from '../../http/middlewares/authorize';
 import { verifyOrigin } from '../auth/auth.routes';
 import { rawContentIdParamSchema } from '../contents/contents.schema';
 import type { ContentActor } from '../contents/contents.service';
-import { closeContentVersionSchema } from './content-versions.schema';
-import { closeContentVersion, listContentVersions } from './content-versions.service';
+import {
+  approveContentVersionParamsSchema,
+  approveContentVersionSchema,
+  closeContentVersionSchema,
+} from './content-versions.schema';
+import {
+  approveContentVersion,
+  closeContentVersion,
+  listContentVersions,
+} from './content-versions.service';
 
 /**
  * Superfície HTTP de Versão editorial (COMP-029-006 / TASK-029-002):
@@ -51,5 +59,26 @@ contentVersionsRoutes.get(
     const { id } = rawContentIdParamSchema.parse(req.params);
     const versions = await listContentVersions(id, actorOf(req));
     res.json(versions);
+  },
+);
+
+/**
+ * POST /contents/:id/versions/:number/approve — aprova a Versão vigente
+ * `:number` de `:id` (FR-032-016: ADMIN only, sem `'EDITOR'` — deny-by-default).
+ * Responde `200` (atualiza um recurso já existente, ao contrário do `201` de
+ * `POST /contents/:id/versions`, que cria uma Versão nova).
+ */
+contentVersionsRoutes.post(
+  '/contents/:id/versions/:number/approve',
+  verifyOrigin,
+  requireRole('POST', '/contents/:id/versions/:number/approve', 'ADMIN'),
+  async (req, res) => {
+    const { id, number } = approveContentVersionParamsSchema.parse({
+      id: req.params.id,
+      number: req.params.number,
+    });
+    const input = approveContentVersionSchema.parse(req.body);
+    const approved = await approveContentVersion(id, number, input, actorOf(req));
+    res.status(200).json(approved);
   },
 );

@@ -30,7 +30,7 @@ function readSource(path: string): string {
   return readFileSync(path, 'utf8');
 }
 
-/** Extrai o corpo de `closeContentVersion` por casamento de chaves balanceadas. */
+/** Extrai o corpo de uma função por casamento de chaves balanceadas. */
 function extractFunctionBody(source: string, signatureAnchor: string): string {
   const anchorIndex = source.indexOf(signatureAnchor);
   if (anchorIndex === -1) {
@@ -78,33 +78,44 @@ function extractFunctionBody(source: string, signatureAnchor: string): string {
   throw new Error(`chave de fechamento não encontrada: ${signatureAnchor}`);
 }
 
+/**
+ * 1ª linha executável do corpo (ignora comentários e "abridores" de escopo —
+ * `=> {`/`) {`/`try {`) — usada pelas provas de "X é a 1ª chamada do corpo".
+ * Compartilhado pelos 2 blocos abaixo: sem este helper, uma prova de ordem
+ * relativa entre 2 âncoras (ex.: "A antes de B") não detecta um mutante que
+ * insere uma 3ª chamada ANTES das duas — só a posição ABSOLUTA (1ª linha do
+ * corpo) fecha essa classe de mutante.
+ */
+function firstExecutableStatement(body: string): string {
+  const lines = body
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(
+      (line) =>
+        line.length > 0 &&
+        !line.startsWith('//') &&
+        !line.startsWith('*') &&
+        !line.startsWith('/*'),
+    );
+
+  const isScopeOpener = (line: string): boolean =>
+    line.endsWith('=> {') || line.endsWith(') {') || line === 'try {';
+
+  const firstExecutable = lines.find((candidate) => !isScopeOpener(candidate));
+  if (firstExecutable === undefined) {
+    throw new Error('nenhuma linha executável encontrada no corpo da função');
+  }
+  return firstExecutable;
+}
+
 describe('closeContentVersion — ordem das guardas (TASK-029-002, estrutural)', () => {
   const source = readSource(CONTENT_VERSIONS_SERVICE);
   const body = extractFunctionBody(source, 'export async function closeContentVersion');
 
   it('(a) $queryRaw com FOR UPDATE é a 1ª chamada do corpo, antes de qualquer outra chamada a tx/assertRawContentReachable', () => {
-    const lines = body
-      .split('\n')
-      .map((line) => line.trim())
-      .filter(
-        (line) =>
-          line.length > 0 &&
-          !line.startsWith('//') &&
-          !line.startsWith('*') &&
-          !line.startsWith('/*'),
-      );
-
-    const isScopeOpener = (line: string): boolean =>
-      line.endsWith('=> {') || line.endsWith(') {') || line === 'try {';
-
-    const firstExecutable = lines.find((candidate) => !isScopeOpener(candidate));
-    if (firstExecutable === undefined) {
-      throw new Error('nenhuma linha executável encontrada no corpo da função');
-    }
-
     // Mutante: mover qualquer leitura/checagem para ANTES do lock faz esta
     // asserção reprovar — DEC-029-004 exige o lock como 1ª decisão.
-    expect(firstExecutable).toContain('tx.$queryRaw');
+    expect(firstExecutableStatement(body)).toContain('tx.$queryRaw');
 
     const queryRawIndex = body.indexOf('tx.$queryRaw');
     const forUpdateIndex = body.indexOf('FOR UPDATE');
@@ -161,5 +172,100 @@ describe('closeContentVersion — ordem das guardas (TASK-029-002, estrutural)',
     // (é literalmente a última chamada do corpo).
     const afterRecord = body.slice(recordIndex + 'recordProductionStageEvent('.length);
     expect(afterRecord).not.toMatch(/tx\.\w+\.(create|update|delete|findFirst|findUnique)\(/);
+  });
+});
+
+/**
+ * Prova ESTRUTURAL da ORDEM exigida dentro do corpo de `approveContentVersion`
+ * (PLAN-033 §6 DEC-033-001/006 emendada/009): mesmo mecanismo de
+ * `extractFunctionBody` acima.
+ *
+ * Prova COMPORTAMENTAL completa vive em
+ * `content-versions.service.integration.test.ts` — não duplicada aqui.
+ */
+describe('approveContentVersion — ordem das guardas (estrutural)', () => {
+  const source = readSource(CONTENT_VERSIONS_SERVICE);
+  const body = extractFunctionBody(source, 'export async function approveContentVersion');
+
+  it('(a) tx.$queryRaw com FOR UPDATE é a 1ª chamada do corpo, ANTES de assertRawContentReachable', () => {
+    // Mutante: mover qualquer leitura/checagem para ANTES do lock faz esta
+    // asserção reprovar — DEC-033-001 herdada exige o lock como 1ª decisão.
+    expect(firstExecutableStatement(body)).toContain('tx.$queryRaw');
+
+    const queryRawIndex = body.indexOf('tx.$queryRaw');
+    const forUpdateIndex = body.indexOf('FOR UPDATE');
+    const reachableIndex = body.indexOf('assertRawContentReachable(');
+
+    expect(queryRawIndex).toBeGreaterThan(-1);
+    expect(forUpdateIndex).toBeGreaterThan(queryRawIndex);
+    expect(reachableIndex).toBeGreaterThan(forUpdateIndex);
+  });
+
+  it('(b) contentVersion.findFirst (Versão vigente) ANTES de ruleBreakdown.findUniqueOrThrow — a guarda de existência vem antes do *OrThrow', () => {
+    const findFirstIndex = body.indexOf('contentVersion.findFirst(');
+    const ruleBreakdownIndex = body.indexOf('ruleBreakdown.findUniqueOrThrow(');
+
+    expect(findFirstIndex).toBeGreaterThan(-1);
+    expect(ruleBreakdownIndex).toBeGreaterThan(-1);
+
+    // Mutante: mover a leitura de RuleBreakdown para ANTES da guarda de
+    // existência da Versão faz esta asserção reprovar.
+    expect(findFirstIndex).toBeLessThan(ruleBreakdownIndex);
+  });
+
+  it('(c) producerIds.has (segregação) ANTES de closureEvent (edição pós-fechamento)', () => {
+    const producerIdsIndex = body.indexOf('producerIds.has(');
+    const closureEventIndex = body.indexOf('closureEvent');
+
+    expect(producerIdsIndex).toBeGreaterThan(-1);
+    expect(closureEventIndex).toBeGreaterThan(-1);
+
+    // Mutante: trocar a ordem das 2 guardas faz esta asserção reprovar —
+    // precedência exigida: identidade (403 genérico) vence edição pós-fechamento.
+    expect(producerIdsIndex).toBeLessThan(closureEventIndex);
+  });
+
+  it('(d) closureEvent (edição pós-fechamento) ANTES de snapshot.sourceType (fonte ausente)', () => {
+    const closureEventIndex = body.indexOf('closureEvent');
+    const sourceTypeIndex = body.indexOf('snapshot.sourceType');
+
+    expect(closureEventIndex).toBeGreaterThan(-1);
+    expect(sourceTypeIndex).toBeGreaterThan(-1);
+
+    // Mutante: trocar a ordem das 2 guardas faz esta asserção reprovar —
+    // precedência exigida: edição pós-fechamento vence fonte ausente.
+    expect(closureEventIndex).toBeLessThan(sourceTypeIndex);
+  });
+
+  it('(e) ruleBreakdown.findUniqueOrThrow ANTES de resolveAlterationSignal', () => {
+    const ruleBreakdownIndex = body.indexOf('ruleBreakdown.findUniqueOrThrow(');
+    const resolveIndex = body.indexOf('resolveAlterationSignal(');
+
+    expect(ruleBreakdownIndex).toBeGreaterThan(-1);
+    expect(resolveIndex).toBeGreaterThan(-1);
+    expect(ruleBreakdownIndex).toBeLessThan(resolveIndex);
+  });
+
+  it('(f) resolveAlterationSignal ANTES de contentVersion.updateMany', () => {
+    const resolveIndex = body.indexOf('resolveAlterationSignal(');
+    const updateManyIndex = body.indexOf('contentVersion.updateMany(');
+
+    expect(resolveIndex).toBeGreaterThan(-1);
+    expect(updateManyIndex).toBeGreaterThan(-1);
+    expect(resolveIndex).toBeLessThan(updateManyIndex);
+  });
+
+  it('(g) recordProductionStageEvent é a ÚLTIMA chamada do corpo, depois de contentVersion.updateMany', () => {
+    const updateManyIndex = body.indexOf('contentVersion.updateMany(');
+    const recordIndex = body.indexOf('recordProductionStageEvent(');
+
+    expect(updateManyIndex).toBeGreaterThan(-1);
+    expect(recordIndex).toBeGreaterThan(-1);
+    expect(updateManyIndex).toBeLessThan(recordIndex);
+
+    const afterRecord = body.slice(recordIndex + 'recordProductionStageEvent('.length);
+    expect(afterRecord).not.toMatch(
+      /tx\.\w+\.(create|update|updateMany|delete|findFirst|findUnique|findUniqueOrThrow)\(/,
+    );
   });
 });

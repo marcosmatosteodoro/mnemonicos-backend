@@ -28,14 +28,16 @@ export interface PublicationPdfMeta {
   version: VersionStampForPdf | null;
 }
 
-/** Carimbo de Versão vigente a desenhar no cabeçalho de rascunho (FR-028-008/009/011):
- * a Versão de MAIOR `number` já fechada, e se o Conteúdo/Quebra foi alterado depois desse
- * fechamento (`alteredAfterClosure`, resolvido por `resolveVersionStampForPdf` em
- * `publication.service.ts` via `hasVersionedContentChanged`). */
+/** Carimbo de Versão vigente a desenhar no cabeçalho (FR-028-008/009/011, FR-032-010/011):
+ * a Versão de MAIOR `number` já fechada, se o Conteúdo/Quebra ou a Tira mnemônica foram
+ * alterados depois desse fechamento (`alteredAfterClosure`), e se ela está aprovada e sem
+ * esse sinal aceso (`approvedAndValid` — controla se `resolveHeaderLabel` desenha a marca
+ * de aprovação ou `DRAFT_LABEL`). */
 export interface VersionStampForPdf {
   number: number;
   legislativeClosureDate: Date;
   alteredAfterClosure: boolean;
+  approvedAndValid: boolean;
 }
 
 export interface StripFrameForPdf {
@@ -141,16 +143,30 @@ function versionStampText(version: VersionStampForPdf | null): string {
   return `${base} — alterado após o fechamento da Versão ${version.number}`;
 }
 
+/** 1ª linha do cabeçalho (FR-032-010/011). */
+export function resolveHeaderLabel(version: VersionStampForPdf | null): string {
+  if (version?.approvedAndValid === true) {
+    return `Conteúdo normativo e Tira mnemônica — Versão ${version.number} aprovada`;
+  }
+  return DRAFT_LABEL;
+}
+
 /**
- * Rótulo de rascunho + Variante (`meta.variant`, lida do valor — nunca hardcoded, AC-024-005
- * exige que o rótulo diga TAMBÉM qual Variante a página representa) + `meta.generatedAt`
- * (FR-024-001/AC-024-005) + carimbo de Versão (`meta.version`, FR-028-008/009/011,
- * TASK-029-003) — chamada uma vez por página recém-criada, nunca só na 1ª (tanto no laço
- * de `buildStripPdf` quanto na(s) página(s) de `buildSummaryPdf`); a 4ª linha é desenhada
- * SEMPRE (mesmo padrão das 3 já existentes — nunca condicionalmente omitida).
+ * Rótulo do cabeçalho (rascunho ou aprovação, `resolveHeaderLabel`) + Variante
+ * (`meta.variant`, lida do valor — nunca hardcoded, AC-024-005 exige que o rótulo diga
+ * TAMBÉM qual Variante a página representa) + `meta.generatedAt` (FR-024-001/AC-024-005) +
+ * carimbo de Versão (`meta.version`, FR-028-008/009/011) — chamada uma vez por página
+ * recém-criada, nunca só na 1ª (tanto no laço de `buildStripPdf` quanto na(s) página(s) de
+ * `buildSummaryPdf`); as 3 linhas seguintes são desenhadas SEMPRE, nunca condicionalmente
+ * omitidas.
  */
 function drawDraftHeader(page: PDFPage, font: PDFFont, meta: PublicationPdfMeta): void {
-  page.drawText(DRAFT_LABEL, { x: MARGIN_X, y: LABEL_LINE_Y, size: LABEL_FONT_SIZE, font });
+  page.drawText(resolveHeaderLabel(meta.version), {
+    x: MARGIN_X,
+    y: LABEL_LINE_Y,
+    size: LABEL_FONT_SIZE,
+    font,
+  });
   page.drawText(`Variante: ${meta.variant}`, {
     x: MARGIN_X,
     y: VARIANT_LINE_Y,
