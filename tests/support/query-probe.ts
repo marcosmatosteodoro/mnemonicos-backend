@@ -28,3 +28,32 @@ export async function withQueryProbe(
 
   return queries;
 }
+
+export interface QueryProbeEvent {
+  query: string;
+  params: string;
+}
+
+/**
+ * Irmã de `withQueryProbe` para quando o teste precisa inspecionar os
+ * parâmetros de bind de cada statement (ex.: provar que um `IN (...)`
+ * recebeu só os ids esperados), não só o SQL.
+ */
+export async function withQueryEventProbe(
+  run: (probe: PrismaClient) => Promise<unknown>,
+): Promise<QueryProbeEvent[]> {
+  const probe = new PrismaClient({
+    adapter: new PrismaPg({ connectionString: TEST_DATABASE_URL, max: 1 }),
+    log: [{ emit: 'event', level: 'query' }],
+  });
+  const events: QueryProbeEvent[] = [];
+  probe.$on('query', (event) => events.push({ query: event.query, params: event.params }));
+
+  try {
+    await run(probe);
+  } finally {
+    await probe.$disconnect();
+  }
+
+  return events;
+}

@@ -1,6 +1,3 @@
-import { PrismaPg } from '@prisma/adapter-pg';
-
-import { PrismaClient } from '../../src/generated/prisma/client';
 import { softDeleteRawContent } from '../../src/modules/contents/contents.service';
 import type { ContentActor } from '../../src/modules/contents/contents.service';
 import {
@@ -23,8 +20,7 @@ import {
   createUser,
   seedRuleBreakdown,
 } from '../support/production-events-fixtures';
-import { TEST_DATABASE_URL } from './db-url';
-import { withQueryProbe } from '../support/query-probe';
+import { withQueryEventProbe, withQueryProbe } from '../support/query-probe';
 import { buildVersionedContentFields } from '../support/versioned-content-fields-fixtures';
 import { closeTestDb, resetDb, testPrisma } from './db';
 
@@ -210,7 +206,7 @@ describe('listLatestVersionsForPanel: orderBy number asc — a última do array 
   });
 });
 
-describe('listLatestVersionsForPanel: sem contentSnapshot (gate 10, performance-engineer — coluna larga fora do histórico)', () => {
+describe('listLatestVersionsForPanel: sem contentSnapshot (coluna larga fora do histórico)', () => {
   it('Conteúdo com 3 Versões (a vigente NÃO aprovada) → nenhuma linha devolvida tem contentSnapshot (chaves exatas)', async () => {
     const editor = await createUser('EDITOR');
     const topicId = await createTopic();
@@ -255,7 +251,7 @@ describe('listLatestVersionsForPanel: sem contentSnapshot (gate 10, performance-
   });
 });
 
-describe('listApprovedVersionSnapshots: contentSnapshot só das Versões pedidas (gate 10, performance-engineer)', () => {
+describe('listApprovedVersionSnapshots: contentSnapshot só das Versões pedidas', () => {
   it('devolve id+contentSnapshot da Versão pedida, sem nenhum outro campo', async () => {
     const editor = await createUser('EDITOR');
     const admin = await createUser('ADMIN');
@@ -340,7 +336,7 @@ describe('listCurrentVersionedFieldsForApprovedContents: só devolve o que exist
   });
 });
 
-describe('eixo PERTENCIMENTO — cada leitura filtrada por IN(ids) exclui o que está FORA do array (gate 1, code-reviewer)', () => {
+describe('eixo PERTENCIMENTO — cada leitura filtrada por IN(ids) exclui o que está FORA do array', () => {
   it('listStageEventsForPanel: eventos de um Conteúdo fora do array não voltam', async () => {
     const editor = await createUser('EDITOR');
     const topicId = await createTopic();
@@ -489,28 +485,22 @@ describe('eixo PERTENCIMENTO — cada leitura filtrada por IN(ids) exclui o que 
       testPrisma,
     );
 
-    const probe = new PrismaClient({
-      adapter: new PrismaPg({ connectionString: TEST_DATABASE_URL, max: 1 }),
-      log: [{ emit: 'event', level: 'query' }],
+    const captured: {
+      map?: Awaited<ReturnType<typeof listCurrentVersionedFieldsForApprovedContents>>;
+    } = {};
+    const events = await withQueryEventProbe(async (probe) => {
+      captured.map = await listCurrentVersionedFieldsForApprovedContents([inside.id], probe);
     });
-    const events: Array<{ query: string; params: string }> = [];
-    probe.$on('query', (event) => events.push({ query: event.query, params: event.params }));
-
-    let map: Awaited<ReturnType<typeof listCurrentVersionedFieldsForApprovedContents>>;
-    try {
-      map = await listCurrentVersionedFieldsForApprovedContents([inside.id], probe);
-    } finally {
-      await probe.$disconnect();
-    }
+    assertDefined(captured.map);
+    const map = captured.map;
 
     expect(map.has(inside.id)).toBe(true);
     expect(map.has(outside.id)).toBe(false);
 
     // Falsificável: um `IN` removido de QUALQUER uma das 2 queries internas
-    // faria a query trazer TODOS os ids do banco, `outside.id` incluso nos
-    // parâmetros — mesmo que o merge final ainda excluísse `outside` (a
-    // outra query permanecendo filtrada), o parâmetro em si já denunciaria
-    // o `IN` quebrado.
+    // esvaziaria os parâmetros (`[]`) — o mutante morre pelo controle
+    // positivo `toContain(inside.id)`; `not.toContain(outside.id)` sozinho só
+    // pega um `IN` com lista errada, não um `IN` removido.
     const rawContentQuery = events.find((event) => /"raw_contents"/.test(event.query));
     const ruleBreakdownQuery = events.find((event) => /"rule_breakdowns"/.test(event.query));
     assertDefined(rawContentQuery);

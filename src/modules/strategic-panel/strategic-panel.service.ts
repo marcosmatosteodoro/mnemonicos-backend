@@ -109,7 +109,7 @@ export async function listTiraPublicationEventsForPanel(
 }
 
 /**
- * Sem `contentSnapshot` (gate 10, performance-engineer — coluna larga fora do
+ * Sem `contentSnapshot` (DEC-035-014 — coluna larga fora da leitura do
  * histórico): esta leitura serve para o CHAMADOR (TASK-035-006) agrupar por
  * `rawContentId` e achar a Versão vigente; `id` é o que ele repassa a
  * `listApprovedVersionSnapshots` (abaixo) para buscar o snapshot só das
@@ -155,11 +155,10 @@ export type PanelVersionSnapshotRow = Prisma.ContentVersionGetPayload<{
 
 /**
  * `contentSnapshot` só das Versões em `versionIds`, 1 `findMany` `id: { in }`
- * (gate 10, performance-engineer): separada de `listLatestVersionsForPanel`
- * porque o Painel só precisa do snapshot das Versões APROVADAS (para
- * `resolveApprovalStatus`, TASK-035-004) — o CHAMADOR (TASK-035-006) resolve
- * esse subconjunto de `id`s e passa aqui. Sem `distinct`: `versionIds` já vem
- * sem repetição do chamador (1 Versão vigente por Conteúdo).
+ * (DEC-035-014): separada de `listLatestVersionsForPanel` porque o Painel só
+ * precisa do snapshot das Versões APROVADAS (para `resolveApprovalStatus`,
+ * TASK-035-004) — o CHAMADOR (TASK-035-006) resolve esse subconjunto de
+ * `id`s e passa aqui.
  */
 export async function listApprovedVersionSnapshots(
   versionIds: string[],

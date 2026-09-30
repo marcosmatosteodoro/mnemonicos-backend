@@ -476,7 +476,7 @@ describe('computeContentMetrics — os 4 estados de tempo por etapa, mesma etapa
   });
 });
 
-describe('computeContentMetrics — resolveApprovalStatus, 1 caso por ramo (gate 1, code-reviewer)', () => {
+describe('computeContentMetrics — resolveApprovalStatus, 1 caso por ramo', () => {
   it('sem Versão vigente → concluded false, approvedButAltered false', () => {
     const metrics = computeContentMetrics(
       new Date('2026-02-01T00:00:00Z'),
@@ -926,9 +926,9 @@ describe('aggregateStrategicPanel — Módulo com concluídos, sem aprovação e
     );
     assertDefined(approvedAlteredItem);
     expect(approvedAlteredItem.approvedButAltered).toBe(true);
-    // Igualdade exata (nunca `arrayContaining`): prova que o backlog é
-    // EXATAMENTE os 2 não-concluídos, nem mais nem menos — e a contagem
-    // confirma ativos = concluídos + itens do backlog.
+    // Igualdade exata: prova que o backlog é EXATAMENTE os 2 não-concluídos,
+    // nem mais nem menos — e a contagem confirma ativos = concluídos +
+    // itens do backlog.
     expect(payload.backlog.map((item) => item.contentId)).toEqual([
       'not-approved',
       'approved-altered',
