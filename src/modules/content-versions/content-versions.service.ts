@@ -73,6 +73,15 @@ export interface ContentVersionDetail {
   closedAt: Date;
   approvedById: string | null;
   approvedAt: Date | null;
+  /**
+   * Computado (nunca persistido, `contentSnapshot` NUNCA sai deste módulo,
+   * COMP-033-005): reflete se a PRÓXIMA Exportação sairia com o carimbo
+   * "Versão aprovada" — só é `true` para a Versão vigente, aprovada, sem
+   * sinal de alteração aceso (`resolveAlterationSignal`); qualquer Versão
+   * superada é `false` incondicionalmente, mesmo tendo sido aprovada no
+   * passado (FR-032-006 — a aprovação nunca se propaga).
+   */
+  validApprovalForExport: boolean;
 }
 
 /**
@@ -199,7 +208,7 @@ export async function closeContentVersion(
       now: new Date(),
     });
 
-    return created;
+    return { ...created, validApprovalForExport: false };
   });
 }
 
@@ -210,11 +219,20 @@ export async function closeContentVersion(
  * por autoria da Versão — um EDITOR que alcança o próprio `RawContent` vê
  * TODAS as Versões nele, mesmo as fechadas por um ADMIN.
  *
- * Custo depende só de `N` (Versões daquele `RawContent`, NFR-028-003/AC-028-012)
- * — o índice `@@unique([rawContentId, number])` (TASK-029-001) serve o
- * `findMany` filtrado por `rawContentId`. Medido: 2 statements
- * (`assertRawContentReachable` + este `findMany`), nenhum dos 2 cresce com
- * `N` — nunca 1 único statement (a guarda de alcance é uma leitura própria).
+ * `validApprovalForExport` (COMP-033-005, FR-032-006/007) só é computado para
+ * a Versão vigente (o último item do array já ordenado ASC) e só quando ela
+ * JÁ está aprovada (`approvedById !== null`) — senão é `false` por
+ * construção, sem I/O extra. Toda entrada que não é a vigente é `false`
+ * incondicionalmente, mesmo tendo sido aprovada no passado.
+ *
+ * Custo depende só de `N` (Versões daquele `RawContent`, NFR-028-003/
+ * NFR-032-003/AC-028-012/AC-032-013) — o índice `@@unique([rawContentId,
+ * number])` (TASK-029-001) serve o `findMany` filtrado por `rawContentId`.
+ * Medido: 2 statements (`assertRawContentReachable` + este `findMany`) quando
+ * a vigente não está aprovada; +2 (leitura de `RawContent`/`RuleBreakdown`
+ * versionados) +1 condicional (`productionStageEvent.findFirst`, dentro de
+ * `resolveAlterationSignal`, pulado no short-circuit de conteúdo alterado)
+ * quando ela está — nenhum dos statements cresce com `N`.
  */
 export async function listContentVersions(
   rawContentId: string,
@@ -223,11 +241,40 @@ export async function listContentVersions(
 ): Promise<ContentVersionDetail[]> {
   await assertRawContentReachable(rawContentId, actor, db);
 
-  return db.contentVersion.findMany({
+  const versions = await db.contentVersion.findMany({
     where: { rawContentId },
     orderBy: { number: 'asc' },
-    select: CONTENT_VERSION_DETAIL_SELECT,
+    select: { ...CONTENT_VERSION_DETAIL_SELECT, contentSnapshot: true },
   });
+
+  const current = versions.at(-1);
+  let currentIsValidForExport = false;
+  if (current !== undefined && current.approvedById !== null) {
+    const rawContent = await db.rawContent.findUniqueOrThrow({
+      where: { id: rawContentId },
+      select: RAW_CONTENT_VERSIONED_SELECT,
+    });
+    const ruleBreakdown = await db.ruleBreakdown.findUniqueOrThrow({
+      where: { rawContentId },
+      select: RULE_BREAKDOWN_VERSIONED_SELECT,
+    });
+    const currentFields = toVersionedContentFields(rawContent, ruleBreakdown);
+    const altered = await resolveAlterationSignal(rawContentId, currentFields, current, db);
+    currentIsValidForExport = !altered;
+  }
+
+  const lastIndex = versions.length - 1;
+  return versions.map((version, index) => ({
+    id: version.id,
+    rawContentId: version.rawContentId,
+    number: version.number,
+    legislativeClosureDate: version.legislativeClosureDate,
+    authorId: version.authorId,
+    closedAt: version.closedAt,
+    approvedById: version.approvedById,
+    approvedAt: version.approvedAt,
+    validApprovalForExport: index === lastIndex ? currentIsValidForExport : false,
+  }));
 }
 
 /**
@@ -414,6 +461,9 @@ export async function approveContentVersion(
       closedAt: vigente.closedAt,
       approvedById: actor.id,
       approvedAt: now,
+      // Sem recomputar resolveAlterationSignal: o passo 11 já confirmou o
+      // sinal `false` na mesma transação — 2ª leitura seria redundante.
+      validApprovalForExport: true,
     };
   });
 }

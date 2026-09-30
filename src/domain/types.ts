@@ -196,8 +196,10 @@ export interface ProductionFlashcard {
  * expostos para leitura (`id`/`rawContentId`/`number`/`legislativeClosureDate`/
  * `authorId`/`closedAt`) mais o estado de aprovação (F9, SPEC-032, DEC-033-004)
  * — `approvedById`/`approvedAt`, `null` até a Versão ser aprovada, nunca
- * revertidos depois (FR-032-005/006). **Sem** `contentSnapshot` (dado interno
- * de verificação, nunca exposto à UI, DEC-029-003). Espelhado em
+ * revertidos depois (FR-032-005/006) — e `validApprovalForExport`, COMPUTADO
+ * (COMP-033-005, FR-032-007), `true` só para a Versão vigente aprovada e sem
+ * sinal de alteração pós-fechamento aceso. **Sem** `contentSnapshot` (dado
+ * interno de verificação, nunca exposto à UI, DEC-029-003). Espelhado em
  * `mnemonicos-frontend/src/types/domain.ts`: mudança de um lado entra no
  * mesmo diff que o outro, ou o contrato quebra em runtime sem o typecheck
  * acusar — rede de paridade cross-repo:
@@ -212,4 +214,5 @@ export interface ContentVersion {
   closedAt: Date;
   approvedById: string | null;
   approvedAt: Date | null;
+  validApprovalForExport: boolean;
 }

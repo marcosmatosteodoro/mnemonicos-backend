@@ -244,7 +244,7 @@ describe('paridade cross-repo — ContentVersion (TASK-029-004)', () => {
   const backendContentVersionsServiceSource = readSourceFile(BACKEND_CONTENT_VERSIONS_SERVICE);
   const frontendSource = readSourceFile(FRONTEND_TYPES);
 
-  it('ContentVersion: exatamente id/rawContentId/number/legislativeClosureDate/authorId/closedAt/approvedById/approvedAt, nos dois lados — sem contentSnapshot fantasma no frontend (DEC-029-003)', () => {
+  it('ContentVersion: exatamente id/rawContentId/number/legislativeClosureDate/authorId/closedAt/approvedById/approvedAt/validApprovalForExport, nos dois lados — sem contentSnapshot fantasma no frontend (DEC-029-003)', () => {
     const backendFields = extractInterfaceFields(backendDomainSource, 'ContentVersion').sort();
     const frontendFields = extractInterfaceFields(frontendSource, 'ContentVersion').sort();
 
@@ -258,6 +258,7 @@ describe('paridade cross-repo — ContentVersion (TASK-029-004)', () => {
         'closedAt',
         'approvedById',
         'approvedAt',
+        'validApprovalForExport',
       ].sort(),
     );
     expect(frontendFields).toEqual(backendFields);
@@ -289,6 +290,7 @@ describe('paridade cross-repo — ContentVersion (TASK-029-004)', () => {
         'closedAt',
         'approvedById',
         'approvedAt',
+        'validApprovalForExport',
       ].sort(),
     );
   });

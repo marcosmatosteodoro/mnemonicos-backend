@@ -121,9 +121,11 @@ describe('AC-028-001 (FR-028-001, FR-028-005 — parte backend): 1ª Versão fec
     expect(created.authorId).toBe(editor.id);
     expect(created.legislativeClosureDate.toISOString().slice(0, 10)).toBe('2026-09-01');
     expect(created.closedAt).toBeInstanceOf(Date);
+    expect(created.validApprovalForExport).toBe(false);
 
     const listed = await listContentVersions(rawContent.id, actorOf(editor), testPrisma);
     expect(listed.map((version) => version.id)).toEqual([created.id]);
+    expect(listed[0]?.validApprovalForExport).toBe(false);
   });
 });
 
@@ -465,6 +467,105 @@ describe('listContentVersions — custo fixo de round-trips, independente de N (
     // cresce com N (5 Versões fechadas não produzem 5 statements).
     expect(queries).toHaveLength(2);
   });
+
+  it('RawContent com 3 Versões fechadas, a última APROVADA e sem alteração posterior → exatamente 5 statements (TASK-033-004, NFR-032-003/AC-032-013)', async () => {
+    const editor = await createUser('EDITOR');
+    const admin = await createUser('ADMIN');
+    const topicId = await createTopic();
+    const rawContent = await seedApprovableRawContent(editor.id, topicId);
+
+    let closed = undefined as Awaited<ReturnType<typeof closeContentVersion>> | undefined;
+    for (let i = 0; i < 3; i += 1) {
+      closed = await closeContentVersion(
+        rawContent.id,
+        { legislativeClosureDate: '2026-09-01' },
+        actorOf(editor),
+        testPrisma,
+      );
+    }
+    await approveContentVersion(
+      rawContent.id,
+      closed!.number,
+      APPROVE_INPUT,
+      actorOf(admin),
+      testPrisma,
+    );
+
+    const queries = await withQueryProbe((probe) =>
+      listContentVersions(rawContent.id, actorOf(editor), probe),
+    );
+
+    // 5 statements, medidos: assertRawContentReachable + findMany +
+    // rawContent.findUniqueOrThrow + ruleBreakdown.findUniqueOrThrow +
+    // productionStageEvent.findFirst (dentro de resolveAlterationSignal) —
+    // nenhum cresce com N (3 Versões fechadas).
+    expect(queries).toHaveLength(5);
+  });
+
+  it('MESMO cenário com 8 Versões fechadas → também exatamente 5 statements (custo não cresce com N)', async () => {
+    const editor = await createUser('EDITOR');
+    const admin = await createUser('ADMIN');
+    const topicId = await createTopic();
+    const rawContent = await seedApprovableRawContent(editor.id, topicId);
+
+    let closed = undefined as Awaited<ReturnType<typeof closeContentVersion>> | undefined;
+    for (let i = 0; i < 8; i += 1) {
+      closed = await closeContentVersion(
+        rawContent.id,
+        { legislativeClosureDate: '2026-09-01' },
+        actorOf(editor),
+        testPrisma,
+      );
+    }
+    await approveContentVersion(
+      rawContent.id,
+      closed!.number,
+      APPROVE_INPUT,
+      actorOf(admin),
+      testPrisma,
+    );
+
+    const queries = await withQueryProbe((probe) =>
+      listContentVersions(rawContent.id, actorOf(editor), probe),
+    );
+
+    // Falsificável junto com o caso de N=3 acima: os dois, lado a lado, com a
+    // MESMA contagem, provam que o custo não é proporcional a N (nunca 10).
+    expect(queries).toHaveLength(5);
+  });
+
+  it('Versão vigente APROVADA mas com sinal de alteração de CONTEÚDO aceso → exatamente 4 statements (short-circuit de resolveAlterationSignal, pula productionStageEvent)', async () => {
+    const editor = await createUser('EDITOR');
+    const admin = await createUser('ADMIN');
+    const topicId = await createTopic();
+    const rawContent = await seedApprovableRawContent(editor.id, topicId);
+    const closed = await closeContentVersion(
+      rawContent.id,
+      { legislativeClosureDate: '2026-09-01' },
+      actorOf(editor),
+      testPrisma,
+    );
+    await approveContentVersion(
+      rawContent.id,
+      closed.number,
+      APPROVE_INPUT,
+      actorOf(admin),
+      testPrisma,
+    );
+
+    // Escrita DIRETA (mesmo padrão de AC-032-016): altera o conteúdo
+    // versionado depois da aprovação, sem emitir CONTEUDO_BRUTO.
+    await testPrisma.rawContent.update({
+      where: { id: rawContent.id },
+      data: { rawText: 'Texto alterado depois da aprovação.' },
+    });
+
+    const queries = await withQueryProbe((probe) =>
+      listContentVersions(rawContent.id, actorOf(editor), probe),
+    );
+
+    expect(queries).toHaveLength(4);
+  });
 });
 
 describe('AC-032-001 (parte ESCRITA) / AC-032-008 (FR-032-009): ADMIN elegível aprova a Versão vigente', () => {
@@ -490,6 +591,7 @@ describe('AC-032-001 (parte ESCRITA) / AC-032-008 (FR-032-009): ADMIN elegível 
 
     expect(approved.approvedById).toBe(admin.id);
     expect(approved.approvedAt).toBeInstanceOf(Date);
+    expect(approved.validApprovalForExport).toBe(true);
 
     const row = await testPrisma.contentVersion.findUniqueOrThrow({ where: { id: closed.id } });
     expect(row.approvedById).toBe(admin.id);
@@ -502,6 +604,111 @@ describe('AC-032-001 (parte ESCRITA) / AC-032-008 (FR-032-009): ADMIN elegível 
     const approvalEvents = events.filter((event) => event.stageType === 'APROVACAO_VERSAO');
     expect(approvalEvents).toHaveLength(1);
     expect(approvalEvents[0]?.transitionType).toBe('CONCLUSAO');
+  });
+});
+
+describe('AC-032-001 (parte LEITURA, FR-032-007): listContentVersions expõe approvedById/approvedAt/validApprovalForExport da Versão aprovada', () => {
+  it('após aprovação bem-sucedida, o histórico devolve approvedById/approvedAt idênticos aos gravados e validApprovalForExport: true', async () => {
+    const editor = await createUser('EDITOR');
+    const admin = await createUser('ADMIN');
+    const topicId = await createTopic();
+    const rawContent = await seedApprovableRawContent(editor.id, topicId);
+    const closed = await closeContentVersion(
+      rawContent.id,
+      { legislativeClosureDate: '2026-09-01' },
+      actorOf(editor),
+      testPrisma,
+    );
+
+    const approved = await approveContentVersion(
+      rawContent.id,
+      closed.number,
+      APPROVE_INPUT,
+      actorOf(admin),
+      testPrisma,
+    );
+
+    const listed = await listContentVersions(rawContent.id, actorOf(editor), testPrisma);
+    const listedVersion = listed.find((version) => version.id === closed.id);
+
+    expect(listedVersion?.approvedById).toBe(approved.approvedById);
+    expect(listedVersion?.approvedAt?.getTime()).toBe(approved.approvedAt?.getTime());
+    expect(listedVersion?.validApprovalForExport).toBe(true);
+  });
+});
+
+describe('AC-032-006 (FR-032-006): a aprovação nunca se propaga para a Versão superada', () => {
+  it('Versão 1 aprovada, EDITOR fecha a Versão 2 sem aprová-la → v1 mantém approvedById mas validApprovalForExport: false; v2 approvedById: null e validApprovalForExport: false', async () => {
+    const editor = await createUser('EDITOR');
+    const admin = await createUser('ADMIN');
+    const topicId = await createTopic();
+    const rawContent = await seedApprovableRawContent(editor.id, topicId);
+
+    const v1 = await closeContentVersion(
+      rawContent.id,
+      { legislativeClosureDate: '2026-08-01' },
+      actorOf(editor),
+      testPrisma,
+    );
+    await approveContentVersion(
+      rawContent.id,
+      v1.number,
+      APPROVE_INPUT,
+      actorOf(admin),
+      testPrisma,
+    );
+
+    const v2 = await closeContentVersion(
+      rawContent.id,
+      { legislativeClosureDate: '2026-09-01' },
+      actorOf(editor),
+      testPrisma,
+    );
+
+    const listed = await listContentVersions(rawContent.id, actorOf(editor), testPrisma);
+    const listedV1 = listed.find((version) => version.id === v1.id);
+    const listedV2 = listed.find((version) => version.id === v2.id);
+
+    expect(listedV1?.approvedById).toBe(admin.id);
+    expect(listedV1?.validApprovalForExport).toBe(false);
+    expect(listedV2?.approvedById).toBeNull();
+    expect(listedV2?.validApprovalForExport).toBe(false);
+  });
+});
+
+describe('AC-032-020 (FR-032-007): fato histórico de aprovação intacto, mas validApprovalForExport reflete a alteração posterior', () => {
+  it('Versão vigente aprovada, depois um campo versionado do RawContent é alterado (updateRawContent) → approvedById/approvedAt permanecem preenchidos, validApprovalForExport vira false', async () => {
+    const editor = await createUser('EDITOR');
+    const admin = await createUser('ADMIN');
+    const topicId = await createTopic();
+    const rawContent = await seedApprovableRawContent(editor.id, topicId);
+    const closed = await closeContentVersion(
+      rawContent.id,
+      { legislativeClosureDate: '2026-09-01' },
+      actorOf(editor),
+      testPrisma,
+    );
+    const approved = await approveContentVersion(
+      rawContent.id,
+      closed.number,
+      APPROVE_INPUT,
+      actorOf(admin),
+      testPrisma,
+    );
+
+    await updateRawContent(
+      rawContent.id,
+      { rawText: 'Texto normativo alterado depois da aprovação.' },
+      actorOf(editor),
+      testPrisma,
+    );
+
+    const listed = await listContentVersions(rawContent.id, actorOf(editor), testPrisma);
+    const listedVersion = listed.find((version) => version.id === closed.id);
+
+    expect(listedVersion?.approvedById).toBe(approved.approvedById);
+    expect(listedVersion?.approvedAt?.getTime()).toBe(approved.approvedAt?.getTime());
+    expect(listedVersion?.validApprovalForExport).toBe(false);
   });
 });
 
@@ -1487,5 +1694,94 @@ describe('approveContentVersion — herança N2 (gate 8 W1): fail-secure do sina
 
     const row = await testPrisma.contentVersion.findUniqueOrThrow({ where: { id: closed.id } });
     expect(row.approvedById).toBeNull();
+  });
+});
+
+/**
+ * Herança N1 (gate 8 W1), aplicada a `listContentVersions`/
+ * `validApprovalForExport`: `resolveAlterationSignal` é chamado com o
+ * `rawContentId` do PRÓPRIO parâmetro da função — nunca o de outro Conteúdo
+ * bruto. Alterar o conteúdo só de B não pode acender o sinal computado para A.
+ */
+describe('listContentVersions — herança N1 (gate 8 W1): sinal de alteração não vaza entre Conteúdos brutos', () => {
+  it('2 Conteúdos brutos com Versões aprovadas, alterar o conteúdo só de B → listContentVersions(A) mantém validApprovalForExport: true; listContentVersions(B) vira false', async () => {
+    const editor = await createUser('EDITOR');
+    const admin = await createUser('ADMIN');
+    const topicId = await createTopic();
+    const rawContentA = await seedApprovableRawContent(editor.id, topicId);
+    const rawContentB = await seedApprovableRawContent(editor.id, topicId);
+
+    const closedA = await closeContentVersion(
+      rawContentA.id,
+      { legislativeClosureDate: '2026-09-01' },
+      actorOf(editor),
+      testPrisma,
+    );
+    const closedB = await closeContentVersion(
+      rawContentB.id,
+      { legislativeClosureDate: '2026-09-01' },
+      actorOf(editor),
+      testPrisma,
+    );
+    await approveContentVersion(
+      rawContentA.id,
+      closedA.number,
+      APPROVE_INPUT,
+      actorOf(admin),
+      testPrisma,
+    );
+    await approveContentVersion(
+      rawContentB.id,
+      closedB.number,
+      APPROVE_INPUT,
+      actorOf(admin),
+      testPrisma,
+    );
+
+    // Escrita DIRETA (mesmo padrão de AC-032-016) — só em B.
+    await testPrisma.rawContent.update({
+      where: { id: rawContentB.id },
+      data: { rawText: 'Texto de B alterado depois da aprovação.' },
+    });
+
+    const listedA = await listContentVersions(rawContentA.id, actorOf(editor), testPrisma);
+    const listedB = await listContentVersions(rawContentB.id, actorOf(editor), testPrisma);
+
+    expect(listedA.at(-1)?.validApprovalForExport).toBe(true);
+    expect(listedB.at(-1)?.validApprovalForExport).toBe(false);
+  });
+});
+
+/**
+ * Herança N2 (gate 8 W1), aplicada a `listContentVersions`: fail-secure da
+ * leitura — `productionStageEvent.findFirst` rejeitando durante o cálculo de
+ * `validApprovalForExport` propaga o erro; nunca um default silencioso
+ * (`validApprovalForExport: true` nem `false` calado). `listContentVersions`
+ * não abre `$transaction` própria — `withFailingTiraSignal` embrulha o `db`
+ * recebido diretamente (mesmo helper de `tests/support/`).
+ */
+describe('listContentVersions — herança N2 (gate 8 W1): fail-secure do cálculo de validApprovalForExport', () => {
+  it('productionStageEvent.findFirst rejeitando → listContentVersions rejeita, sem devolver validApprovalForExport', async () => {
+    const editor = await createUser('EDITOR');
+    const admin = await createUser('ADMIN');
+    const topicId = await createTopic();
+    const rawContent = await seedApprovableRawContent(editor.id, topicId);
+    const closed = await closeContentVersion(
+      rawContent.id,
+      { legislativeClosureDate: '2026-09-01' },
+      actorOf(editor),
+      testPrisma,
+    );
+    await approveContentVersion(
+      rawContent.id,
+      closed.number,
+      APPROVE_INPUT,
+      actorOf(admin),
+      testPrisma,
+    );
+
+    await expect(
+      listContentVersions(rawContent.id, actorOf(editor), withFailingTiraSignal(testPrisma)),
+    ).rejects.toThrow('falha simulada na leitura do sinal');
   });
 });
