@@ -587,9 +587,9 @@ describe('query-count por função (NFR-034-001): fixture de 5 Conteúdos, custo
 });
 
 /**
- * Achado do gate 10 da Wave 3 (performance-engineer): `buildStrategicPanel` agrupa
- * eventos de etapa e Publicações Tira por `rawContentId` num `Map` antes do laço por
- * Conteúdo (O(N+E)), nunca `.filter` por Conteúdo dentro do laço (O(N·E)).
+ * `buildStrategicPanel` agrupa eventos de etapa e Publicações Tira por `rawContentId`
+ * num `Map` antes do laço por Conteúdo (O(N+E)), nunca `.filter` por Conteúdo dentro do
+ * laço (O(N·E)).
  */
 describe('buildStrategicPanel — agrupamento por rawContentId não redistribui entre Conteúdos', () => {
   it('2 Conteúdos com eventos/Publicações intercalados → cada um recebe só os próprios, por identidade fixa de contentId', async () => {
