@@ -220,12 +220,6 @@ describe('POST /contents/:id/versions/:number/approve — camada HTTP', () => {
   });
 });
 
-/**
- * `GET /contents/:id/versions` (COMP-033-005) — prova de FORMA do payload
- * HTTP (gate 8, lição "select exposto que lê campo interno prova as chaves do
- * payload"): cobre entrada VIGENTE (não aprovada) e SUPERADA (aprovada no
- * passado) — as 2 têm exatamente as mesmas 9 chaves, nunca `contentSnapshot`.
- */
 describe('GET /contents/:id/versions — camada HTTP: forma exata do payload (gate 8)', () => {
   it('cada entrada do histórico (vigente e superada) devolve exatamente as 9 chaves de ContentVersionDetail', async () => {
     const editor = await createUser('EDITOR');
@@ -245,10 +239,12 @@ describe('GET /contents/:id/versions — camada HTTP: forma exata do payload (ga
       .set(...withCookie(editorAccess))
       .send({ legislativeClosureDate: '2026-08-01' });
 
-    await request(app)
+    const approveRes = await request(app)
       .post(`/api/v1/contents/${rawContent.id}/versions/${firstClose.body.number}/approve`)
       .set(...withCookie(adminAccess))
       .send({ legalCheckConfirmed: true, pedagogicalCheckConfirmed: true });
+
+    expect(approveRes.status).toBe(200);
 
     await request(app)
       .post(`/api/v1/contents/${rawContent.id}/versions`)
