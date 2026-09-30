@@ -18,15 +18,20 @@ import { closeTestDb, resetDb, testPrisma } from './db';
  * contagem de statements** nos 2 volumes (DEC-035-014 v0.2: 7 — as 5 leituras
  * batch de sempre + o par `listApprovedVersionSnapshots`/
  * `listCurrentVersionedFieldsForApprovedContents`, só das aprovadas, no mesmo
- * `Promise.all`). Fixture gerada só via `seedApprovableRawContent`/
- * `closeContentVersion`/`approveContentVersion` (RISK-034-004: nunca seed
- * direto do Prisma para a leitura de eventos de etapa — `closeContentVersion`/
- * `approveContentVersion` emitem `VERSAO_EDITORIAL`/`APROVACAO_VERSAO` via
- * `recordProductionStageEvent` por dentro).
+ * `Promise.all`; 4 com 0% aprovado — o par acima é pulado quando o
+ * subconjunto de aprovadas é vazio). Fixture gerada só via
+ * `seedApprovableRawContent`/`closeContentVersion`/`approveContentVersion`
+ * (RISK-034-004: nunca seed direto do Prisma para a leitura de eventos de
+ * etapa — `closeContentVersion`/`approveContentVersion` emitem
+ * `VERSAO_EDITORIAL`/`APROVACAO_VERSAO` via `recordProductionStageEvent` por
+ * dentro).
+ *
+ * Cada `it` fixa e afirma a PRÓPRIA contagem, sem variável compartilhada
+ * entre `it`s: roda isolado (`-t`) e passa.
  *
  * Falsificável: um mutante que reintroduzisse `resolveAlterationSignal` (ou
- * qualquer leitura) por Conteúdo aprovado faria a contagem CRESCER com o
- * volume — 10 e 200 divergiriam, e a asserção de igualdade abaixo reprovaria.
+ * qualquer leitura) por Conteúdo aprovado faria a contagem do volume=200
+ * divergir da contagem fixa (7) esperada.
  */
 
 const APPROVE_INPUT = { legalCheckConfirmed: true, pedagogicalCheckConfirmed: true } as const;
@@ -61,6 +66,17 @@ async function seedApprovedUnalteredPanelVolume(
   );
 }
 
+/** Nenhuma Versão fechada/aprovada — Conteúdo ativo puro, para o volume 0% aprovado. */
+async function seedUnapprovedPanelVolume(
+  count: number,
+  editor: { id: string },
+  topicId: string,
+): Promise<void> {
+  await Promise.all(
+    Array.from({ length: count }, () => seedApprovableRawContent(editor.id, topicId)),
+  );
+}
+
 beforeEach(async () => {
   await resetDb();
 });
@@ -71,12 +87,10 @@ afterAll(async () => {
 });
 
 describe('NFR-034-001 — custo constante: mesma contagem de statements com 10 e com 200 Conteúdos', () => {
-  // Fixada pelo 1º teste (volume=10), conferida pelo 2º (volume=200) — os 2
-  // rodam nesta ordem no mesmo arquivo (Jest não paraleliza `it` de um mesmo
-  // `describe`), e é essa comparação inter-teste que prova "mesma contagem",
-  // não um número fixo redigitado 2 vezes.
-  let smallVolumeStatementCount: number | undefined;
-
+  // Cada `it` afirma a PRÓPRIA contagem, sem variável entre testes: a prova
+  // de "mesma contagem nos 2 volumes" está em os 2 valores fixos (7) serem
+  // literalmente o mesmo número, não numa comparação que dependa de ordem de
+  // execução.
   it('volume=10, 100% aprovado e não alterado → 7 statements (contagem fixada)', async () => {
     const editor = await createUser('EDITOR');
     const admin = await createUser('ADMIN');
@@ -84,30 +98,25 @@ describe('NFR-034-001 — custo constante: mesma contagem de statements com 10 e
     await seedApprovedUnalteredPanelVolume(10, editor, admin, topicId);
 
     const queries = await withQueryProbe((probe) => buildStrategicPanel(new Date(), probe));
-    // Contagem IMPRESSA — capturada, nunca presumida.
-    // eslint-disable-next-line no-console
-    console.info(`[NFR-034-001] volume=10 statements=${queries.length}`);
     expect(queries).toHaveLength(7);
-
-    smallVolumeStatementCount = queries.length;
   }, 120_000);
 
-  it('volume=200, mesmo padrão (sem N+1 de F9) → mesma contagem do volume=10', async () => {
-    expect(smallVolumeStatementCount).toBeDefined();
-
+  it('volume=200, mesmo padrão (sem N+1 de F9) → 7 statements (mesma contagem do volume=10)', async () => {
     const editor = await createUser('EDITOR');
     const admin = await createUser('ADMIN');
     const topicId = await createTopic();
     await seedApprovedUnalteredPanelVolume(200, editor, admin, topicId);
 
     const queries = await withQueryProbe((probe) => buildStrategicPanel(new Date(), probe));
-    // eslint-disable-next-line no-console
-    console.info(`[NFR-034-001] volume=200 statements=${queries.length}`);
     expect(queries).toHaveLength(7);
+  }, 120_000);
 
-    // Falsificável: um mutante que reintroduzisse `resolveAlterationSignal` (ou
-    // qualquer leitura) por Conteúdo aprovado faria esta contagem CRESCER com o
-    // volume — divergiria de `smallVolumeStatementCount` e esta asserção reprovaria.
-    expect(queries.length).toBe(smallVolumeStatementCount);
+  it('volume=10, 0% aprovado → 4 statements (par de leituras das aprovadas pulado)', async () => {
+    const editor = await createUser('EDITOR');
+    const topicId = await createTopic();
+    await seedUnapprovedPanelVolume(10, editor, topicId);
+
+    const queries = await withQueryProbe((probe) => buildStrategicPanel(new Date(), probe));
+    expect(queries).toHaveLength(4);
   }, 120_000);
 });

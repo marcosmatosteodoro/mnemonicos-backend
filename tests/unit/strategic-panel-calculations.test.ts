@@ -901,6 +901,32 @@ describe('aggregateStrategicPanel — backlog (AC-034-010, AC-034-020 parte back
   });
 });
 
+describe('aggregateStrategicPanel — contents (FR-034-004/005/006/011/025)', () => {
+  it('devolve todo Conteúdo ativo ordenado por disciplina, tema e id — nunca a ordem de chegada', () => {
+    const metrics = [
+      buildContentMetrics({ contentId: 'c3', disciplineName: 'Direito Penal', topicName: 'Dolo' }),
+      buildContentMetrics({ contentId: 'c1', disciplineName: 'Direito Civil', topicName: 'Posse' }),
+      buildContentMetrics({
+        contentId: 'c2',
+        disciplineName: 'Direito Civil',
+        topicName: 'Contratos',
+      }),
+    ];
+
+    const payload = aggregateStrategicPanel(new Date('2026-02-01T00:00:00Z'), metrics);
+
+    expect(payload.contents.map((content) => content.contentId)).toEqual(['c2', 'c1', 'c3']);
+  });
+
+  it('cada item é exatamente o ContentMetrics calculado — nenhum campo perdido nem recomputado', () => {
+    const metric = buildContentMetrics({ contentId: 'only' });
+
+    const payload = aggregateStrategicPanel(new Date('2026-02-01T00:00:00Z'), [metric]);
+
+    expect(payload.contents).toEqual([metric]);
+  });
+});
+
 describe('aggregateStrategicPanel — Módulo com concluídos, sem aprovação e aprovado-alterado (AC-034-018 parte cálculo)', () => {
   it('ativos = concluídos + itens do backlog; o aprovado-e-alterado aparece no backlog com o marcador', () => {
     const concluded = buildContentMetrics({ contentId: 'concluded', concluded: true });

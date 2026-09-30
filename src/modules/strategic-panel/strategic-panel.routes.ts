@@ -3,8 +3,10 @@ import { Router } from 'express';
 import { requireRole } from '../../http/middlewares/authorize';
 import type {
   BacklogItem,
+  ContentMetrics,
   ModuleAggregate,
   ReworkTotals,
+  StagePeriod,
   StrategicPanelPayload,
   TimePerPageAggregate,
 } from './strategic-panel-calculations';
@@ -62,10 +64,57 @@ function toBacklogItemResponse(item: BacklogItem) {
   };
 }
 
+function toTotalTimeResponse(totalTime: ContentMetrics['totalTime']) {
+  if ('ms' in totalTime) {
+    return { ms: totalTime.ms, pageCount: totalTime.pageCount };
+  }
+  return { reason: totalTime.reason };
+}
+
+function toStagePeriodResponse(period: StagePeriod) {
+  if (period.status === 'medido') {
+    return { status: period.status, ms: period.ms, msPerPage: period.msPerPage };
+  }
+  return { status: period.status };
+}
+
+function toPerStageResponse(perStage: ContentMetrics['perStage']) {
+  return {
+    CONTEUDO_BRUTO: toStagePeriodResponse(perStage.CONTEUDO_BRUTO),
+    QUEBRA_DA_REGRA: toStagePeriodResponse(perStage.QUEBRA_DA_REGRA),
+    TIRA_MNEMONICA: toStagePeriodResponse(perStage.TIRA_MNEMONICA),
+    ASSOCIACAO_VISUAL: toStagePeriodResponse(perStage.ASSOCIACAO_VISUAL),
+    PUBLICACAO_PDF: toStagePeriodResponse(perStage.PUBLICACAO_PDF),
+    MATERIAL_REFORCO: toStagePeriodResponse(perStage.MATERIAL_REFORCO),
+    VERSAO_EDITORIAL: toStagePeriodResponse(perStage.VERSAO_EDITORIAL),
+    APROVACAO_VERSAO: toStagePeriodResponse(perStage.APROVACAO_VERSAO),
+  };
+}
+
 /**
- * Allowlist campo a campo (DEC-035-017, fricção deliberada — mesma classe de
- * vazamento já ocorrida neste slug em F9, `contentSnapshot`, lição "select
- * exposto que lê campo interno prova as chaves do payload"): monta a resposta
+ * Por Conteúdo (FR-034-004/005/006/011/025): mesma disciplina de allowlist
+ * campo a campo — `totalTime`/`perStage` são uniões, cada ramo montado
+ * explicitamente, nunca por spread.
+ */
+function toContentResponse(content: ContentMetrics) {
+  return {
+    contentId: content.contentId,
+    disciplineName: content.disciplineName,
+    topicName: content.topicName,
+    totalTime: toTotalTimeResponse(content.totalTime),
+    timePerPage: content.timePerPage,
+    perStage: toPerStageResponse(content.perStage),
+    reworkCountByStage: { ...content.reworkCountByStage },
+    concluded: content.concluded,
+    approvedButAltered: content.approvedButAltered,
+    mostAdvancedStage: content.mostAdvancedStage,
+    priority: content.priority,
+    ageMs: content.ageMs,
+  };
+}
+
+/**
+ * Allowlist campo a campo (DEC-035-017, fricção deliberada): monta a resposta
  * a partir de `StrategicPanelPayload` (TASK-035-004) NOME A NOME — nenhuma
  * chave fora desta lista chega ao cliente, e um campo novo em
  * `StrategicPanelPayload`/`ContentMetrics` só sai daqui com edição consciente
@@ -73,12 +122,15 @@ function toBacklogItemResponse(item: BacklogItem) {
  */
 export function toStrategicPanelResponse(payload: StrategicPanelPayload) {
   return {
+    contents: payload.contents.map(toContentResponse),
     factory: { timePerPage: toTimePerPageResponse(payload.factory.timePerPage) },
     modules: payload.modules.map(toModuleResponse),
     rework: toReworkResponse(payload.rework),
     backlog: payload.backlog.map(toBacklogItemResponse),
   };
 }
+
+export type StrategicPanelResponse = ReturnType<typeof toStrategicPanelResponse>;
 
 /**
  * GET /strategic-panel — Painel agregado por Módulo/fábrica/backlog

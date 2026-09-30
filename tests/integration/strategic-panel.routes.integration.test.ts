@@ -11,9 +11,19 @@ import {
   approveContentVersion,
   closeContentVersion,
 } from '../../src/modules/content-versions/content-versions.service';
-import type { ContentActor } from '../../src/modules/contents/contents.service';
+import {
+  createRawContent,
+  saveRuleBreakdown,
+  type ContentActor,
+} from '../../src/modules/contents/contents.service';
+import { exportPublication } from '../../src/modules/publication/publication.service';
 import { seedApprovableRawContent } from '../support/approvable-raw-content-fixtures';
-import { createTopic, createUser } from '../support/production-events-fixtures';
+import {
+  BREAKDOWN_FIELDS,
+  createTopic,
+  createUser,
+  RAW_CONTENT_TEXT_FIELDS,
+} from '../support/production-events-fixtures';
 import { closeTestDb, resetDb, testPrisma } from './db';
 
 /**
@@ -80,7 +90,10 @@ describe('AC-034-012 (FR-034-015/016) — GET /strategic-panel restrito a EDITOR
       .set(...withCookie(access));
 
     expect(res.status).toBe(403);
+    expect(res.body).not.toHaveProperty('contents');
+    expect(res.body).not.toHaveProperty('factory');
     expect(res.body).not.toHaveProperty('modules');
+    expect(res.body).not.toHaveProperty('rework');
     expect(res.body).not.toHaveProperty('backlog');
   });
 
@@ -108,7 +121,13 @@ describe('AC-034-012 (FR-034-015/016) — GET /strategic-panel restrito a EDITOR
 });
 
 /** Conjunto exato de chaves da resposta HTTP (`toStrategicPanelResponse`) — prova de FORMA. */
-const STRATEGIC_PANEL_RESPONSE_KEYS = ['factory', 'modules', 'rework', 'backlog'].sort();
+const STRATEGIC_PANEL_RESPONSE_KEYS = [
+  'contents',
+  'factory',
+  'modules',
+  'rework',
+  'backlog',
+].sort();
 const TIME_PER_PAGE_MEDIDO_KEYS = ['status', 'average', 'median', 'n', 'activeTotal'].sort();
 const TIME_PER_PAGE_SEM_MEDIDA_KEYS = ['status', 'n', 'activeTotal'].sort();
 const MODULE_KEYS = ['disciplineName', 'topicName', 'timePerPage', 'completion'].sort();
@@ -123,6 +142,35 @@ const BACKLOG_ITEM_KEYS = [
   'ageMs',
   'approvedButAltered',
 ].sort();
+/** Allowlist por Conteúdo em `contents[]`. */
+const CONTENT_ITEM_KEYS = [
+  'contentId',
+  'disciplineName',
+  'topicName',
+  'totalTime',
+  'timePerPage',
+  'perStage',
+  'reworkCountByStage',
+  'concluded',
+  'approvedButAltered',
+  'mostAdvancedStage',
+  'priority',
+  'ageMs',
+].sort();
+const PER_STAGE_KEYS = [
+  'CONTEUDO_BRUTO',
+  'QUEBRA_DA_REGRA',
+  'TIRA_MNEMONICA',
+  'ASSOCIACAO_VISUAL',
+  'PUBLICACAO_PDF',
+  'MATERIAL_REFORCO',
+  'VERSAO_EDITORIAL',
+  'APROVACAO_VERSAO',
+].sort();
+const TOTAL_TIME_MEDIDO_KEYS = ['ms', 'pageCount'].sort();
+const TOTAL_TIME_UNMEASURED_KEYS = ['reason'].sort();
+const STAGE_PERIOD_MEDIDO_KEYS = ['status', 'ms', 'msPerPage'].sort();
+const STAGE_PERIOD_OTHER_KEYS = ['status'].sort();
 
 function expectTimePerPageShape(value: unknown): void {
   expect(value).not.toBeNull();
@@ -130,6 +178,37 @@ function expectTimePerPageShape(value: unknown): void {
   const expectedKeys =
     timePerPage.status === 'medido' ? TIME_PER_PAGE_MEDIDO_KEYS : TIME_PER_PAGE_SEM_MEDIDA_KEYS;
   expect(Object.keys(timePerPage).sort()).toEqual(expectedKeys);
+}
+
+/** `totalTime` não tem campo `status` — o ramo medido se reconhece por ter `ms`. */
+function totalTimeBranch(value: unknown): string {
+  const totalTime = value as { reason?: string };
+  return totalTime.reason === undefined ? 'medido' : totalTime.reason;
+}
+
+function expectTotalTimeShape(value: unknown): void {
+  expect(value).not.toBeNull();
+  const expectedKeys =
+    totalTimeBranch(value) === 'medido' ? TOTAL_TIME_MEDIDO_KEYS : TOTAL_TIME_UNMEASURED_KEYS;
+  expect(Object.keys(value as object).sort()).toEqual(expectedKeys);
+}
+
+function expectStagePeriodShape(value: unknown): void {
+  expect(value).not.toBeNull();
+  const period = value as { status: string };
+  const expectedKeys =
+    period.status === 'medido' ? STAGE_PERIOD_MEDIDO_KEYS : STAGE_PERIOD_OTHER_KEYS;
+  expect(Object.keys(period).sort()).toEqual(expectedKeys);
+}
+
+function expectContentItemShape(value: unknown): void {
+  const content = value as { totalTime: unknown; perStage: Record<string, unknown> };
+  expect(Object.keys(content as object).sort()).toEqual(CONTENT_ITEM_KEYS);
+  expect(Object.keys(content.perStage).sort()).toEqual(PER_STAGE_KEYS);
+  expectTotalTimeShape(content.totalTime);
+  for (const stageKey of PER_STAGE_KEYS) {
+    expectStagePeriodShape(content.perStage[stageKey]);
+  }
 }
 
 /**
@@ -216,11 +295,100 @@ describe('AC-034-013 (NFR-034-003/004) — forma exata do payload de GET /strate
       expect(Object.keys(item).sort()).toEqual(BACKLOG_ITEM_KEYS);
     }
 
-    // Checagem recursiva — não só o nível raiz.
+    expect(res.body.contents.length).toBeGreaterThan(0);
+    for (const contentItem of res.body.contents) {
+      expectContentItemShape(contentItem);
+    }
+
     const allKeys = new Set<string>();
     collectKeysRecursively(res.body, allKeys);
     for (const forbidden of [...FORBIDDEN_IDENTITY_KEYS, ...FORBIDDEN_TEXT_KEYS]) {
       expect(allKeys.has(forbidden)).toBe(false);
     }
+  });
+});
+
+/**
+ * Conteúdo com tempo por página MEDIDO: criação instrumentada
+ * (`contents.service.createRawContent` — emite CONTEUDO_BRUTO ABERTURA/CONCLUSAO
+ * e QUEBRA_DA_REGRA ABERTURA), Quebra salva (`saveRuleBreakdown` — CONCLUSAO),
+ * fechamento de Versão (`closeContentVersion`) e Exportação Tira REAL com
+ * `pageCount` (`exportPublication`) — nunca seed direto do Prisma
+ * (RISK-034-004).
+ */
+async function seedMeasuredContent(editor: { id: string }, topicId: string): Promise<void> {
+  const actor = actorOf({ id: editor.id, role: 'EDITOR' });
+  const created = await createRawContent(
+    { topicId, ...RAW_CONTENT_TEXT_FIELDS },
+    editor.id,
+    testPrisma,
+  );
+  await saveRuleBreakdown(created.id, BREAKDOWN_FIELDS, actor, testPrisma);
+  await closeContentVersion(
+    created.id,
+    { legislativeClosureDate: '2026-09-01' },
+    actor,
+    testPrisma,
+  );
+  await exportPublication(created.id, { variant: 'TIRA' }, actor, testPrisma);
+}
+
+/**
+ * Conteúdo SEM tempo por página medido: mesma criação instrumentada (evento
+ * CONTEUDO_BRUTO existe — `startEvent !== null`), sem Quebra/fechamento/
+ * Exportação — nenhuma Exportação de referência para medir contra.
+ */
+async function seedUnmeasuredContent(editor: { id: string }, topicId: string): Promise<void> {
+  await createRawContent({ topicId, ...RAW_CONTENT_TEXT_FIELDS }, editor.id, testPrisma);
+}
+
+describe('GET /strategic-panel — 1 caso por ramo de toda união da resposta (FR-034-004/005/006/025)', () => {
+  it('1 Conteúdo MEDIDO + 1 SEM medida, em Módulos distintos → cada ramo aparece em TimePerPageAggregate/totalTime/perStage, chaves exatas por ramo', async () => {
+    const editor = await createUser('EDITOR');
+    const access = await seedSession(editor.id);
+    const measuredTopicId = await createTopic();
+    const unmeasuredTopicId = await createTopic();
+
+    await seedMeasuredContent(editor, measuredTopicId);
+    await seedUnmeasuredContent(editor, unmeasuredTopicId);
+
+    const res = await request(app)
+      .get('/api/v1/strategic-panel')
+      .set(...withCookie(access));
+
+    expect(res.status).toBe(200);
+    expect(res.body.contents).toHaveLength(2);
+
+    // `totalTime`/`perStage` — os 2 ramos apareceram, chaves exatas em cada
+    // um (via `expectContentItemShape`).
+    const totalTimeBranches: string[] = [];
+    let measuredContent: { perStage: { QUEBRA_DA_REGRA: { status: string } } } | undefined;
+    for (const contentItem of res.body.contents) {
+      const branch = totalTimeBranch(contentItem.totalTime);
+      totalTimeBranches.push(branch);
+      if (branch === 'medido') {
+        measuredContent = contentItem;
+      }
+      expectContentItemShape(contentItem);
+    }
+    expect(totalTimeBranches).toContain('medido');
+    expect(totalTimeBranches).toContain('sem-medida');
+
+    // O Conteúdo MEDIDO tem ao menos 1 etapa "medido" (Quebra da regra,
+    // aberta na criação e concluída em `saveRuleBreakdown`), com `msPerPage`
+    // presente (chaves exatas já provadas acima).
+    expect(measuredContent).toBeDefined();
+    expect(measuredContent?.perStage.QUEBRA_DA_REGRA.status).toBe('medido');
+
+    // `TimePerPageAggregate` (nível Módulo) — os 2 ramos apareceram: o Módulo
+    // do Conteúdo medido agrega 'medido', o do sem medida agrega 'sem-medida'
+    // (nenhum dos 2 Conteúdos divide Módulo com o outro).
+    const moduleStatuses: string[] = [];
+    for (const moduleEntry of res.body.modules) {
+      moduleStatuses.push(moduleEntry.timePerPage.status);
+      expectTimePerPageShape(moduleEntry.timePerPage);
+    }
+    expect(moduleStatuses).toContain('medido');
+    expect(moduleStatuses).toContain('sem-medida');
   });
 });

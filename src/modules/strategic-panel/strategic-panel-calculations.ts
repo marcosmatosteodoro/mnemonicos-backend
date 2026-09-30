@@ -530,10 +530,28 @@ function buildBacklog(metrics: ContentMetrics[]): BacklogItem[] {
 }
 
 export interface StrategicPanelPayload {
+  /** Todo Conteúdo ativo, ordem determinística (disciplina, tema, id): a rota
+   * (TASK-035-006) serializa cada item por allowlist campo a campo. */
+  contents: ContentMetrics[];
   factory: { timePerPage: TimePerPageAggregate };
   modules: ModuleAggregate[];
   rework: ReworkTotals;
   backlog: BacklogItem[];
+}
+
+/** Disciplina → tema → id, sempre a mesma ordem independente da ordem de chegada
+ * (a leitura em lote não garante ordem estável entre chamadas). */
+function compareContents(a: ContentMetrics, b: ContentMetrics): number {
+  if (a.disciplineName !== b.disciplineName) {
+    return a.disciplineName < b.disciplineName ? -1 : 1;
+  }
+  if (a.topicName !== b.topicName) {
+    return a.topicName < b.topicName ? -1 : 1;
+  }
+  if (a.contentId !== b.contentId) {
+    return a.contentId < b.contentId ? -1 : 1;
+  }
+  return NO_ORDER_DIFFERENCE;
 }
 
 /**
@@ -547,6 +565,7 @@ export function aggregateStrategicPanel(
   metrics: ContentMetrics[],
 ): StrategicPanelPayload {
   return {
+    contents: [...metrics].sort(compareContents),
     factory: { timePerPage: aggregateTimePerPage(metrics) },
     modules: groupByModule(metrics).map(aggregateModule),
     rework: aggregateRework(metrics),

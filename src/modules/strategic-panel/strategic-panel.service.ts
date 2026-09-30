@@ -236,8 +236,9 @@ function groupLatestVersionByContent(versions: PanelVersionRow[]): Map<string, P
  * Tira, Versões vigentes sem `contentSnapshot`) + — só quando ao menos 1 Versão
  * vigente está aprovada — 3 em paralelo (`listApprovedVersionSnapshots`: 1,
  * `listCurrentVersionedFieldsForApprovedContents`: 2) = **7 statements** com
- * aprovadas, **5** sem nenhuma (TRISK-035-003: as 2 leituras extras crescem com
- * a FRAÇÃO aprovada, não com o total — puladas quando o subconjunto é vazio).
+ * aprovadas, **4** sem nenhuma (TRISK-035-003: as 2 leituras extras crescem com
+ * a FRAÇÃO aprovada, não com o total — puladas quando o subconjunto é vazio;
+ * contagem medida em `strategic-panel.query-count.integration.test.ts`).
  *
  * Nunca chama `resolveAlterationSignal` (F9, `content-versions.service.ts`):
  * `isVersionAltered` roda direto em memória dentro de
