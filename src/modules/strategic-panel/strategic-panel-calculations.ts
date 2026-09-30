@@ -4,11 +4,15 @@ import {
   derivePresentationPriority,
   type PresentationPriority,
 } from '../../domain/presentation-priority';
-import type {
-  ProductionEventTransition,
-  ProductionStageType,
-  ProofRadarClass,
+import {
+  CONTENT_STAGE_TYPES,
+  type ContentStageType,
+  type ProductionEventTransition,
+  type ProductionStageType,
+  type ProofRadarClass,
 } from '../../domain/types';
+
+export { CONTENT_STAGE_TYPES, type ContentStageType };
 
 /**
  * Núcleo de cálculo do Painel estratégico (COMP-035-010/011, FEAT-034-002) — 2 funções
@@ -55,18 +59,6 @@ export interface ContentMetricsInput {
 export type StagePeriod =
   | { status: 'medido'; ms: number; msPerPage: number | null }
   | { status: 'em-aberto' | 'nao-percorrida' | 'sem-duracao-medida' };
-
-/** As 5 etapas de conteúdo cujo retrabalho pós-fechamento conta como "correção após
- * revisão" (A-034-002) — exclui Publicação, Versão editorial e Aprovação. */
-export const CONTENT_STAGE_TYPES = [
-  'CONTEUDO_BRUTO',
-  'QUEBRA_DA_REGRA',
-  'TIRA_MNEMONICA',
-  'ASSOCIACAO_VISUAL',
-  'MATERIAL_REFORCO',
-] as const;
-
-export type ContentStageType = (typeof CONTENT_STAGE_TYPES)[number];
 
 function isContentStageType(stageType: ProductionStageType): stageType is ContentStageType {
   return CONTENT_STAGE_TYPES.some((candidate) => candidate === stageType);

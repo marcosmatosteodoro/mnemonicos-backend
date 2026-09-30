@@ -8,6 +8,7 @@ import {
   PRODUCTION_STAGE_TYPES,
   PRODUCTION_EVENT_TRANSITIONS,
   PUBLICATION_VARIANTS,
+  CONTENT_STAGE_TYPES,
   type SessionUser,
 } from '../../src/domain/types';
 
@@ -202,6 +203,26 @@ describe('paridade de tipos de domínio backend ⇆ frontend (NFR-002-007 / AC-0
     expect(frontendTransitions).toEqual(declaredTransitions);
     // o símbolo importado confere com a fonte que o teste leu como texto
     expect([...PRODUCTION_EVENT_TRANSITIONS].sort()).toEqual(declaredTransitions);
+  });
+
+  it('expõe CONTENT_STAGE_TYPES em paridade com o espelho do frontend (COMP-035-010, subconjunto de PRODUCTION_STAGE_TYPES sem Publicação/Versão editorial/Aprovação)', () => {
+    const backendStageTypes = extractConstArray(backendSource, 'CONTENT_STAGE_TYPES').sort();
+    const frontendStageTypes = extractConstArray(frontendSource, 'CONTENT_STAGE_TYPES').sort();
+
+    expect(backendStageTypes).toEqual(
+      [
+        'ASSOCIACAO_VISUAL',
+        'CONTEUDO_BRUTO',
+        'MATERIAL_REFORCO',
+        'QUEBRA_DA_REGRA',
+        'TIRA_MNEMONICA',
+      ].sort(),
+    );
+    // paridade cross-repo nos dois sentidos — mesmo tamanho e mesmos
+    // elementos: nenhuma ponta com entrada a mais
+    expect(frontendStageTypes).toEqual(backendStageTypes);
+    // o símbolo importado confere com a fonte que o teste leu como texto
+    expect([...CONTENT_STAGE_TYPES].sort()).toEqual(backendStageTypes);
   });
 
   it('expõe PUBLICATION_VARIANTS (backend) em paridade com as chaves de PUBLICATION_VARIANT_LABELS (frontend, COMP-025-009)', () => {

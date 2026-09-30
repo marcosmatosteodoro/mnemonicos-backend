@@ -138,7 +138,7 @@ describe('buildStrategicPanel — leituras de rawContentId ao agrupar são O(E),
   });
 
   it('leituras de rawContentId ficam dentro do teto linear 2·E (no máximo 2 por linha, nunca 1 leitura extra por Conteúdo inteiro)', async () => {
-    const reads = await countRawContentIdReads(2);
+    const reads = await countRawContentIdReads(10);
 
     expect(reads).toBeLessThanOrEqual(2 * TOTAL_ROW_COUNT);
   });
