@@ -89,7 +89,8 @@ export interface ContentMetrics {
   contentId: string;
   disciplineName: string;
   topicName: string;
-  /** `null` = "sem medida" (nunca 0). `reason` distingue os 2 motivos do FR-034-026/007. */
+  /** Nunca `null`/`0`: ausência de medida é sempre `{ reason }`, nunca um valor numérico.
+   * `reason` distingue os 2 motivos do FR-034-026/007. */
   totalTime: { ms: number; pageCount: number } | { reason: 'sem-medida' | 'sem-registro' };
   timePerPage: number | null;
   perStage: Record<ProductionStageType, StagePeriod>;

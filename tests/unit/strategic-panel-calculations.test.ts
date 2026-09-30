@@ -23,6 +23,23 @@ const BASE_CONTENT: ContentMetricsInput['content'] = {
   topicName: 'Obrigação Tributária',
 };
 
+/** Os 11 campos versionados de referência — compartilhado entre os casos de
+ * `resolveApprovalStatus` e o teste de paridade do evento de Tira (helper único,
+ * perfil node-22.md §7). */
+const VERSIONED_FIELDS: VersionedContentFields = {
+  rawText: 'texto',
+  radarClass: 'ALTA',
+  sourceType: null,
+  sourceCitation: null,
+  sourceUrl: null,
+  concept: 'conceito',
+  action: 'ação',
+  object: 'objeto',
+  condition: null,
+  exception: null,
+  essence: 'essência',
+};
+
 function assertDefined<T>(value: T | undefined): asserts value is T {
   if (value === undefined) {
     throw new Error('valor esperado definido');
@@ -459,21 +476,204 @@ describe('computeContentMetrics — os 4 estados de tempo por etapa, mesma etapa
   });
 });
 
+describe('computeContentMetrics — resolveApprovalStatus, 1 caso por ramo (gate 1, code-reviewer)', () => {
+  it('sem Versão vigente → concluded false, approvedButAltered false', () => {
+    const metrics = computeContentMetrics(
+      new Date('2026-02-01T00:00:00Z'),
+      buildInput({ latestVersion: null }),
+    );
+
+    expect({
+      concluded: metrics.concluded,
+      approvedButAltered: metrics.approvedButAltered,
+    }).toEqual({ concluded: false, approvedButAltered: false });
+  });
+
+  it('Versão vigente NÃO aprovada (approvedById null) → concluded false, approvedButAltered false, mesmo com currentVersionedFields presente', () => {
+    const closedAt = new Date('2026-01-10T00:00:00Z');
+    // `currentVersionedFields` presente e IGUAL ao snapshot: se o guard
+    // `approvedById === null` fosse removido, o código cairia direto em
+    // `isVersionAltered` e devolveria `concluded: true` — este caso morreria.
+    const metrics = computeContentMetrics(
+      new Date('2026-02-01T00:00:00Z'),
+      buildInput({
+        latestVersion: { closedAt, approvedById: null, contentSnapshot: VERSIONED_FIELDS },
+        currentVersionedFields: VERSIONED_FIELDS,
+      }),
+    );
+
+    expect({
+      concluded: metrics.concluded,
+      approvedButAltered: metrics.approvedButAltered,
+    }).toEqual({ concluded: false, approvedButAltered: false });
+  });
+
+  it('aprovada e inalterada, com Tira ANTES do fechamento → concluded true, approvedButAltered false', () => {
+    const closedAt = new Date('2026-01-10T00:00:00Z');
+    const tiraBeforeClosure = new Date('2026-01-05T00:00:00Z');
+    const stageEvents: ContentMetricsStageEvent[] = [
+      {
+        stageType: 'TIRA_MNEMONICA',
+        transitionType: 'CONCLUSAO',
+        sequence: 1n,
+        occurredAt: tiraBeforeClosure,
+      },
+    ];
+
+    const metrics = computeContentMetrics(
+      new Date('2026-02-01T00:00:00Z'),
+      buildInput({
+        stageEvents,
+        latestVersion: { closedAt, approvedById: 'admin-1', contentSnapshot: VERSIONED_FIELDS },
+        currentVersionedFields: VERSIONED_FIELDS,
+      }),
+    );
+
+    expect({
+      concluded: metrics.concluded,
+      approvedButAltered: metrics.approvedButAltered,
+    }).toEqual({ concluded: true, approvedButAltered: false });
+  });
+
+  it('aprovada e alterada (campo divergente do snapshot E Tira DEPOIS do fechamento) → concluded false, approvedButAltered true', () => {
+    const closedAt = new Date('2026-01-10T00:00:00Z');
+    const tiraAfterClosure = new Date('2026-01-15T00:00:00Z');
+    const alteredFields: VersionedContentFields = {
+      ...VERSIONED_FIELDS,
+      rawText: 'texto alterado após o fechamento',
+    };
+    const stageEvents: ContentMetricsStageEvent[] = [
+      {
+        stageType: 'TIRA_MNEMONICA',
+        transitionType: 'CONCLUSAO',
+        sequence: 1n,
+        occurredAt: tiraAfterClosure,
+      },
+    ];
+
+    const metrics = computeContentMetrics(
+      new Date('2026-02-01T00:00:00Z'),
+      buildInput({
+        stageEvents,
+        latestVersion: { closedAt, approvedById: 'admin-1', contentSnapshot: VERSIONED_FIELDS },
+        currentVersionedFields: alteredFields,
+      }),
+    );
+
+    expect({
+      concluded: metrics.concluded,
+      approvedButAltered: metrics.approvedButAltered,
+    }).toEqual({ concluded: false, approvedButAltered: true });
+  });
+
+  it('aprovada SEM currentVersionedFields (contrato violado pelo chamador) → fail-closed: concluded false, approvedButAltered false', () => {
+    const closedAt = new Date('2026-01-10T00:00:00Z');
+
+    const metrics = computeContentMetrics(
+      new Date('2026-02-01T00:00:00Z'),
+      buildInput({
+        latestVersion: { closedAt, approvedById: 'admin-1', contentSnapshot: VERSIONED_FIELDS },
+      }),
+    );
+
+    expect({
+      concluded: metrics.concluded,
+      approvedButAltered: metrics.approvedButAltered,
+    }).toEqual({ concluded: false, approvedButAltered: false });
+  });
+});
+
+describe('computeContentMetrics/aggregateStrategicPanel — mostAdvancedStage exclui Publicação (DEC-035-008, AC-034-010/FR-034-027)', () => {
+  it('avança até a etapa canônica mais recente mesmo com Publicação POSTERIOR; ageMs por valor exato; backlog reflete os dois campos por item', () => {
+    const now = new Date('2026-03-01T00:00:00Z');
+    const start = new Date('2026-01-01T00:00:00Z');
+    const quebraAbertura = new Date('2026-01-02T00:00:00Z');
+    const publicacaoPosterior = new Date('2026-01-20T00:00:00Z');
+
+    const stageEvents: ContentMetricsStageEvent[] = [
+      ...contentBrutoEvents(1n, start),
+      {
+        stageType: 'QUEBRA_DA_REGRA',
+        transitionType: 'ABERTURA',
+        sequence: 3n,
+        occurredAt: quebraAbertura,
+      },
+      {
+        stageType: 'PUBLICACAO_PDF',
+        transitionType: 'CONCLUSAO',
+        sequence: 4n,
+        occurredAt: publicacaoPosterior,
+      },
+    ];
+
+    const metrics = computeContentMetrics(
+      now,
+      buildInput({ content: { ...BASE_CONTENT, id: 'content-mostadvanced' }, stageEvents }),
+    );
+
+    expect(metrics.mostAdvancedStage).toBe('QUEBRA_DA_REGRA');
+    expect(metrics.ageMs).toBe(now.getTime() - start.getTime());
+
+    const payload = aggregateStrategicPanel(now, [metrics]);
+    const [backlogItem] = payload.backlog;
+    assertDefined(backlogItem);
+    expect(backlogItem.mostAdvancedStage).toBe('QUEBRA_DA_REGRA');
+    expect(backlogItem.ageMs).toBe(now.getTime() - start.getTime());
+  });
+});
+
+describe('computeContentMetrics — referência escolhida por sequence, não por relógio (FR-034-003/010, DEC-035-011)', () => {
+  it('2 fechamentos (VERSAO_EDITORIAL); retrabalho e Exportação entre eles contam mesmo com a Exportação ocorrendo ANTES do 1º fechamento no relógio (sequence maior)', () => {
+    const start = new Date('2026-01-01T00:00:00Z');
+    const firstClosureAt = new Date('2026-01-10T00:00:00Z');
+    const reworkAt = new Date('2026-01-04T00:00:00Z');
+    // Exportação ANTERIOR ao 1º fechamento no relógio (occurredAt), mas com
+    // `sequence` MAIOR que a do 1º fechamento — a seleção usa `sequence`
+    // (DEC-035-011), nunca o relógio.
+    const exportAt = new Date('2026-01-05T00:00:00Z');
+    const secondClosureAt = new Date('2026-01-20T00:00:00Z');
+
+    const stageEvents: ContentMetricsStageEvent[] = [
+      ...contentBrutoEvents(1n, start),
+      {
+        stageType: 'VERSAO_EDITORIAL',
+        transitionType: 'CONCLUSAO',
+        sequence: 3n,
+        occurredAt: firstClosureAt,
+      },
+      {
+        stageType: 'CONTEUDO_BRUTO',
+        transitionType: 'RETRABALHO',
+        sequence: 4n,
+        occurredAt: reworkAt,
+      },
+      {
+        stageType: 'PUBLICACAO_PDF',
+        transitionType: 'CONCLUSAO',
+        sequence: 5n,
+        occurredAt: exportAt,
+      },
+      {
+        stageType: 'VERSAO_EDITORIAL',
+        transitionType: 'CONCLUSAO',
+        sequence: 6n,
+        occurredAt: secondClosureAt,
+      },
+    ];
+
+    const metrics = computeContentMetrics(
+      new Date('2026-04-01T00:00:00Z'),
+      buildInput({ stageEvents, tiraPublications: [{ occurredAt: exportAt, pageCount: 7 }] }),
+    );
+
+    expect(metrics.totalTime).toEqual({ ms: exportAt.getTime() - start.getTime(), pageCount: 7 });
+    expect(metrics.reworkCountByStage).toEqual({ CONTEUDO_BRUTO: 1 });
+  });
+});
+
 describe('computeContentMetrics — paridade do evento de Tira com F9', () => {
   it('latestTiraOccurredAt escolhido pelo evento TIRA_MNEMONICA de MAIOR sequence, nunca pelo de maior occurredAt', () => {
-    const fields: VersionedContentFields = {
-      rawText: 'texto',
-      radarClass: 'ALTA',
-      sourceType: null,
-      sourceCitation: null,
-      sourceUrl: null,
-      concept: 'conceito',
-      action: 'ação',
-      object: 'objeto',
-      condition: null,
-      exception: null,
-      essence: 'essência',
-    };
+    const fields = VERSIONED_FIELDS;
     const start = new Date('2026-01-01T00:00:00Z');
     const closedAt = new Date('2026-01-10T00:00:00Z');
     // sequence 3 (MENOR) ocorre DEPOIS do fechamento — se o código escolhesse por
@@ -538,6 +738,86 @@ describe('aggregateStrategicPanel — agregado de tempo por página do Módulo (
       n: 3,
       activeTotal: 4,
     });
+  });
+});
+
+describe('aggregateStrategicPanel — fábrica com n PAR (ramo par da mediana) e Módulos com mesmo topicName em Disciplinas diferentes (AC-034-007/FR-034-008)', () => {
+  it('payload.factory calcula média≠mediana com n par; cada Módulo mantém n/activeTotal/completion próprios mesmo com topicName colidindo entre Disciplinas', () => {
+    const moduleA = [
+      buildContentMetrics({
+        disciplineName: 'Direito Tributário',
+        topicName: 'Obrigação Tributária',
+        timePerPage: 10,
+        concluded: false,
+      }),
+      buildContentMetrics({
+        disciplineName: 'Direito Tributário',
+        topicName: 'Obrigação Tributária',
+        timePerPage: 30,
+        concluded: true,
+      }),
+      buildContentMetrics({
+        disciplineName: 'Direito Tributário',
+        topicName: 'Obrigação Tributária',
+        timePerPage: null,
+        concluded: false,
+      }),
+    ];
+    const moduleB = [
+      buildContentMetrics({
+        disciplineName: 'Direito Constitucional',
+        topicName: 'Obrigação Tributária',
+        timePerPage: 20,
+        concluded: false,
+      }),
+      buildContentMetrics({
+        disciplineName: 'Direito Constitucional',
+        topicName: 'Obrigação Tributária',
+        timePerPage: 100,
+        concluded: false,
+      }),
+    ];
+
+    const payload = aggregateStrategicPanel(new Date('2026-02-01T00:00:00Z'), [
+      ...moduleA,
+      ...moduleB,
+    ]);
+
+    // n=4 (par): mediana = média de sorted[1]/sorted[2] ([10,20,30,100] → (20+30)/2=25),
+    // distinta da média (160/4=40) — mutante "mediana=média"/"média=mediana" reprova.
+    expect(payload.factory.timePerPage).toEqual({
+      status: 'medido',
+      average: 40,
+      median: 25,
+      n: 4,
+      activeTotal: 5,
+    });
+
+    expect(payload.modules).toHaveLength(2);
+    const foundA = payload.modules.find((module) => module.disciplineName === 'Direito Tributário');
+    const foundB = payload.modules.find(
+      (module) => module.disciplineName === 'Direito Constitucional',
+    );
+    assertDefined(foundA);
+    assertDefined(foundB);
+    expect(foundA.topicName).toBe('Obrigação Tributária');
+    expect(foundB.topicName).toBe('Obrigação Tributária');
+    expect(foundA.timePerPage).toEqual({
+      status: 'medido',
+      average: 20,
+      median: 20,
+      n: 2,
+      activeTotal: 3,
+    });
+    expect(foundA.completion).toEqual({ active: 3, concluded: 1 });
+    expect(foundB.timePerPage).toEqual({
+      status: 'medido',
+      average: 60,
+      median: 60,
+      n: 2,
+      activeTotal: 2,
+    });
+    expect(foundB.completion).toEqual({ active: 2, concluded: 0 });
   });
 });
 
@@ -646,8 +926,15 @@ describe('aggregateStrategicPanel — Módulo com concluídos, sem aprovação e
     );
     assertDefined(approvedAlteredItem);
     expect(approvedAlteredItem.approvedButAltered).toBe(true);
-    expect(payload.backlog.map((item) => item.contentId)).toEqual(
-      expect.arrayContaining(['not-approved', 'approved-altered']),
+    // Igualdade exata (nunca `arrayContaining`): prova que o backlog é
+    // EXATAMENTE os 2 não-concluídos, nem mais nem menos — e a contagem
+    // confirma ativos = concluídos + itens do backlog.
+    expect(payload.backlog.map((item) => item.contentId)).toEqual([
+      'not-approved',
+      'approved-altered',
+    ]);
+    expect(moduleAggregate.completion.active).toBe(
+      moduleAggregate.completion.concluded + payload.backlog.length,
     );
   });
 });
