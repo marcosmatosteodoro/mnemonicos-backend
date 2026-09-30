@@ -1,14 +1,16 @@
 import { Router } from 'express';
 
 import { requireRole } from '../../http/middlewares/authorize';
-import type {
-  BacklogItem,
-  ContentMetrics,
-  ModuleAggregate,
-  ReworkTotals,
-  StagePeriod,
-  StrategicPanelPayload,
-  TimePerPageAggregate,
+import {
+  CONTENT_STAGE_TYPES,
+  type BacklogItem,
+  type ContentMetrics,
+  type ContentStageType,
+  type ModuleAggregate,
+  type ReworkTotals,
+  type StagePeriod,
+  type StrategicPanelPayload,
+  type TimePerPageAggregate,
 } from './strategic-panel-calculations';
 import { buildStrategicPanel } from './strategic-panel.service';
 
@@ -45,9 +47,29 @@ function toModuleResponse(moduleAggregate: ModuleAggregate) {
   };
 }
 
+/**
+ * Mesma disciplina de allowlist aplicada a um `Record` (não só a um objeto de
+ * forma fixa): enumera `CONTENT_STAGE_TYPES` em vez de espalhar (`...`) — uma
+ * chave fora do enum no valor de origem nunca chega à saída, defesa em
+ * profundidade de `toStrategicPanelResponse` (DEC-035-017) reaplicada aos 2
+ * Records de retrabalho (`content.reworkCountByStage`, `rework.byStage`).
+ */
+function toReworkCountByStageResponse(
+  reworkCountByStage: Partial<Record<ContentStageType, number>>,
+): Partial<Record<ContentStageType, number>> {
+  const result: Partial<Record<ContentStageType, number>> = {};
+  for (const stage of CONTENT_STAGE_TYPES) {
+    const count = reworkCountByStage[stage];
+    if (count !== undefined) {
+      result[stage] = count;
+    }
+  }
+  return result;
+}
+
 function toReworkResponse(rework: ReworkTotals) {
   return {
-    byStage: { ...rework.byStage },
+    byStage: toReworkCountByStageResponse(rework.byStage),
     contentsWithCorrection: rework.contentsWithCorrection,
   };
 }
@@ -104,7 +126,7 @@ function toContentResponse(content: ContentMetrics) {
     totalTime: toTotalTimeResponse(content.totalTime),
     timePerPage: content.timePerPage,
     perStage: toPerStageResponse(content.perStage),
-    reworkCountByStage: { ...content.reworkCountByStage },
+    reworkCountByStage: toReworkCountByStageResponse(content.reworkCountByStage),
     concluded: content.concluded,
     approvedButAltered: content.approvedButAltered,
     mostAdvancedStage: content.mostAdvancedStage,

@@ -58,7 +58,7 @@ export type StagePeriod =
 
 /** As 5 etapas de conteúdo cujo retrabalho pós-fechamento conta como "correção após
  * revisão" (A-034-002) — exclui Publicação, Versão editorial e Aprovação. */
-const CONTENT_STAGE_TYPES = [
+export const CONTENT_STAGE_TYPES = [
   'CONTEUDO_BRUTO',
   'QUEBRA_DA_REGRA',
   'TIRA_MNEMONICA',

@@ -15,11 +15,13 @@ import { closeTestDb, resetDb, testPrisma } from './db';
  * TODOS com Versão vigente APROVADA e NÃO alterada, o ramo que, em
  * `resolveAlterationSignal` (`content-versions.service.ts`, F9), faria 1
  * `findFirst` de Publicação TIRA por Conteúdo — produz **exatamente a mesma
- * contagem de statements** nos 2 volumes (DEC-035-014 v0.2: 7 — as 5 leituras
- * batch de sempre + o par `listApprovedVersionSnapshots`/
- * `listCurrentVersionedFieldsForApprovedContents`, só das aprovadas, no mesmo
- * `Promise.all`; 4 com 0% aprovado — o par acima é pulado quando o
- * subconjunto de aprovadas é vazio). Fixture gerada só via
+ * contagem de statements** nos 2 volumes (DEC-035-014 v0.2: 7 — 1 leitura de
+ * Conteúdos ativos + 3 leituras batch de sempre (eventos de etapa,
+ * publicações Tira, versões vigentes) = 4 sempre; mais 3 statements só das
+ * aprovadas, no mesmo `Promise.all` (`listApprovedVersionSnapshots` + os 2
+ * `IN` de `listCurrentVersionedFieldsForApprovedContents`) = 7; 4 com 0%
+ * aprovado — os 3 statements das aprovadas são pulados quando o subconjunto
+ * é vazio). Fixture gerada só via
  * `seedApprovableRawContent`/`closeContentVersion`/`approveContentVersion`
  * (RISK-034-004: nunca seed direto do Prisma para a leitura de eventos de
  * etapa — `closeContentVersion`/`approveContentVersion` emitem

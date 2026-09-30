@@ -1,14 +1,27 @@
+import express from 'express';
+import request from 'supertest';
+
+import type { AuthContext } from '../../src/modules/auth/auth.service';
 import type { StrategicPanelPayload } from '../../src/modules/strategic-panel/strategic-panel-calculations';
-import { toStrategicPanelResponse } from '../../src/modules/strategic-panel/strategic-panel.routes';
+import {
+  strategicPanelRoutes,
+  toStrategicPanelResponse,
+} from '../../src/modules/strategic-panel/strategic-panel.routes';
+import { buildStrategicPanel } from '../../src/modules/strategic-panel/strategic-panel.service';
+
+jest.mock('../../src/modules/strategic-panel/strategic-panel.service');
+
+const mockedBuildStrategicPanel = jest.mocked(buildStrategicPanel);
 
 /**
  * `toStrategicPanelResponse` — allowlist prova-se sem depender do payload
  * ATUAL: um payload com 1 chave extra em CADA nível (via cast, nunca o tipo
  * real de `StrategicPanelPayload`/`ContentMetrics`) não pode chegar à saída —
- * a função monta campo a campo, nunca por spread. Mutante que trocasse o
- * corpo de `toStrategicPanelResponse` por `return payload;` (a mesma classe
- * de regressão que `res.json(payload)` direto na rota) faria a chave extra
- * sobreviver e esta asserção reprovaria.
+ * a função monta campo a campo, nunca por spread. 2 mutantes distintos, 2
+ * testes distintos: o teste de função (abaixo) mata `return payload;` no
+ * corpo de `toStrategicPanelResponse`; o teste de rota (mais abaixo) mata
+ * `res.json(payload)` direto no handler — a função pura sobreviveria intacta
+ * a esse 2º mutante, só a montagem HTTP real o alcança.
  */
 
 const EXTRA_KEY = 'leakedField';
@@ -39,7 +52,7 @@ function buildPoisonedPayload(): StrategicPanelPayload {
           VERSAO_EDITORIAL: { status: 'sem-duracao-medida' },
           APROVACAO_VERSAO: { status: 'nao-percorrida' },
         },
-        reworkCountByStage: {},
+        reworkCountByStage: { [EXTRA_KEY]: 1 },
         concluded: false,
         approvedButAltered: false,
         mostAdvancedStage: 'CONTEUDO_BRUTO',
@@ -69,7 +82,7 @@ function buildPoisonedPayload(): StrategicPanelPayload {
     ],
     rework: {
       [EXTRA_KEY]: 'nível rework',
-      byStage: {},
+      byStage: { [EXTRA_KEY]: 1 },
       contentsWithCorrection: 0,
     },
     backlog: [
@@ -107,6 +120,38 @@ describe('toStrategicPanelResponse — allowlist prova-se sem depender do payloa
     const allKeys = new Set<string>();
     collectKeysRecursively(response, allKeys);
 
+    expect(allKeys.has(EXTRA_KEY)).toBe(false);
+  });
+});
+
+/**
+ * Monta a rota real (`strategicPanelRoutes`) num app mínimo — `buildStrategicPanel`
+ * mockado devolve o payload envenenado direto na fronteira HTTP. `requireRole` só
+ * lê `req.auth` (já anexado por `requireAuth` na app real); aqui um middleware
+ * injeta a sessão EDITOR sem passar pela autenticação real, suficiente para
+ * alcançar o handler.
+ */
+function buildAppWithEditorSession(): express.Express {
+  const app = express();
+  app.use((req, _res, next) => {
+    const auth: AuthContext = { userId: 'editor-1', role: 'EDITOR', sessionId: 'session-1' };
+    req.auth = auth;
+    next();
+  });
+  app.use(strategicPanelRoutes);
+  return app;
+}
+
+describe('GET /strategic-panel — allowlist na fronteira HTTP real', () => {
+  it('serviço devolve payload envenenado (chave extra em todo nível) → resposta HTTP não carrega nenhuma', async () => {
+    mockedBuildStrategicPanel.mockResolvedValue(buildPoisonedPayload());
+    const app = buildAppWithEditorSession();
+
+    const res = await request(app).get('/strategic-panel');
+
+    expect(res.status).toBe(200);
+    const allKeys = new Set<string>();
+    collectKeysRecursively(res.body, allKeys);
     expect(allKeys.has(EXTRA_KEY)).toBe(false);
   });
 });

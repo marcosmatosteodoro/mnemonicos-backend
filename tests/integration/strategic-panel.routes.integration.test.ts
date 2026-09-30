@@ -362,12 +362,18 @@ describe('GET /strategic-panel — 1 caso por ramo de toda união da resposta (F
     // `totalTime`/`perStage` — os 2 ramos apareceram, chaves exatas em cada
     // um (via `expectContentItemShape`).
     const totalTimeBranches: string[] = [];
-    let measuredContent: { perStage: { QUEBRA_DA_REGRA: { status: string } } } | undefined;
+    type ContentWithPerStageStatus = {
+      perStage: { QUEBRA_DA_REGRA: { status: string }; TIRA_MNEMONICA: { status: string } };
+    };
+    let measuredContent: ContentWithPerStageStatus | undefined;
+    let unmeasuredContent: ContentWithPerStageStatus | undefined;
     for (const contentItem of res.body.contents) {
       const branch = totalTimeBranch(contentItem.totalTime);
       totalTimeBranches.push(branch);
       if (branch === 'medido') {
         measuredContent = contentItem;
+      } else {
+        unmeasuredContent = contentItem;
       }
       expectContentItemShape(contentItem);
     }
@@ -379,6 +385,15 @@ describe('GET /strategic-panel — 1 caso por ramo de toda união da resposta (F
     // presente (chaves exatas já provadas acima).
     expect(measuredContent).toBeDefined();
     expect(measuredContent?.perStage.QUEBRA_DA_REGRA.status).toBe('medido');
+
+    // 1 caso por ramo NÃO medido de `perStage`, com os literais reais: o
+    // Conteúdo MEDIDO nunca abre Tira mnemônica/Associação visual/Material de
+    // reforço/Aprovação (`'nao-percorrida'`); o SEM medida só recebe a
+    // ABERTURA de Quebra da regra (`createRawContent`), sem `saveRuleBreakdown`
+    // fechando-a (`'em-aberto'`).
+    expect(measuredContent?.perStage.TIRA_MNEMONICA.status).toBe('nao-percorrida');
+    expect(unmeasuredContent).toBeDefined();
+    expect(unmeasuredContent?.perStage.QUEBRA_DA_REGRA.status).toBe('em-aberto');
 
     // `TimePerPageAggregate` (nível Módulo) — os 2 ramos apareceram: o Módulo
     // do Conteúdo medido agrega 'medido', o do sem medida agrega 'sem-medida'
