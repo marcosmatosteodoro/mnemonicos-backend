@@ -7,6 +7,7 @@ import type {
   ApproveContentVersionInput,
   CloseContentVersionInput,
 } from './content-versions.schema';
+import { isVersionAltered } from './version-alteration';
 import {
   hasVersionedContentChanged,
   toVersionedContentFields,
@@ -278,15 +279,13 @@ export async function listContentVersions(
 }
 
 /**
- * Sinal combinado de alteração pós-fechamento (DEC-033-007): OU lógico entre
- * `hasVersionedContentChanged` (CONTEÚDO/Quebra da regra) e o evento de Tira
- * mnemônica mais recente (`ProductionStageEvent`, `stageType:
- * 'TIRA_MNEMONICA'`) posterior a `version.closedAt`. Único ponto de
- * manutenção da combinação.
- *
- * Short-circuit (TRISK-033-002): CONTEÚDO alterado retorna sem consultar
- * `productionStageEvent`. `orderBy: { sequence: 'desc' }` (nunca
- * `occurredAt`) — desempate determinístico (AC-009-008).
+ * Sinal combinado de alteração pós-fechamento (DEC-033-007/DEC-035-015): curto-circuito
+ * de I/O (TRISK-033-002) — CONTEÚDO alterado retorna sem consultar
+ * `productionStageEvent`. Senão, lê o evento de Tira mnemônica mais recente
+ * (`stageType: 'TIRA_MNEMONICA'`, `orderBy: { sequence: 'desc' }` — nunca `occurredAt`,
+ * desempate determinístico, AC-009-008) e delega a decisão final a `isVersionAltered`
+ * (`version-alteration.ts`, COMP-035-008) — único ponto de manutenção da combinação,
+ * compartilhado com o Painel estratégico (TASK-035-004).
  */
 export async function resolveAlterationSignal(
   rawContentId: string,
@@ -304,7 +303,7 @@ export async function resolveAlterationSignal(
     select: { occurredAt: true },
   });
 
-  return latestTiraEvent !== null && latestTiraEvent.occurredAt > version.closedAt;
+  return isVersionAltered(current, version, latestTiraEvent?.occurredAt ?? null);
 }
 
 /**
