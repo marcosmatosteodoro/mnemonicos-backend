@@ -17,6 +17,26 @@ import {
 import { closeTestDb, resetDb, testPrisma } from './db';
 
 /**
+ * Conjunto exato de chaves de `ContentVersionDetail`
+ * (`content-versions.service.ts`) — prova de FORMA do corpo de sucesso HTTP
+ * (gate 8, lição "select exposto que lê campo interno prova as chaves do
+ * payload"): o `select` interno de `listContentVersions` lê `contentSnapshot`
+ * (dado interno, DEC-029-003) ao lado dos campos públicos — só o mapeamento
+ * campo a campo garante que ele nunca sai no payload.
+ */
+const CONTENT_VERSION_DETAIL_KEYS = [
+  'id',
+  'rawContentId',
+  'number',
+  'legislativeClosureDate',
+  'authorId',
+  'closedAt',
+  'approvedById',
+  'approvedAt',
+  'validApprovalForExport',
+].sort();
+
+/**
  * `content-versions.routes.ts` (COMP-029-006 / TASK-029-002) ponta-a-ponta
  * sobre a `app` real (`createApp()`) e o Postgres real — molde
  * `contrasts.routes.integration.test.ts:255`. A guarda composta e o
@@ -197,5 +217,52 @@ describe('POST /contents/:id/versions/:number/approve — camada HTTP', () => {
       where: { rawContentId, number },
     });
     expect(row.approvedById).toBeNull();
+  });
+});
+
+/**
+ * `GET /contents/:id/versions` (COMP-033-005) — prova de FORMA do payload
+ * HTTP (gate 8, lição "select exposto que lê campo interno prova as chaves do
+ * payload"): cobre entrada VIGENTE (não aprovada) e SUPERADA (aprovada no
+ * passado) — as 2 têm exatamente as mesmas 9 chaves, nunca `contentSnapshot`.
+ */
+describe('GET /contents/:id/versions — camada HTTP: forma exata do payload (gate 8)', () => {
+  it('cada entrada do histórico (vigente e superada) devolve exatamente as 9 chaves de ContentVersionDetail', async () => {
+    const editor = await createUser('EDITOR');
+    const admin = await createUser('ADMIN');
+    const editorAccess = await seedSession(editor.id);
+    const adminAccess = await seedSession(admin.id);
+    const topicId = await createTopic();
+    const rawContent = await createRawContent(editor.id, topicId);
+    await seedRuleBreakdown(rawContent.id);
+    await testPrisma.rawContent.update({
+      where: { id: rawContent.id },
+      data: { sourceType: 'LEI', sourceCitation: 'Lei 5.172/1966' },
+    });
+
+    const firstClose = await request(app)
+      .post(`/api/v1/contents/${rawContent.id}/versions`)
+      .set(...withCookie(editorAccess))
+      .send({ legislativeClosureDate: '2026-08-01' });
+
+    await request(app)
+      .post(`/api/v1/contents/${rawContent.id}/versions/${firstClose.body.number}/approve`)
+      .set(...withCookie(adminAccess))
+      .send({ legalCheckConfirmed: true, pedagogicalCheckConfirmed: true });
+
+    await request(app)
+      .post(`/api/v1/contents/${rawContent.id}/versions`)
+      .set(...withCookie(editorAccess))
+      .send({ legislativeClosureDate: '2026-09-01' });
+
+    const listed = await request(app)
+      .get(`/api/v1/contents/${rawContent.id}/versions`)
+      .set(...withCookie(editorAccess));
+
+    expect(listed.status).toBe(200);
+    expect(listed.body).toHaveLength(2);
+    for (const entry of listed.body) {
+      expect(Object.keys(entry).sort()).toEqual(CONTENT_VERSION_DETAIL_KEYS);
+    }
   });
 });

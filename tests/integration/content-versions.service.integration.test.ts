@@ -674,6 +674,64 @@ describe('AC-032-006 (FR-032-006): a aprovação nunca se propaga para a Versão
     expect(listedV2?.approvedById).toBeNull();
     expect(listedV2?.validApprovalForExport).toBe(false);
   });
+
+  it('vigente APROVADA e sem alteração, com 2 Versões superadas no histórico — 1 delas TAMBÉM aprovada no passado: só a vigente mantém validApprovalForExport: true (TASK-033-004, retry F1)', async () => {
+    const editor = await createUser('EDITOR');
+    const admin1 = await createUser('ADMIN');
+    const admin2 = await createUser('ADMIN');
+    const topicId = await createTopic();
+    const rawContent = await seedApprovableRawContent(editor.id, topicId);
+
+    const v1 = await closeContentVersion(
+      rawContent.id,
+      { legislativeClosureDate: '2026-07-01' },
+      actorOf(editor),
+      testPrisma,
+    );
+    const approvedV1 = await approveContentVersion(
+      rawContent.id,
+      v1.number,
+      APPROVE_INPUT,
+      actorOf(admin1),
+      testPrisma,
+    );
+
+    await closeContentVersion(
+      rawContent.id,
+      { legislativeClosureDate: '2026-08-01' },
+      actorOf(editor),
+      testPrisma,
+    );
+
+    const v3 = await closeContentVersion(
+      rawContent.id,
+      { legislativeClosureDate: '2026-09-01' },
+      actorOf(editor),
+      testPrisma,
+    );
+    const approvedV3 = await approveContentVersion(
+      rawContent.id,
+      v3.number,
+      APPROVE_INPUT,
+      actorOf(admin2),
+      testPrisma,
+    );
+
+    const listed = await listContentVersions(rawContent.id, actorOf(editor), testPrisma);
+
+    // Falsificável no array INTEIRO (mutante A: `validApprovalForExport:
+    // currentIsValidForExport` propagado para as 3 entradas — reprovaria com
+    // [true, true, true]; mutante B: `index === 0 ? currentIsValidForExport :
+    // false` — reprovaria com [true, false, false], já que v1, não v3, é o
+    // índice 0). Só a vigente (v3) chega a `true`, mesmo v1 tendo sido
+    // aprovada no passado (FR-032-006 — a aprovação nunca se propaga).
+    expect(listed.map((version) => version.validApprovalForExport)).toEqual([false, false, true]);
+    expect(listed.map((version) => version.approvedById)).toEqual([
+      approvedV1.approvedById,
+      null,
+      approvedV3.approvedById,
+    ]);
+  });
 });
 
 describe('AC-032-020 (FR-032-007): fato histórico de aprovação intacto, mas validApprovalForExport reflete a alteração posterior', () => {

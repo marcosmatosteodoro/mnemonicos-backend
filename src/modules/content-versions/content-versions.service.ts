@@ -247,9 +247,9 @@ export async function listContentVersions(
     select: { ...CONTENT_VERSION_DETAIL_SELECT, contentSnapshot: true },
   });
 
-  const current = versions.at(-1);
+  const vigente = versions.at(-1);
   let currentIsValidForExport = false;
-  if (current !== undefined && current.approvedById !== null) {
+  if (vigente !== undefined && vigente.approvedById !== null) {
     const rawContent = await db.rawContent.findUniqueOrThrow({
       where: { id: rawContentId },
       select: RAW_CONTENT_VERSIONED_SELECT,
@@ -259,7 +259,7 @@ export async function listContentVersions(
       select: RULE_BREAKDOWN_VERSIONED_SELECT,
     });
     const currentFields = toVersionedContentFields(rawContent, ruleBreakdown);
-    const altered = await resolveAlterationSignal(rawContentId, currentFields, current, db);
+    const altered = await resolveAlterationSignal(rawContentId, currentFields, vigente, db);
     currentIsValidForExport = !altered;
   }
 
