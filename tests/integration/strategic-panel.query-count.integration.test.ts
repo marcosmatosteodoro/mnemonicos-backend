@@ -42,30 +42,45 @@ function actorOf(user: { id: string; role: 'EDITOR' | 'ADMIN' }): ContentActor {
   return { id: user.id, role: user.role };
 }
 
+const SEED_BATCH_SIZE = 10;
+
+/** Fatia `items` em lotes de até `size`, preservando ordem — usado para semear em série
+ * por lote (cada lote em `Promise.all`) em vez de um `Promise.all` único sobre todo o
+ * volume, que esgota o pool de transações interativas do Prisma em volumes grandes. */
+function toBatches<T>(items: readonly T[], size: number): T[][] {
+  const batches: T[][] = [];
+  for (let i = 0; i < items.length; i += size) {
+    batches.push(items.slice(i, i + size));
+  }
+  return batches;
+}
+
 async function seedApprovedUnalteredPanelVolume(
   count: number,
   editor: { id: string },
   admin: { id: string },
   topicId: string,
 ): Promise<void> {
-  await Promise.all(
-    Array.from({ length: count }, async () => {
-      const rawContent = await seedApprovableRawContent(editor.id, topicId);
-      const closed = await closeContentVersion(
-        rawContent.id,
-        { legislativeClosureDate: '2026-09-01' },
-        actorOf({ id: editor.id, role: 'EDITOR' }),
-        testPrisma,
-      );
-      await approveContentVersion(
-        rawContent.id,
-        closed.number,
-        APPROVE_INPUT,
-        actorOf({ id: admin.id, role: 'ADMIN' }),
-        testPrisma,
-      );
-    }),
-  );
+  for (const batch of toBatches(Array.from({ length: count }), SEED_BATCH_SIZE)) {
+    await Promise.all(
+      batch.map(async () => {
+        const rawContent = await seedApprovableRawContent(editor.id, topicId);
+        const closed = await closeContentVersion(
+          rawContent.id,
+          { legislativeClosureDate: '2026-09-01' },
+          actorOf({ id: editor.id, role: 'EDITOR' }),
+          testPrisma,
+        );
+        await approveContentVersion(
+          rawContent.id,
+          closed.number,
+          APPROVE_INPUT,
+          actorOf({ id: admin.id, role: 'ADMIN' }),
+          testPrisma,
+        );
+      }),
+    );
+  }
 }
 
 /** Nenhuma Versão fechada/aprovada — Conteúdo ativo puro, para o volume 0% aprovado. */
