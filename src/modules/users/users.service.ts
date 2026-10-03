@@ -1,6 +1,7 @@
 import type { Paginated, SessionUser } from '../../domain/types';
 import { Prisma } from '../../generated/prisma/client';
 import { ConflictError, NotFoundError } from '../../http/errors';
+import { recordUserAuditEvent } from '../../lib/audit';
 import { hashPassword } from '../../lib/password';
 import { prisma } from '../../lib/prisma';
 import { revokeAllSessionsOp } from '../auth/session-revocation';
@@ -166,6 +167,29 @@ export async function disableUser(id: string): Promise<void> {
     }
     throw error;
   }
+}
+
+/**
+ * Reativa uma conta desativada (FR-050-003/004/006/014): limpa o mesmo campo
+ * (`disabledAt`) que `disableUser` marca — a guarda de login já checa só esse
+ * campo (A-050-007), então nenhuma outra mudança é necessária para a pessoa
+ * voltar a autenticar. Idempotente: conta já ativa → retorna sem gravar e
+ * **sem** emitir evento de auditoria (espelha o guard "já desativada" de
+ * `disableUser:144`, direção oposta). Sem transação `Serializable`: não há
+ * guarda de "último ADMIN" nesta direção (TRISK-051-004/RISK-050-007, risco
+ * aceito).
+ */
+export async function enableUser(id: string, actorId: string): Promise<void> {
+  const now = new Date();
+
+  const target = await prisma.user.findUnique({ where: { id }, select: { disabledAt: true } });
+  if (target === null) throw new NotFoundError('Conta não encontrada.');
+
+  // Já ativa → nada a fazer; nenhum evento novo de reativação (AC-050-002).
+  if (target.disabledAt === null) return;
+
+  await prisma.user.update({ where: { id }, data: { disabledAt: null } });
+  recordUserAuditEvent({ type: 'user.reactivated', at: now, actorId, targetId: id });
 }
 
 /**
