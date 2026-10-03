@@ -175,7 +175,7 @@ export async function disableUser(id: string): Promise<void> {
  * campo (A-050-007), então nenhuma outra mudança é necessária para a pessoa
  * voltar a autenticar. Idempotente: conta já ativa → retorna sem gravar e
  * **sem** emitir evento de auditoria (espelha o guard "já desativada" de
- * `disableUser:144`, direção oposta). Sem transação `Serializable`: não há
+ * `disableUser`, direção oposta). Sem transação `Serializable`: não há
  * guarda de "último ADMIN" nesta direção (TRISK-051-004/RISK-050-007, risco
  * aceito).
  */
