@@ -7,13 +7,16 @@ import {
   createInternalUser,
   disableUser,
   enableUser,
+  getInternalUser,
   listInternalUsers,
   resetUserPassword,
+  updateInternalUser,
 } from './users.service';
 import {
   createUserSchema,
   listUsersQuerySchema,
   resetPasswordSchema,
+  updateUserSchema,
   userIdParamSchema,
 } from './users.schema';
 
@@ -31,8 +34,9 @@ import {
  * O `path` de cada `requireRole` é o caminho completo visto por `requireAuth` a
  * partir da raiz de `apiRoutes` (a árvore é montada plana em TASK-003-011).
  *
- * As **4 mutações de estado** (`POST /users`, `PATCH /users/:id/disable`,
- * `PATCH /users/:id/enable`, `POST /users/:id/reset-password`) passam por
+ * As **5 mutações de estado** (`POST /users`, `PATCH /users/:id`,
+ * `PATCH /users/:id/disable`, `PATCH /users/:id/enable`,
+ * `POST /users/:id/reset-password`) passam por
  * `verifyOrigin` (COMP-003-010) antes do handler: Route Handlers não herdam
  * proteção CSRF e o cookie de sessão é `sameSite: 'lax'`, então um POST/PATCH
  * cross-site forjado ainda leva o cookie — `Origin`/`Referer` fora de
@@ -57,6 +61,28 @@ usersRoutes.post(
   async (req, res) => {
     const input = createUserSchema.parse(req.body);
     res.status(201).json(await createInternalUser(input));
+  },
+);
+
+/** GET /users/:id — uma conta para a página de edição (KAN-220). */
+usersRoutes.get('/users/:id', requireRole('GET', '/users/:id', 'ADMIN'), async (req, res) => {
+  const { id } = userIdParamSchema.parse(req.params);
+  res.json(await getInternalUser(id));
+});
+
+/**
+ * PATCH /users/:id — edita nome, e-mail e papel (KAN-220). `req.auth` é checado
+ * como defesa em profundidade, igual às demais rotas com ator.
+ */
+usersRoutes.patch(
+  '/users/:id',
+  verifyOrigin,
+  requireRole('PATCH', '/users/:id', 'ADMIN'),
+  async (req, res) => {
+    if (req.auth === undefined) throw new UnauthorizedError();
+    const { id } = userIdParamSchema.parse(req.params);
+    const input = updateUserSchema.parse(req.body);
+    res.json(await updateInternalUser(id, input, req.auth.userId));
   },
 );
 

@@ -347,13 +347,15 @@ describe('POST /users — AC-002-017: e-mail duplicado → 409, conta existente 
 });
 
 describe('AC-002-018: nenhuma capacidade de auto-registro', () => {
-  it('as 5 rotas montadas são exatamente as de gestão — nenhuma rota de registro público', () => {
+  it('as 7 rotas montadas são exatamente as de gestão — nenhuma rota de registro público', () => {
     const keys = routesOf(usersRoutes)
       .map((r) => r.key)
       .sort();
     expect(keys).toEqual(
       [
         'GET /users',
+        'GET /users/:id',
+        'PATCH /users/:id',
         'PATCH /users/:id/disable',
         'PATCH /users/:id/enable',
         'POST /users',
@@ -365,7 +367,9 @@ describe('AC-002-018: nenhuma capacidade de auto-registro', () => {
   it('cada par método+caminho de gestão está em ROUTE_ROLES com exatamente {ADMIN}', () => {
     for (const [method, path] of [
       ['GET', '/users'],
+      ['GET', '/users/:id'],
       ['POST', '/users'],
+      ['PATCH', '/users/:id'],
       ['PATCH', '/users/:id/disable'],
       ['PATCH', '/users/:id/enable'],
       ['POST', '/users/:id/reset-password'],
@@ -377,7 +381,7 @@ describe('AC-002-018: nenhuma capacidade de auto-registro', () => {
   it('todo handler de rota é precedido por um guard requireRole que nega sem req.auth', () => {
     for (const route of routesOf(usersRoutes)) {
       // GET /users: [requireRole, handler]; as 4 mutações: [verifyOrigin, requireRole, handler] (S2).
-      const expectedDepth = route.key === 'GET /users' ? 2 : 3;
+      const expectedDepth = route.key.startsWith('GET ') ? 2 : 3;
       expect(route.handlerCount).toBe(expectedDepth);
 
       const next = jest.fn() as unknown as NextFunction;
@@ -1068,6 +1072,256 @@ describe('PATCH /users/:id/enable — reativação idempotente com log (TASK-051
     expect(res.body).toMatchObject({
       error: { code: 'NOT_FOUND', message: 'Conta não encontrada.' },
     });
+  });
+});
+
+describe('KAN-220 — GET/PATCH /users/:id: edição de nome, e-mail e papel', () => {
+  const EVIL_ORIGIN = 'https://evil.example';
+  const ALLOWED_ORIGIN = 'http://localhost:3000';
+
+  it('GET /users/:id: ADMIN lê a conta sem material de senha; id inexistente → 404; EDITOR → 403', async () => {
+    const { access } = await seedAdmin();
+    const target = await createUser({ email: 'k220-get@example.com', role: 'EDITOR' });
+    const editor = await seedSession((await createUser({ role: 'EDITOR' })).id);
+
+    const ok = await request(buildApp())
+      .get(`/users/${target.id}`)
+      .set('Cookie', `${ACCESS_COOKIE}=${access}`);
+    expect(ok.status).toBe(200);
+    expect(ok.body).toEqual({
+      id: target.id,
+      email: 'k220-get@example.com',
+      name: target.name,
+      role: 'EDITOR',
+      status: 'active',
+    });
+
+    const missing = await request(buildApp())
+      .get(`/users/${randomUUID()}`)
+      .set('Cookie', `${ACCESS_COOKIE}=${access}`);
+    expect(missing.status).toBe(404);
+
+    const asEditor = await request(buildApp())
+      .get(`/users/${target.id}`)
+      .set('Cookie', `${ACCESS_COOKIE}=${editor.access}`);
+    expect(asEditor.status).toBe(403);
+  });
+
+  it('PATCH /users/:id: ADMIN edita nome, e-mail e papel; a resposta e o banco refletem a mudança', async () => {
+    const { access } = await seedAdmin();
+    const target = await createUser({
+      email: 'k220-edit@example.com',
+      name: 'Antes',
+      role: 'EDITOR',
+    });
+
+    const res = await request(buildApp())
+      .patch(`/users/${target.id}`)
+      .set('Cookie', `${ACCESS_COOKIE}=${access}`)
+      .send({ name: '  Depois  ', email: ' Novo@Example.com ', role: 'ADMIN' });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      id: target.id,
+      name: 'Depois',
+      email: 'novo@example.com',
+      role: 'ADMIN',
+      status: 'active',
+    });
+    const after = await testPrisma.user.findUniqueOrThrow({ where: { id: target.id } });
+    expect(after).toMatchObject({ name: 'Depois', email: 'novo@example.com', role: 'ADMIN' });
+  });
+
+  it('PATCH /users/:id: o log registra só os NOMES dos campos alterados, nunca os valores; edição sem mudança não gera evento', async () => {
+    const { access } = await seedAdmin();
+    const target = await createUser({
+      email: 'k220-log@example.com',
+      name: 'Log Antes',
+      role: 'EDITOR',
+    });
+    const captured = captureAllLog();
+
+    await request(buildApp())
+      .patch(`/users/${target.id}`)
+      .set('Cookie', `${ACCESS_COOKIE}=${access}`)
+      .send({ name: 'Log Depois', email: 'k220-log@example.com', role: 'EDITOR' });
+
+    const updatedEvents = captured.info.mock.calls.filter(
+      (call) => (call[0] as { audit?: { type?: string } }).audit?.type === 'user.updated',
+    );
+    expect(updatedEvents).toHaveLength(1);
+    expect((updatedEvents[0]?.[0] as { audit: unknown } | undefined)?.audit).toMatchObject({
+      targetId: target.id,
+      fields: ['name'],
+    });
+    const dump = JSON.stringify(captured.info.mock.calls);
+    expect(dump).not.toContain('Log Depois');
+    expect(dump).not.toContain('Log Antes');
+
+    captured.info.mockClear();
+    const noop = await request(buildApp())
+      .patch(`/users/${target.id}`)
+      .set('Cookie', `${ACCESS_COOKIE}=${access}`)
+      .send({ name: 'Log Depois', email: 'k220-log@example.com', role: 'EDITOR' });
+    expect(noop.status).toBe(200);
+    const noopEvents = captured.info.mock.calls.filter(
+      (call) => (call[0] as { audit?: { type?: string } }).audit?.type === 'user.updated',
+    );
+    expect(noopEvents).toHaveLength(0);
+
+    captured.info.mockRestore();
+    captured.warn.mockRestore();
+    captured.error.mockRestore();
+  });
+
+  it('PATCH /users/:id: e-mail já usado por outra conta → 409 com a mensagem da criação, e a conta não muda', async () => {
+    const { access } = await seedAdmin();
+    await createUser({ email: 'k220-ocupado@example.com' });
+    const target = await createUser({ email: 'k220-livre@example.com', name: 'Dono Original' });
+
+    const res = await request(buildApp())
+      .patch(`/users/${target.id}`)
+      .set('Cookie', `${ACCESS_COOKIE}=${access}`)
+      .send({ name: 'Dono Original', email: 'k220-ocupado@example.com', role: 'EDITOR' });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error.message).toBe('Já existe uma conta com este e-mail.');
+    const after = await testPrisma.user.findUniqueOrThrow({ where: { id: target.id } });
+    expect(after.email).toBe('k220-livre@example.com');
+  });
+
+  it('PATCH /users/:id: rebaixar o último ADMIN ativo → 409 e nada muda; com dois ADMINs ativos o rebaixamento passa', async () => {
+    const { user: onlyAdmin, access } = await seedAdmin();
+
+    const refused = await request(buildApp())
+      .patch(`/users/${onlyAdmin.id}`)
+      .set('Cookie', `${ACCESS_COOKIE}=${access}`)
+      .send({ name: onlyAdmin.name, email: onlyAdmin.email, role: 'EDITOR' });
+    expect(refused.status).toBe(409);
+    expect(refused.body.error.message).toBe('Não é possível rebaixar o último ADMIN ativo.');
+    expect((await testPrisma.user.findUniqueOrThrow({ where: { id: onlyAdmin.id } })).role).toBe(
+      'ADMIN',
+    );
+
+    await createUser({ role: 'ADMIN' });
+    const allowed = await request(buildApp())
+      .patch(`/users/${onlyAdmin.id}`)
+      .set('Cookie', `${ACCESS_COOKIE}=${access}`)
+      .send({ name: onlyAdmin.name, email: onlyAdmin.email, role: 'EDITOR' });
+    expect(allowed.status).toBe(200);
+    expect(allowed.body.role).toBe('EDITOR');
+  });
+
+  it('PATCH /users/:id: rebaixar um ADMIN já desativado não conta como perda do último ADMIN ativo', async () => {
+    const { access } = await seedAdmin();
+    const disabledAdmin = await createUser({
+      role: 'ADMIN',
+      disabledAt: new Date(),
+      email: 'k220-admin-desativado@example.com',
+    });
+
+    const res = await request(buildApp())
+      .patch(`/users/${disabledAdmin.id}`)
+      .set('Cookie', `${ACCESS_COOKIE}=${access}`)
+      .send({ name: disabledAdmin.name, email: disabledAdmin.email, role: 'EDITOR' });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ role: 'EDITOR', status: 'disabled' });
+  });
+
+  it('PATCH /users/:id: trocar o papel revoga as sessões vivas da conta; trocar só o nome as preserva', async () => {
+    const { access } = await seedAdmin();
+    const target = await createUser({ email: 'k220-sessao@example.com', role: 'EDITOR' });
+    const session = await seedSession(target.id);
+
+    await request(buildApp())
+      .patch(`/users/${target.id}`)
+      .set('Cookie', `${ACCESS_COOKIE}=${access}`)
+      .send({ name: 'Só Nome', email: target.email, role: 'EDITOR' });
+    expect(
+      (await testPrisma.session.findUniqueOrThrow({ where: { id: session.row.id } })).revokedAt,
+    ).toBeNull();
+
+    await request(buildApp())
+      .patch(`/users/${target.id}`)
+      .set('Cookie', `${ACCESS_COOKIE}=${access}`)
+      .send({ name: 'Só Nome', email: target.email, role: 'ADMIN' });
+    expect(
+      (await testPrisma.session.findUniqueOrThrow({ where: { id: session.row.id } })).revokedAt,
+    ).not.toBeNull();
+  });
+
+  it('PATCH /users/:id: conta desativada pode ser editada e continua desativada', async () => {
+    const { access } = await seedAdmin();
+    const target = await createUser({
+      email: 'k220-inativa@example.com',
+      role: 'EDITOR',
+      disabledAt: new Date(),
+    });
+
+    const res = await request(buildApp())
+      .patch(`/users/${target.id}`)
+      .set('Cookie', `${ACCESS_COOKIE}=${access}`)
+      .send({ name: 'Inativa Editada', email: target.email, role: 'EDITOR' });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ name: 'Inativa Editada', status: 'disabled' });
+    expect(
+      (await testPrisma.user.findUniqueOrThrow({ where: { id: target.id } })).disabledAt,
+    ).not.toBeNull();
+  });
+
+  it('PATCH /users/:id: payload inválido (e-mail, papel STUDENT, nome vazio) → 422 sem efeito', async () => {
+    const { access } = await seedAdmin();
+    const target = await createUser({ email: 'k220-invalido@example.com', name: 'Intacto' });
+
+    for (const body of [
+      { name: 'X', email: 'nao-e-email', role: 'EDITOR' },
+      { name: 'X', email: target.email, role: 'STUDENT' },
+      { name: '   ', email: target.email, role: 'EDITOR' },
+    ]) {
+      const res = await request(buildApp())
+        .patch(`/users/${target.id}`)
+        .set('Cookie', `${ACCESS_COOKIE}=${access}`)
+        .send(body);
+      expect(res.status).toBe(422);
+    }
+    const after = await testPrisma.user.findUniqueOrThrow({ where: { id: target.id } });
+    expect(after.name).toBe('Intacto');
+    expect(after.role).toBe('EDITOR');
+  });
+
+  it('PATCH /users/:id: sem sessão → 401; EDITOR → 403; Origin proibido → 403 sem efeito; Origin permitido → 200', async () => {
+    const { access } = await seedAdmin();
+    const target = await createUser({ email: 'k220-autz@example.com', name: 'Autz' });
+    const editor = await seedSession((await createUser({ role: 'EDITOR' })).id);
+    const body = { name: 'Autz Nova', email: target.email, role: 'EDITOR' };
+
+    const anon = await request(buildApp()).patch(`/users/${target.id}`).send(body);
+    expect(anon.status).toBe(401);
+
+    const asEditor = await request(buildApp())
+      .patch(`/users/${target.id}`)
+      .set('Cookie', `${ACCESS_COOKIE}=${editor.access}`)
+      .send(body);
+    expect(asEditor.status).toBe(403);
+
+    const blocked = await request(buildApp())
+      .patch(`/users/${target.id}`)
+      .set('Cookie', `${ACCESS_COOKIE}=${access}`)
+      .set('Origin', EVIL_ORIGIN)
+      .send(body);
+    expect(blocked.status).toBe(403);
+    expect((await testPrisma.user.findUniqueOrThrow({ where: { id: target.id } })).name).toBe(
+      'Autz',
+    );
+
+    const ok = await request(buildApp())
+      .patch(`/users/${target.id}`)
+      .set('Cookie', `${ACCESS_COOKIE}=${access}`)
+      .set('Origin', ALLOWED_ORIGIN)
+      .send(body);
+    expect(ok.status).toBe(200);
   });
 });
 

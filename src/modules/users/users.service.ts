@@ -5,13 +5,13 @@ import { recordUserAuditEvent } from '../../lib/audit';
 import { hashPassword } from '../../lib/password';
 import { prisma } from '../../lib/prisma';
 import { revokeAllSessionsOp } from '../auth/session-revocation';
-import type { CreateUserInput, ListUsersQuery } from './users.schema';
+import type { CreateUserInput, ListUsersQuery, UpdateUserInput } from './users.schema';
 
 /**
  * Regra + Prisma da gestão de contas internas (COMP-003-014). Toda resposta é
  * montada campo a campo por `select` explícito — nunca a entidade Prisma crua, e
- * **nunca** `passwordHash` nem a relação `sessions` (NFR-002-004). O papel é
- * fixado na criação; alterar papel e reativar conta estão fora de F1 (§4.2).
+ * **nunca** `passwordHash` nem a relação `sessions` (NFR-002-004). A edição de
+ * nome/e-mail/papel (KAN-220) é `updateInternalUser`; a reativação, `enableUser`.
  */
 
 /** Situação de uma conta na listagem — derivada de `disabledAt` (null = ativa). */
@@ -190,6 +190,121 @@ export async function enableUser(id: string, actorId: string): Promise<void> {
 
   await prisma.user.update({ where: { id }, data: { disabledAt: null } });
   recordUserAuditEvent({ type: 'user.reactivated', at: now, actorId, targetId: id });
+}
+
+/** Conta lida por id para a página de edição — mesma forma da listagem, sem senha. */
+export type UserDetail = UserListItem;
+
+const userDetailSelect = {
+  id: true,
+  email: true,
+  name: true,
+  role: true,
+  disabledAt: true,
+} as const;
+
+function toUserDetail(row: {
+  id: string;
+  email: string;
+  name: string;
+  role: SessionUser['role'];
+  disabledAt: Date | null;
+}): UserDetail {
+  return {
+    id: row.id,
+    email: row.email,
+    name: row.name,
+    role: row.role,
+    status: row.disabledAt === null ? 'active' : 'disabled',
+  };
+}
+
+/** Lê uma conta por id (KAN-220). Id inexistente → `NotFoundError`. */
+export async function getInternalUser(id: string): Promise<UserDetail> {
+  const row = await prisma.user.findUnique({ where: { id }, select: userDetailSelect });
+  if (row === null) throw new NotFoundError('Conta não encontrada.');
+  return toUserDetail(row);
+}
+
+/**
+ * Edita nome, e-mail e papel de uma conta (KAN-220). Regras:
+ *
+ * - e-mail já em uso (P2002) → `ConflictError` com a mesma mensagem da criação;
+ * - não rebaixa o último ADMIN **ativo** — mesma contagem da desativação, na mesma
+ *   transação `Serializable` (corrida perdida vira conflito, nunca 500);
+ * - se o papel mudou, revoga as sessões vivas da conta na mesma transação, para o
+ *   novo papel valer já na próxima requisição;
+ * - conta desativada também pode ser editada (reativar continua sendo outra ação).
+ *
+ * O evento de auditoria sai só depois do commit e só com os **nomes** dos campos
+ * que de fato mudaram; edição sem mudança não gera evento.
+ */
+export async function updateInternalUser(
+  id: string,
+  input: UpdateUserInput,
+  actorId: string,
+): Promise<UserDetail> {
+  const now = new Date();
+
+  let updated: UserDetail;
+  let changedFields: string[];
+  try {
+    ({ updated, changedFields } = await prisma.$transaction(
+      async (tx) => {
+        const target = await tx.user.findUnique({
+          where: { id },
+          select: { name: true, email: true, role: true, disabledAt: true },
+        });
+        if (target === null) throw new NotFoundError('Conta não encontrada.');
+
+        const roleChanged = target.role !== input.role;
+        if (roleChanged && target.role === 'ADMIN' && target.disabledAt === null) {
+          const activeAdmins = await tx.user.count({
+            where: { role: 'ADMIN', disabledAt: null },
+          });
+          if (activeAdmins <= 1) {
+            throw new ConflictError('Não é possível rebaixar o último ADMIN ativo.');
+          }
+        }
+
+        const fields: string[] = [];
+        if (target.name !== input.name) fields.push('name');
+        if (target.email !== input.email) fields.push('email');
+        if (roleChanged) fields.push('role');
+
+        const row = await tx.user.update({
+          where: { id },
+          data: { name: input.name, email: input.email, role: input.role },
+          select: userDetailSelect,
+        });
+
+        if (roleChanged) await revokeAllSessionsOp(id, now, { client: tx });
+
+        return { updated: toUserDetail(row), changedFields: fields };
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+    ));
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+      throw new ConflictError('Já existe uma conta com este e-mail.');
+    }
+    if (isTransactionWriteConflict(error)) {
+      throw new ConflictError('Não foi possível salvar a conta agora. Tente novamente.');
+    }
+    throw error;
+  }
+
+  if (changedFields.length > 0) {
+    recordUserAuditEvent({
+      type: 'user.updated',
+      at: now,
+      actorId,
+      targetId: id,
+      fields: changedFields,
+    });
+  }
+
+  return updated;
 }
 
 /**

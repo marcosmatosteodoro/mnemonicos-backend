@@ -35,6 +35,21 @@ export const createUserSchema = z.object({
 export type CreateUserInput = z.infer<typeof createUserSchema>;
 
 /**
+ * Edição de conta por ADMIN (KAN-220). Mesma regra de nome/e-mail/papel da criação:
+ * e-mail normalizado antes de validar, papel só `EDITOR` ou `ADMIN`. Senha não entra
+ * aqui — ela tem rota própria (`reset-password`).
+ */
+export const updateUserSchema = z.object({
+  name: z.string().trim().min(1, 'Informe o nome.'),
+  email: z.string().trim().toLowerCase().pipe(z.email('Informe um e-mail válido.')),
+  role: z.enum(['EDITOR', 'ADMIN'], {
+    error: 'O papel deve ser EDITOR ou ADMIN.',
+  }),
+});
+
+export type UpdateUserInput = z.infer<typeof updateUserSchema>;
+
+/**
  * Reset de senha de uma conta por ADMIN (FR-002-020 / FR-002-022). Mesma política
  * de 12 caracteres e o mesmo teto de 200 da criação — a recusa de senha curta
  * vale na criação **e** no reset.

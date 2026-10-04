@@ -37,7 +37,7 @@ export function recordAuthEvent(event: AuthAuditEvent): void {
 }
 
 /** Tipo do evento de auditoria de ação sobre uma conta de usuário (DEC-051-011). */
-export type UserAuditType = 'user.reactivated';
+export type UserAuditType = 'user.reactivated' | 'user.updated';
 
 /**
  * Evento de auditoria de uma ação de ADMIN sobre uma conta (NFR-050-001).
@@ -45,12 +45,14 @@ export type UserAuditType = 'user.reactivated';
  * `subject` ali é quem se autenticou/tentou autenticar; aqui `actorId` e
  * `targetId` distinguem quem agiu de sobre quem agiu. Mesmo objeto plano de 1
  * nível (restrição do `redact` do pino). Nunca carrega senha nem token.
+ * `fields` são só os **nomes** dos campos alterados (KAN-220), nunca os valores.
  */
 export interface UserAuditEvent {
   type: UserAuditType;
   at: Date;
   actorId: string;
   targetId: string;
+  fields?: string[];
 }
 
 /** Emite o evento de auditoria de ação de usuário pela mesma trilha estruturada. */
