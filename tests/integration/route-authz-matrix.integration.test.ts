@@ -151,7 +151,7 @@ afterAll(async () => {
 });
 
 describe('fonte de medição da métrica §1.3 — censo das rotas montadas', () => {
-  it('a árvore montada é exatamente estes 48 pares método+caminho (tripwire: rota nova sem atualizar a suíte falha aqui — TASK-035-006 somou GET /strategic-panel, 47→48)', () => {
+  it('a árvore montada é exatamente estes 49 pares método+caminho (tripwire: rota nova sem atualizar a suíte falha aqui — TASK-035-006 somou GET /strategic-panel, 47→48; TASK-051-001/KAN-219 somou PATCH /users/:id/enable, 48→49)', () => {
     expect(ROUTES.map(key).sort()).toEqual(
       [
         'GET /health',
@@ -164,6 +164,7 @@ describe('fonte de medição da métrica §1.3 — censo das rotas montadas', ()
         'GET /users',
         'POST /users',
         'PATCH /users/:id/disable',
+        'PATCH /users/:id/enable',
         'POST /users/:id/reset-password',
         'GET /disciplines',
         'GET /contents',

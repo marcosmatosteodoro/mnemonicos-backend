@@ -1,10 +1,12 @@
 import { Router } from 'express';
 
+import { UnauthorizedError } from '../../http/errors';
 import { requireRole } from '../../http/middlewares/authorize';
 import { verifyOrigin } from '../auth/auth.routes';
 import {
   createInternalUser,
   disableUser,
+  enableUser,
   listInternalUsers,
   resetUserPassword,
 } from './users.service';
@@ -29,11 +31,12 @@ import {
  * O `path` de cada `requireRole` é o caminho completo visto por `requireAuth` a
  * partir da raiz de `apiRoutes` (a árvore é montada plana em TASK-003-011).
  *
- * As **3 mutações de estado** (`POST /users`, `PATCH /users/:id/disable`,
- * `POST /users/:id/reset-password`) passam por `verifyOrigin` (COMP-003-010)
- * antes do handler: Route Handlers não herdam proteção CSRF e o cookie de sessão
- * é `sameSite: 'lax'`, então um POST/PATCH cross-site forjado ainda leva o
- * cookie — `Origin`/`Referer` fora de `CORS_ORIGINS` → 403 sem efeito (S2).
+ * As **4 mutações de estado** (`POST /users`, `PATCH /users/:id/disable`,
+ * `PATCH /users/:id/enable`, `POST /users/:id/reset-password`) passam por
+ * `verifyOrigin` (COMP-003-010) antes do handler: Route Handlers não herdam
+ * proteção CSRF e o cookie de sessão é `sameSite: 'lax'`, então um POST/PATCH
+ * cross-site forjado ainda leva o cookie — `Origin`/`Referer` fora de
+ * `CORS_ORIGINS` → 403 sem efeito (S2).
  *
  * Sem rota de auto-registro na superfície montada (FR-002-016 / AC-002-018). Sem
  * `try/catch`: o Express 5 encaminha a rejeição ao `errorHandler`.
@@ -66,6 +69,24 @@ usersRoutes.patch(
     const { id } = userIdParamSchema.parse(req.params);
     await disableUser(id);
     res.status(200).json({ id, status: 'disabled' as const });
+  },
+);
+
+/**
+ * PATCH /users/:id/enable — reativa (idempotente) + registra o evento de
+ * auditoria. `req.auth` sempre existe aqui (a rota roda depois de `requireRole`,
+ * que já recusou sessão ausente) — a checagem é defesa em profundidade, mesmo
+ * padrão de `contents.routes.ts`/`auth.routes.ts`.
+ */
+usersRoutes.patch(
+  '/users/:id/enable',
+  verifyOrigin,
+  requireRole('PATCH', '/users/:id/enable', 'ADMIN'),
+  async (req, res) => {
+    if (req.auth === undefined) throw new UnauthorizedError();
+    const { id } = userIdParamSchema.parse(req.params);
+    await enableUser(id, req.auth.userId);
+    res.status(200).json({ id, status: 'active' as const });
   },
 );
 

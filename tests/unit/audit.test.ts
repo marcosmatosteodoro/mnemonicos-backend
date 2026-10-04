@@ -1,4 +1,10 @@
-import { type AuthAuditEvent, type AuthAuditType, recordAuthEvent } from '../../src/lib/audit';
+import {
+  type AuthAuditEvent,
+  type AuthAuditType,
+  recordAuthEvent,
+  recordUserAuditEvent,
+  type UserAuditEvent,
+} from '../../src/lib/audit';
 import { logger } from '../../src/lib/logger';
 
 const ALL_TYPES: AuthAuditType[] = [
@@ -84,6 +90,44 @@ describe('recordAuthEvent', () => {
     const second = info.mock.calls[1]?.[0] as { audit: Record<string, unknown> };
     expect('userAgent' in first.audit).toBe(false);
     expect(second.audit.userAgent).toBe('curl/8.0');
+
+    info.mockRestore();
+  });
+});
+
+describe('recordUserAuditEvent', () => {
+  function baseUserEvent(): UserAuditEvent {
+    return {
+      type: 'user.reactivated',
+      at: new Date('2026-10-03T12:00:00.000Z'),
+      actorId: 'admin-id-1',
+      targetId: 'target-id-1',
+    };
+  }
+
+  it('user.reactivated: emite por logger.info sob a chave `audit`, com at/actorId/targetId/type exatos e nenhuma chave sensível', () => {
+    const info = jest.spyOn(logger, 'info').mockImplementation(() => undefined);
+    const event = baseUserEvent();
+
+    recordUserAuditEvent(event);
+
+    expect(info).toHaveBeenCalledTimes(1);
+    expect(info.mock.calls[0]?.[0]).toEqual({ audit: event });
+
+    const payload = info.mock.calls[0]?.[0] as { audit: Record<string, unknown> } | undefined;
+    if (payload === undefined) throw new Error('esperava um registro de auditoria');
+    expect(payload.audit).toMatchObject({
+      type: 'user.reactivated',
+      at: event.at,
+      actorId: 'admin-id-1',
+      targetId: 'target-id-1',
+    });
+
+    const keys = Object.keys(payload.audit);
+    expect(keys.sort()).toEqual(['actorId', 'at', 'targetId', 'type'].sort());
+    for (const forbidden of SENSITIVE_KEYS) {
+      expect(keys).not.toContain(forbidden);
+    }
 
     info.mockRestore();
   });

@@ -35,3 +35,25 @@ export interface AuthAuditEvent {
 export function recordAuthEvent(event: AuthAuditEvent): void {
   logger.info({ audit: event }, `auth:${event.type}`);
 }
+
+/** Tipo do evento de auditoria de ação sobre uma conta de usuário (DEC-051-011). */
+export type UserAuditType = 'user.reactivated';
+
+/**
+ * Evento de auditoria de uma ação de ADMIN sobre uma conta (NFR-050-001).
+ * Paralelo a `AuthAuditEvent` (DEC-051-011) — não generaliza `AuthAuditType`:
+ * `subject` ali é quem se autenticou/tentou autenticar; aqui `actorId` e
+ * `targetId` distinguem quem agiu de sobre quem agiu. Mesmo objeto plano de 1
+ * nível (restrição do `redact` do pino). Nunca carrega senha nem token.
+ */
+export interface UserAuditEvent {
+  type: UserAuditType;
+  at: Date;
+  actorId: string;
+  targetId: string;
+}
+
+/** Emite o evento de auditoria de ação de usuário pela mesma trilha estruturada. */
+export function recordUserAuditEvent(event: UserAuditEvent): void {
+  logger.info({ audit: event }, `user:${event.type}`);
+}

@@ -26,6 +26,7 @@ import { createUserSchema } from '../../src/modules/users/users.schema';
 import {
   createInternalUser,
   disableUser,
+  enableUser,
   listInternalUsers,
   resetUserPassword,
 } from '../../src/modules/users/users.service';
@@ -128,8 +129,8 @@ interface RouteInfo {
   key: string;
   handlerCount: number;
   firstHandler: RouteHandler;
-  /** O guard imediatamente antes do handler final — `requireRole` nas 4 rotas
-   *  (as 3 mutações têm `verifyOrigin` à frente dele, S2). */
+  /** O guard imediatamente antes do handler final — `requireRole` nas 5 rotas
+   *  (as 4 mutações têm `verifyOrigin` à frente dele, S2). */
   guardBeforeHandler: RouteHandler;
 }
 
@@ -346,7 +347,7 @@ describe('POST /users — AC-002-017: e-mail duplicado → 409, conta existente 
 });
 
 describe('AC-002-018: nenhuma capacidade de auto-registro', () => {
-  it('as 4 rotas montadas são exatamente as de gestão — nenhuma rota de registro público', () => {
+  it('as 5 rotas montadas são exatamente as de gestão — nenhuma rota de registro público', () => {
     const keys = routesOf(usersRoutes)
       .map((r) => r.key)
       .sort();
@@ -354,6 +355,7 @@ describe('AC-002-018: nenhuma capacidade de auto-registro', () => {
       [
         'GET /users',
         'PATCH /users/:id/disable',
+        'PATCH /users/:id/enable',
         'POST /users',
         'POST /users/:id/reset-password',
       ].sort(),
@@ -365,6 +367,7 @@ describe('AC-002-018: nenhuma capacidade de auto-registro', () => {
       ['GET', '/users'],
       ['POST', '/users'],
       ['PATCH', '/users/:id/disable'],
+      ['PATCH', '/users/:id/enable'],
       ['POST', '/users/:id/reset-password'],
     ] as const) {
       expect(rolesForPath(method, path)).toEqual(new Set<UserRole>(['ADMIN']));
@@ -373,7 +376,7 @@ describe('AC-002-018: nenhuma capacidade de auto-registro', () => {
 
   it('todo handler de rota é precedido por um guard requireRole que nega sem req.auth', () => {
     for (const route of routesOf(usersRoutes)) {
-      // GET /users: [requireRole, handler]; as 3 mutações: [verifyOrigin, requireRole, handler] (S2).
+      // GET /users: [requireRole, handler]; as 4 mutações: [verifyOrigin, requireRole, handler] (S2).
       const expectedDepth = route.key === 'GET /users' ? 2 : 3;
       expect(route.handlerCount).toBe(expectedDepth);
 
@@ -830,6 +833,10 @@ describe('[retry F3] ramos de disableUser / resetUserPassword sem caso no 1º pa
       NotFoundError,
     );
   });
+
+  it('enableUser(id inexistente) → NotFoundError (find comum, nunca findUniqueOrThrow)', async () => {
+    await expect(enableUser(randomUUID(), randomUUID())).rejects.toBeInstanceOf(NotFoundError);
+  });
 });
 
 describe('[retry S1] guarda do último ADMIN fecha NA ESCRITA (não check-then-act)', () => {
@@ -918,7 +925,153 @@ describe('disableUser — precedência dos guards: conta já desativada vence a 
   });
 });
 
-describe('[retry S2] verifyOrigin nas 3 mutações de users/', () => {
+describe('PATCH /users/:id/enable — reativação idempotente com log (TASK-051-001)', () => {
+  it('AC-050-002: reativar conta já ativa não produz erro, disabledAt permanece null, e nenhum evento novo de auditoria é registrado', async () => {
+    const { access: adminAccess } = await seedAdmin();
+    const target = await createUser({ email: 'ac050002@example.com', role: 'EDITOR' });
+    const info = jest.spyOn(logger, 'info').mockImplementation(() => undefined);
+
+    const res = await request(buildApp())
+      .patch(`/users/${target.id}/enable`)
+      .set('Cookie', `${ACCESS_COOKIE}=${adminAccess}`);
+
+    expect(res.status).toBe(200);
+    const after = await testPrisma.user.findUniqueOrThrow({ where: { id: target.id } });
+    expect(after.disabledAt).toBeNull();
+
+    const auditCalls = info.mock.calls.filter(
+      (call) => (call[0] as { audit?: { type?: string } }).audit?.type === 'user.reactivated',
+    );
+    expect(auditCalls).toHaveLength(0);
+
+    info.mockRestore();
+  });
+
+  it('AC-050-003: conta desativada reativada com sucesso autentica com a senha existente e a listagem mostra status active', async () => {
+    const { access: adminAccess } = await seedAdmin();
+    const target = await createUser({
+      email: 'ac050003@example.com',
+      role: 'EDITOR',
+      disabledAt: new Date(),
+    });
+
+    const res = await request(buildApp())
+      .patch(`/users/${target.id}/enable`)
+      .set('Cookie', `${ACCESS_COOKIE}=${adminAccess}`);
+
+    expect(res.status).toBe(200);
+
+    await expect(
+      login({ email: 'ac050003@example.com', password: PASSWORD, ...ORIGIN }),
+    ).resolves.toMatchObject({ user: { id: target.id } });
+
+    const listRes = await request(buildApp())
+      .get('/users')
+      .set('Cookie', `${ACCESS_COOKIE}=${adminAccess}`);
+    const listed = (listRes.body.data as { id: string; status: string }[]).find(
+      (u) => u.id === target.id,
+    );
+    expect(listed?.status).toBe('active');
+  });
+
+  it('AC-050-004: sem sessão → 401; EDITOR → 403 sem alterar; Origin fora de CORS_ORIGINS → 403 sem efeito; ADMIN → 200 com disabledAt null', async () => {
+    const { access: adminAccess } = await seedAdmin();
+    const target = await createUser({
+      email: 'ac050004@example.com',
+      role: 'EDITOR',
+      disabledAt: new Date(),
+    });
+    const editor = await createUser({ email: 'ac050004-editor@example.com', role: 'EDITOR' });
+    const editorSession = await seedSession(editor.id);
+
+    const anon = await request(buildApp()).patch(`/users/${target.id}/enable`);
+    expect(anon.status).toBe(401);
+
+    const asEditor = await request(buildApp())
+      .patch(`/users/${target.id}/enable`)
+      .set('Cookie', `${ACCESS_COOKIE}=${editorSession.access}`);
+    expect(asEditor.status).toBe(403);
+    expect(
+      (await testPrisma.user.findUniqueOrThrow({ where: { id: target.id } })).disabledAt,
+    ).not.toBeNull();
+
+    const blockedOrigin = await request(buildApp())
+      .patch(`/users/${target.id}/enable`)
+      .set('Cookie', `${ACCESS_COOKIE}=${adminAccess}`)
+      .set('Origin', 'https://evil.example');
+    expect(blockedOrigin.status).toBe(403);
+    expect(
+      (await testPrisma.user.findUniqueOrThrow({ where: { id: target.id } })).disabledAt,
+    ).not.toBeNull();
+
+    const asAdmin = await request(buildApp())
+      .patch(`/users/${target.id}/enable`)
+      .set('Cookie', `${ACCESS_COOKIE}=${adminAccess}`);
+    expect(asAdmin.status).toBe(200);
+    expect(Object.keys(asAdmin.body).sort()).toEqual(['id', 'status']);
+    expect(
+      (await testPrisma.user.findUniqueOrThrow({ where: { id: target.id } })).disabledAt,
+    ).toBeNull();
+  });
+
+  it('AC-050-005: reativação com sucesso registra exatamente 1 evento user.reactivated com actorId/targetId/at; idempotência não registra nenhum', async () => {
+    const { user: admin, access: adminAccess } = await seedAdmin();
+    const target = await createUser({
+      email: 'ac050005@example.com',
+      role: 'EDITOR',
+      disabledAt: new Date(),
+    });
+    const info = jest.spyOn(logger, 'info').mockImplementation(() => undefined);
+
+    const res = await request(buildApp())
+      .patch(`/users/${target.id}/enable`)
+      .set('Cookie', `${ACCESS_COOKIE}=${adminAccess}`);
+
+    expect(res.status).toBe(200);
+    const successCalls = info.mock.calls.filter(
+      (call) => (call[0] as { audit?: { type?: string } }).audit?.type === 'user.reactivated',
+    );
+    expect(successCalls).toHaveLength(1);
+    const auditPayload = successCalls[0]?.[0] as {
+      audit: { type: string; actorId: string; targetId: string; at: Date };
+    };
+    expect(auditPayload.audit).toMatchObject({
+      type: 'user.reactivated',
+      actorId: admin.id,
+      targetId: target.id,
+    });
+    expect(auditPayload.audit.at).toBeInstanceOf(Date);
+
+    info.mockClear();
+
+    // Idempotência (AC-050-002): conta já ativa → 0 chamadas novas.
+    const again = await request(buildApp())
+      .patch(`/users/${target.id}/enable`)
+      .set('Cookie', `${ACCESS_COOKIE}=${adminAccess}`);
+    expect(again.status).toBe(200);
+    const idempotentCalls = info.mock.calls.filter(
+      (call) => (call[0] as { audit?: { type?: string } }).audit?.type === 'user.reactivated',
+    );
+    expect(idempotentCalls).toHaveLength(0);
+
+    info.mockRestore();
+  });
+
+  it('AC-050-013: id inexistente → 404 com {error:{message:"Conta não encontrada."}}', async () => {
+    const { access: adminAccess } = await seedAdmin();
+
+    const res = await request(buildApp())
+      .patch(`/users/${randomUUID()}/enable`)
+      .set('Cookie', `${ACCESS_COOKIE}=${adminAccess}`);
+
+    expect(res.status).toBe(404);
+    expect(res.body).toMatchObject({
+      error: { code: 'NOT_FOUND', message: 'Conta não encontrada.' },
+    });
+  });
+});
+
+describe('[retry S2] verifyOrigin nas 4 mutações de users/', () => {
   const EVIL_ORIGIN = 'https://evil.example';
   const ALLOWED_ORIGIN = 'http://localhost:3000'; // única entrada de CORS_ORIGINS (tests/setup-env.ts)
 
@@ -966,6 +1119,32 @@ describe('[retry S2] verifyOrigin nas 3 mutações de users/', () => {
 
     const ok = await request(buildApp())
       .patch(`/users/${target.id}/disable`)
+      .set('Cookie', `${ACCESS_COOKIE}=${access}`)
+      .set('Origin', ALLOWED_ORIGIN);
+
+    expect(ok.status).toBe(200);
+  });
+
+  it('PATCH /users/:id/enable: Origin proibido → 403 e alvo segue desativado; Origin permitido → 200', async () => {
+    const { access } = await seedAdmin();
+    const target = await createUser({
+      email: 's2-enable@example.com',
+      role: 'EDITOR',
+      disabledAt: new Date(),
+    });
+
+    const blocked = await request(buildApp())
+      .patch(`/users/${target.id}/enable`)
+      .set('Cookie', `${ACCESS_COOKIE}=${access}`)
+      .set('Origin', EVIL_ORIGIN);
+
+    expect(blocked.status).toBe(403);
+    expect(
+      (await testPrisma.user.findUniqueOrThrow({ where: { id: target.id } })).disabledAt,
+    ).not.toBeNull();
+
+    const ok = await request(buildApp())
+      .patch(`/users/${target.id}/enable`)
       .set('Cookie', `${ACCESS_COOKIE}=${access}`)
       .set('Origin', ALLOWED_ORIGIN);
 
